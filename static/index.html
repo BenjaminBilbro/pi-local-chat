@@ -895,6 +895,7 @@ let timeline = null;           // the .timeline container
 let lastTimelineItem = null;   // last appended DOM element (for connectors)
 let currentThinking = null;    // current thinking item state
 let currentText = null;        // current text bubble state
+let firstContentReceived = false; // track if any content streamed this turn
 
 function addConnector() {
   const conn = document.createElement('div');
@@ -909,7 +910,6 @@ function handleEvent(event) {
   if (type === 'agent_start') {
     statusDot.className = 'status-dot thinking';
     removeWelcome();
-    hideWaiting();
     assistantContainer = createAssistantContainer();
     timeline = document.createElement('div');
     timeline.className = 'timeline';
@@ -924,6 +924,7 @@ function handleEvent(event) {
       seenToolIds.clear();
       currentThinking = null;
       currentText = null;
+      firstContentReceived = false;
     }
   }
 
@@ -934,6 +935,7 @@ function handleEvent(event) {
     // Streaming text chunks
     if (aType === 'text_delta') {
       isStreaming = true;
+      if (!firstContentReceived) { firstContentReceived = true; hideWaiting(); }
       if (!currentText) {
         if (lastTimelineItem) addConnector();
         currentText = createTextItem();
@@ -948,6 +950,7 @@ function handleEvent(event) {
 
     // Streaming thinking chunks
     if (aType === 'thinking_delta') {
+      if (!firstContentReceived) { firstContentReceived = true; hideWaiting(); }
       if (!currentThinking) {
         if (lastTimelineItem) addConnector();
         currentThinking = createThinkingItem();
@@ -964,6 +967,7 @@ function handleEvent(event) {
 
     // Tool call complete
     if (aType === 'toolcall_end') {
+      if (!firstContentReceived) { firstContentReceived = true; hideWaiting(); }
       const toolCall = aev.toolCall || {};
       const toolId = toolCall.id;
       const toolName = toolCall.name;
