@@ -916,6 +916,7 @@ function handleEvent(event) {
     assistantContainer.appendChild(timeline);
     lastTimelineItem = null;
     messagesEl.appendChild(assistantContainer);
+    showWaiting();
   }
 
   if (type === 'message_start') {
@@ -1161,7 +1162,6 @@ function sendMessage() {
   sendBtn.disabled = true;
   clearPendingImage();
   isStreaming = true;
-  showWaiting();
 }
 
 // ── Image Handling ───────────────────────────────────────────────────────
