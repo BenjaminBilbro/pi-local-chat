@@ -1,0 +1,11 @@
+[project]
+name = "pi-chat"
+version = "0.1.0"
+description = "Sleek web UI for pi coding agent"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "websockets",
+]
