@@ -914,6 +914,7 @@ function handleEvent(event) {
     timeline = document.createElement('div');
     timeline.className = 'timeline';
     assistantContainer.appendChild(timeline);
+    timeline.appendChild(waitingIndicator);
     lastTimelineItem = null;
     messagesEl.appendChild(assistantContainer);
     showWaiting();
@@ -1002,6 +1003,8 @@ function handleEvent(event) {
   if (type === 'agent_settled') {
     statusDot.className = 'status-dot connected';
     hideWaiting();
+    // Move waiting indicator back to messagesEl for next turn
+    messagesEl.appendChild(waitingIndicator);
     isStreaming = false;
     sendBtn.disabled = false;
     assistantContainer = null;
@@ -1223,10 +1226,12 @@ function updateSendBtn() {
 newSessionBtn.addEventListener('click', () => {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'new_session' }));
-    // Clear messages but keep waiting indicator
+    // Clear messages
     const msgs = messagesEl.querySelectorAll('.message, .welcome');
     msgs.forEach(el => el.remove());
     hideWaiting();
+    // Move waiting indicator back to messagesEl (it may be in a timeline)
+    messagesEl.appendChild(waitingIndicator);
     // Re-add welcome
     const welcome = document.createElement('div');
     welcome.className = 'welcome';
