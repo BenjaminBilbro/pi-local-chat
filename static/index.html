@@ -17,6 +17,9 @@
     --text: #e8f0ef;
     --text-dim: #8aaaA8;
     --radius: 12px;
+    /* account accent defaults (overridden per-account) */
+    --accent: var(--teal);
+    --accent-glow: rgba(61, 125, 122, 0.15);
   }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -39,72 +42,118 @@
 
   #login-screen {
     display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
+    gap: 24px;
     height: 100vh;
     background: var(--bg);
   }
 
   #login-screen.hidden { display: none; }
 
-  .login-card {
-    background: var(--surface);
-    border: 1px solid var(--surface2);
-    border-radius: var(--radius);
-    padding: 48px 40px;
-    text-align: center;
-    width: min(360px, calc(100vw - 32px));
-  }
-
-  .login-card h1 {
+  .login-title {
     font-size: 24px;
     font-weight: 600;
-    margin-bottom: 8px;
-    color: var(--teal-light);
+    color: var(--cream);
+    letter-spacing: 0.5px;
   }
 
-  .login-card p {
+  .login-subtitle {
     font-size: 14px;
     color: var(--text-dim);
-    margin-bottom: 24px;
+    margin-top: -16px;
   }
 
-  .login-card input {
+  .login-icons {
+    display: flex;
+    gap: 32px;
+    align-items: center;
+  }
+
+  .login-icon {
+    width: 80px;
+    height: 80px;
+    border-radius: 50%;
+    border: 2px solid var(--surface2);
+    background: var(--surface);
+    color: var(--text);
+    font-size: 32px;
+    font-weight: 700;
+    font-family: inherit;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .login-icon:hover {
+    border-color: var(--text-dim);
+    transform: scale(1.05);
+  }
+
+  .login-icon.selected-b {
+    border-color: var(--teal-dark);
+    background: var(--teal-dark);
+    color: var(--cream);
+    box-shadow: 0 0 20px rgba(45, 95, 92, 0.4);
+  }
+
+  .login-icon.selected-r {
+    border-color: var(--teal-light);
+    background: var(--teal-light);
+    color: var(--cream);
+    box-shadow: 0 0 20px rgba(74, 154, 150, 0.4);
+  }
+
+  .login-password-area {
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    width: min(320px, calc(100vw - 32px));
+  }
+
+  .login-password-area.active { display: flex; }
+
+  .login-password-area input {
     width: 100%;
     padding: 12px 16px;
     border: 1px solid var(--surface2);
     border-radius: 8px;
-    background: var(--bg);
+    background: var(--surface);
     color: var(--text);
     font-size: 16px;
     outline: none;
+    text-align: center;
     transition: border-color 0.2s;
   }
 
-  .login-card input:focus {
-    border-color: var(--teal);
+  .login-password-area input:focus {
+    border-color: var(--accent);
   }
 
-  .login-card button {
+  .login-password-area button {
     width: 100%;
-    margin-top: 12px;
     padding: 12px;
     border: none;
     border-radius: 8px;
-    background: var(--teal);
-    color: #fff;
+    background: var(--accent);
+    color: var(--cream);
     font-size: 15px;
     font-weight: 500;
     cursor: pointer;
-    transition: background 0.2s;
+    transition: all 0.2s;
   }
 
-  .login-card button:hover { background: var(--teal-dark); }
+  .login-password-area button:hover {
+    filter: brightness(1.1);
+  }
 
   .login-error {
     color: #e06060;
     font-size: 13px;
-    margin-top: 8px;
     min-height: 20px;
   }
 
@@ -127,7 +176,7 @@
   .chat-header h1 {
     font-size: 16px;
     font-weight: 600;
-    color: var(--teal-light);
+    color: var(--cream);
   }
 
   .header-actions { display: flex; gap: 8px; align-items: center; }
@@ -146,7 +195,7 @@
     gap: 6px;
   }
 
-  .btn-icon:hover { background: var(--teal); color: #fff; }
+  .btn-icon:hover { background: var(--accent); color: var(--cream); }
 
   .status-dot {
     width: 8px;
@@ -213,8 +262,8 @@
   }
 
   .message.user .message-bubble {
-    background: var(--teal);
-    color: #fff;
+    background: var(--accent);
+    color: var(--cream);
   }
 
   /* Image in user message */
@@ -263,7 +312,7 @@
   .timeline-item.tool {
     font-size: 12px;
     font-family: 'SF Mono', 'Fira Code', monospace;
-    color: var(--teal-light);
+    color: var(--cream-dim);
     padding: 4px 0 4px 18px;
     position: relative;
   }
@@ -276,7 +325,7 @@
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: var(--teal-light);
+    background: var(--cream-dim);
     opacity: 0.6;
   }
 
@@ -359,7 +408,7 @@
     transition: border-color 0.2s;
   }
 
-  .input-wrapper textarea:focus { border-color: var(--teal); }
+  .input-wrapper textarea:focus { border-color: var(--accent); }
 
   .input-actions {
     position: absolute;
@@ -381,15 +430,15 @@
     align-items: center;
   }
 
-  .input-btn:hover { color: var(--teal-light); }
+  .input-btn:hover { color: var(--cream-dim); }
 
   .send-btn {
     width: 46px;
     height: 46px;
     border: none;
     border-radius: var(--radius);
-    background: var(--teal);
-    color: #fff;
+    background: var(--accent);
+    color: var(--cream);
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -398,7 +447,7 @@
     flex-shrink: 0;
   }
 
-  .send-btn:hover { background: var(--teal-dark); }
+  .send-btn:hover { filter: brightness(1.15); }
   .send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
   /* Image preview */
@@ -452,7 +501,7 @@
 
   .welcome h2 {
     font-size: 20px;
-    color: var(--teal-light);
+    color: var(--cream);
     margin-bottom: 8px;
   }
 
@@ -461,8 +510,14 @@
   /* ── Mobile Responsive ──────────────────────────────────────────── */
 
   @media (max-width: 600px) {
-    .login-card {
-      padding: 32px 24px;
+    .login-icons {
+      gap: 24px;
+    }
+
+    .login-icon {
+      width: 64px;
+      height: 64px;
+      font-size: 26px;
     }
 
     .chat-header {
@@ -562,7 +617,7 @@
   .markdown-content li { margin: 2px 0; }
 
   .markdown-content a {
-    color: var(--teal-light);
+    color: var(--cream-dim);
     text-decoration: none;
   }
 
@@ -613,10 +668,14 @@
 
 <!-- Login Screen -->
 <div id="login-screen">
-  <div class="login-card">
-    <h1>pi chat</h1>
-    <p>Enter passphrase to continue</p>
-    <input type="password" id="passphrase" placeholder="Passphrase" autofocus>
+  <div class="login-title">pi chat</div>
+  <div class="login-subtitle">Select your profile</div>
+  <div class="login-icons">
+    <button class="login-icon" id="icon-b" title="Ben">B</button>
+    <button class="login-icon" id="icon-r" title="Roxy">R</button>
+  </div>
+  <div class="login-password-area" id="login-password-area">
+    <input type="password" id="passphrase" placeholder="Password" autocomplete="current-password">
     <button id="login-btn">Sign in</button>
     <div class="login-error" id="login-error"></div>
   </div>
@@ -679,9 +738,12 @@ marked.setOptions({
   gfm: true,           // GitHub Flavored Markdown
 });
 
-// ── Auth (SHA-256 hash comparison) ──────────────────────────────────────
+// ── Auth (SHA-256 hash comparison, dual accounts) ──────────────────────
 
-const EXPECTED_HASH = 'f8136fccd88b668852df345965513a249835e5fa95b48129bdd9173779bb6dcb';
+const ACCOUNTS = {
+  b: { hash: '69b881c987b2c1a324b5c6139bc6e874b1787823baaf2e15307b3f950391c5db', accent: '#2d5f5c', label: 'Ben' },
+  r: { hash: '6e45bdd24c7f96268677a186aa2a4245acd58a1a02d76649c070d306f5461ab8', accent: '#4a9a96', label: 'Roxy' }
+};
 
 async function sha256(text) {
   const encoder = new TextEncoder();
@@ -695,15 +757,46 @@ const chatScreen  = document.getElementById('chat-screen');
 const passphraseInput = document.getElementById('passphrase');
 const loginBtn    = document.getElementById('login-btn');
 const loginError  = document.getElementById('login-error');
+const passwordArea = document.getElementById('login-password-area');
+const iconB = document.getElementById('icon-b');
+const iconR = document.getElementById('icon-r');
+
+let selectedAccount = null; // 'b' or 'r'
+
+function selectAccount(account) {
+  selectedAccount = account;
+  loginError.textContent = '';
+  passphraseInput.value = '';
+
+  // Toggle icon states
+  iconB.className = 'login-icon' + (account === 'b' ? ' selected-b' : '');
+  iconR.className = 'login-icon' + (account === 'r' ? ' selected-r' : '');
+
+  // Set accent color for password area
+  const acct = ACCOUNTS[account];
+  document.documentElement.style.setProperty('--accent', acct.accent);
+
+  // Show password area
+  passwordArea.classList.add('active');
+  passphraseInput.focus();
+}
+
+iconB.addEventListener('click', () => selectAccount('b'));
+iconR.addEventListener('click', () => selectAccount('r'));
 
 async function attemptLogin() {
+  if (!selectedAccount) return;
   const hash = await sha256(passphraseInput.value);
-  if (hash === EXPECTED_HASH) {
+  const acct = ACCOUNTS[selectedAccount];
+
+  if (hash === acct.hash) {
+    // Apply cream accent glow
+    document.documentElement.style.setProperty('--accent-glow', acct.accent + '26');
     loginScreen.classList.add('hidden');
     chatScreen.classList.add('active');
     initChat();
   } else {
-    loginError.textContent = 'Incorrect passphrase';
+    loginError.textContent = 'Incorrect password';
     passphraseInput.value = '';
     passphraseInput.focus();
   }
@@ -741,6 +834,10 @@ function connectWS() {
 
   ws.onopen = () => {
     statusDot.className = 'status-dot connected';
+    // Send account type so server knows which profile to use
+    if (selectedAccount) {
+      ws.send(JSON.stringify({ type: 'set_account', account: selectedAccount }));
+    }
   };
 
   ws.onclose = () => {
