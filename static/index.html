@@ -520,6 +520,93 @@
       padding: 8px 12px;
     }
   }
+
+  /* ── Markdown Rendering ─────────────────────────────────────────── */
+
+  .markdown-content p { margin: 0 0 0.6em 0; }
+  .markdown-content p:last-child { margin-bottom: 0; }
+
+  .markdown-content code {
+    background: rgba(0,0,0,0.3);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 0.9em;
+  }
+
+  .markdown-content pre {
+    background: rgba(0,0,0,0.4);
+    padding: 12px 16px;
+    border-radius: 8px;
+    overflow-x: auto;
+    margin: 8px 0;
+  }
+
+  .markdown-content pre code {
+    background: none;
+    padding: 0;
+    border-radius: 0;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  .markdown-content strong { font-weight: 600; }
+
+  .markdown-content em { font-style: italic; }
+
+  .markdown-content ul, .markdown-content ol {
+    margin: 4px 0;
+    padding-left: 20px;
+  }
+
+  .markdown-content li { margin: 2px 0; }
+
+  .markdown-content a {
+    color: var(--teal-light);
+    text-decoration: none;
+  }
+
+  .markdown-content a:hover { text-decoration: underline; }
+
+  .markdown-content blockquote {
+    border-left: 3px solid var(--surface2);
+    padding-left: 12px;
+    color: var(--text-dim);
+    margin: 8px 0;
+  }
+
+  .markdown-content h1, .markdown-content h2, .markdown-content h3 {
+    margin: 8px 0 4px 0;
+    font-weight: 600;
+  }
+
+  .markdown-content h1 { font-size: 1.2em; }
+  .markdown-content h2 { font-size: 1.1em; }
+  .markdown-content h3 { font-size: 1em; }
+
+  .markdown-content hr {
+    border: none;
+    border-top: 1px solid var(--surface2);
+    margin: 12px 0;
+  }
+
+  .markdown-content table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 8px 0;
+    font-size: 13px;
+  }
+
+  .markdown-content th, .markdown-content td {
+    border: 1px solid var(--surface2);
+    padding: 6px 10px;
+    text-align: left;
+  }
+
+  .markdown-content th {
+    background: rgba(0,0,0,0.2);
+    font-weight: 600;
+  }
 </style>
 </head>
 <body>
@@ -583,7 +670,15 @@
   <input type="file" id="image-input" accept="image/*">
 </div>
 
+<script src="/static/marked.min.js"></script>
 <script>
+// ── Marked Config ──────────────────────────────────────────────────────
+
+marked.setOptions({
+  breaks: true,        // support GFM line breaks
+  gfm: true,           // GitHub Flavored Markdown
+});
+
 // ── Auth (SHA-256 hash comparison) ──────────────────────────────────────
 
 const EXPECTED_HASH = 'f8136fccd88b668852df345965513a249835e5fa95b48129bdd9173779bb6dcb';
@@ -870,27 +965,39 @@ function createToolItem(toolName) {
 function createTextItem() {
   const el = document.createElement('div');
   el.className = 'timeline-item text-bubble';
-  return { el, hasText: false, textSpan: null, cursor: null };
+  return { el, hasText: false, contentEl: null, rawText: '', cursor: null };
+}
+
+function renderMarkdown(item) {
+  if (!item.contentEl) {
+    item.contentEl = document.createElement('div');
+    item.contentEl.className = 'markdown-content';
+    item.el.appendChild(item.contentEl);
+  }
+  item.contentEl.innerHTML = marked.parse(item.rawText, { async: false });
 }
 
 function appendText(item, text) {
   if (!item.hasText) {
     item.hasText = true;
-    item.textSpan = document.createElement('span');
     item.cursor = document.createElement('span');
     item.cursor.className = 'cursor';
-    item.el.appendChild(item.textSpan);
-    item.el.appendChild(item.cursor);
     timeline.appendChild(item.el);
     lastTimelineItem = item.el;
   }
-  item.textSpan.textContent += text;
+  item.rawText += text;
+  renderMarkdown(item);
+  // Keep cursor after content
+  if (!item.el.contains(item.cursor)) {
+    item.el.appendChild(item.cursor);
+  }
   scrollToBottom();
 }
 
 function finalizeText(item, completeText) {
   if (!item.hasText || !completeText) return;
-  item.textSpan.textContent = completeText;
+  item.rawText = completeText;
+  renderMarkdown(item);
   scrollToBottom();
 }
 
