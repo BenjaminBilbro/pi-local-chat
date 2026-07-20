@@ -353,20 +353,39 @@
     flex-shrink: 0;
   }
 
-  /* Cursor blink */
-  .cursor {
-    display: inline-block;
-    width: 2px;
-    height: 1em;
-    background: var(--teal-light);
-    animation: blink 0.8s infinite;
-    vertical-align: text-bottom;
-    margin-left: 2px;
+  /* Waiting indicator */
+  .waiting-indicator {
+    display: none;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 0;
+    color: var(--text-dim);
+    font-size: 13px;
   }
 
-  @keyframes blink {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0; }
+  .waiting-indicator.active {
+    display: flex;
+  }
+
+  .waiting-dots {
+    display: flex;
+    gap: 4px;
+  }
+
+  .waiting-dots span {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--text-dim);
+    animation: waiting-bounce 1.2s infinite;
+  }
+
+  .waiting-dots span:nth-child(2) { animation-delay: 0.15s; }
+  .waiting-dots span:nth-child(3) { animation-delay: 0.3s; }
+
+  @keyframes waiting-bounce {
+    0%, 60%, 100% { opacity: 0.3; transform: scale(0.8); }
+    30% { opacity: 1; transform: scale(1); }
   }
 
   /* Input Area */
@@ -701,6 +720,10 @@
       <h2>Welcome</h2>
       <p>Start a conversation with pi</p>
     </div>
+    <div class="waiting-indicator" id="waiting-indicator">
+      <div class="waiting-dots"><span></span><span></span><span></span></div>
+      <span>thinking</span>
+    </div>
   </div>
 
   <div class="image-preview" id="image-preview">
@@ -822,6 +845,16 @@ const attachBtn    = document.getElementById('attach-btn');
 const imagePreview = document.getElementById('image-preview');
 const previewImg   = document.getElementById('preview-img');
 const removeImageBtn = document.getElementById('remove-image');
+const waitingIndicator = document.getElementById('waiting-indicator');
+
+function showWaiting() {
+  waitingIndicator.classList.add('active');
+  scrollToBottom();
+}
+
+function hideWaiting() {
+  waitingIndicator.classList.remove('active');
+}
 
 function initChat() {
   connectWS();
@@ -876,6 +909,7 @@ function handleEvent(event) {
   if (type === 'agent_start') {
     statusDot.className = 'status-dot thinking';
     removeWelcome();
+    hideWaiting();
     assistantContainer = createAssistantContainer();
     timeline = document.createElement('div');
     timeline.className = 'timeline';
@@ -947,10 +981,6 @@ function handleEvent(event) {
   if (type === 'message_end') {
     const msg = event.message || {};
     if (msg.role === 'assistant') {
-      // Remove cursor from text block
-      if (currentText && currentText.cursor) {
-        currentText.cursor.remove();
-      }
       // Remove empty text item
       if (currentText && !currentText.hasText && currentText.el.parentNode) {
         currentText.el.remove();
@@ -966,6 +996,7 @@ function handleEvent(event) {
 
   if (type === 'agent_settled') {
     statusDot.className = 'status-dot connected';
+    hideWaiting();
     isStreaming = false;
     sendBtn.disabled = false;
     assistantContainer = null;
@@ -1062,7 +1093,7 @@ function createToolItem(toolName) {
 function createTextItem() {
   const el = document.createElement('div');
   el.className = 'timeline-item text-bubble';
-  return { el, hasText: false, contentEl: null, rawText: '', cursor: null };
+  return { el, hasText: false, contentEl: null, rawText: '' };
 }
 
 function renderMarkdown(item) {
@@ -1071,23 +1102,18 @@ function renderMarkdown(item) {
     item.contentEl.className = 'markdown-content';
     item.el.appendChild(item.contentEl);
   }
-  item.contentEl.innerHTML = marked.parse(item.rawText, { async: false });
+  const text = item.rawText.replace(/\n+$/, '');
+  item.contentEl.innerHTML = marked.parse(text, { async: false });
 }
 
 function appendText(item, text) {
   if (!item.hasText) {
     item.hasText = true;
-    item.cursor = document.createElement('span');
-    item.cursor.className = 'cursor';
     timeline.appendChild(item.el);
     lastTimelineItem = item.el;
   }
   item.rawText += text;
   renderMarkdown(item);
-  // Keep cursor after content
-  if (!item.el.contains(item.cursor)) {
-    item.el.appendChild(item.cursor);
-  }
   scrollToBottom();
 }
 
@@ -1131,6 +1157,7 @@ function sendMessage() {
   sendBtn.disabled = true;
   clearPendingImage();
   isStreaming = true;
+  showWaiting();
 }
 
 // ── Image Handling ───────────────────────────────────────────────────────
@@ -1192,7 +1219,15 @@ function updateSendBtn() {
 newSessionBtn.addEventListener('click', () => {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'new_session' }));
-    messagesEl.innerHTML = '<div class="welcome"><h2>New Session</h2><p>Start a fresh conversation</p></div>';
+    // Clear messages but keep waiting indicator
+    const msgs = messagesEl.querySelectorAll('.message, .welcome');
+    msgs.forEach(el => el.remove());
+    hideWaiting();
+    // Re-add welcome
+    const welcome = document.createElement('div');
+    welcome.className = 'welcome';
+    welcome.innerHTML = '<h2>New Session</h2><p>Start a fresh conversation</p>';
+    messagesEl.insertBefore(welcome, waitingIndicator);
     currentAssistantMsg = null;
     currentThoughtsSection = null;
     isStreaming = false;
