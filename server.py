@@ -71,7 +71,7 @@ class PiProcess:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=str(self.work_dir),
-            limit=1024 * 1024,  # 1 MB buffer — long JSON events can exceed default 64 KB
+            limit=32 * 1024 * 1024,  # 32 MB buffer — agent_end events echo full message history including base64 images
         )
         # Start reading stdout in background
         self.reader_task = asyncio.create_task(self._read_stdout())
@@ -172,18 +172,12 @@ async def websocket_endpoint(websocket: WebSocket):
                     await websocket.send_json({"type": "session_started", "sessionId": pi.session_id})
                 payload = {"type": "prompt", "message": msg["message"]}
                 if "images" in msg:
-                    # Save base64 images to temp files — avoids blowing past
-                    # asyncio's stdout readline buffer with large inline payloads.
-                    # Pi reads the file directly from disk (no buffer limit concerns).
-                    image_paths = []
-                    for img in msg["images"]:
-                        ext = (img.get("mimeType", "image/png").split("/")[1] or "png")
-                        tmp = tempfile.NamedTemporaryFile(delete=False, suffix="." + ext)
-                        tmp.write(base64.b64decode(img["data"]))
-                        tmp.close()
-                        image_paths.append({"path": tmp.name})
-                        log.info("Saved image to %s (%.1fKB)", tmp.name, os.path.getsize(tmp.name) / 1024)
-                    payload["images"] = image_paths
+                    # Pi expects images as { type: "image", data: base64, mimeType: "..." }
+                    # (used directly in openai-completions.js to build image_url)
+                    payload["images"] = [
+                        {"type": "image", "data": img["data"], "mimeType": img.get("mimeType", "image/png")}
+                        for img in msg["images"]
+                    ]
                 await pi.send(payload)
 
             elif cmd_type == "new_session":
