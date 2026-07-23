@@ -48,12 +48,18 @@ pi-local-chat/
 │   ├── index.html      # Page structure
 │   ├── theme.css       # Color palette and shared design tokens
 │   ├── styles.css      # Component and responsive styles
-│   ├── app.js          # Chat and session UI behavior
+│   ├── app.js          # Frontend composition and message routing
 │   ├── auth.js         # Local profile selection
+│   ├── socket.js       # WebSocket, heartbeat, and reconnect behavior
+│   ├── chat.js         # Composer and live event rendering
+│   ├── history.js      # Historical message rendering
+│   ├── sessions.js     # Session drawer and load workflow
 │   ├── theme.js        # Persistent palette-role toggle
 │   ├── utils.js        # Browser-side formatting helpers
 │   └── marked.min.js   # Vendored Markdown renderer
 ├── server.py           # Backward-compatible launch entry point
+├── ARCHITECTURE.md     # Runtime flows, invariants, and component ownership
+├── TESTING.md          # Camofox visual testing and RPC capture workflow
 ├── roxy.md             # Extra system prompt for the Roxy profile
 ├── capture_rpc.py      # RPC event capture utility
 └── RPC_EVENT_FORMAT.md # Captured RPC event reference
@@ -75,6 +81,8 @@ http://localhost:9000/?session=/absolute/path/to/session.jsonl
 ```
 
 Both native pi session files and the wrapped RPC capture format are supported.
+See `ARCHITECTURE.md` for the runtime flows and `TESTING.md` for the Camofox
+visual testing workflow.
 
 ## Authentication
 
@@ -133,12 +141,12 @@ shutdown still ends its subprocess.
 
 ## Theme
 
-The palette lives in `static/theme.css`. The interface uses Deep Koamaru
-`#2D336B` and Lavender Blush `#FFF2F2`. The theme toggle swaps their roles:
-one becomes the full-page background while the other becomes headers, panels,
-inputs, buttons, and message surfaces. Foreground tokens also invert to keep
-text and icons readable in both modes. The selected theme is saved locally in
-the browser.
+The palette lives in `static/theme.css`. The interface currently uses soft
+periwinkle `#9CA2D1` and Lavender Blush `#FFF2F2`. The theme toggle swaps their
+roles: one becomes the full-page background while the other becomes headers,
+panels, inputs, buttons, and message surfaces. Foreground tokens also invert to
+keep text and icons readable in both modes. The selected theme is saved locally
+in the browser.
 
 ## Capture utilities
 

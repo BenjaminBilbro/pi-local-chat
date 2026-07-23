@@ -1,254 +1,404 @@
 # Testing Guide for LLM Agents
 
-Visual testing workflow for the pi-chat web UI using camoufox-browser.
+This guide uses `camoufox-browser` to exercise and screenshot the pi chat UI.
+It intentionally does not use Playwright, Chromium, or a frontend build tool.
 
-## Prerequisites
+The preferred rendering test loads a saved JSONL session with
+`PI_CHAT_DEV=1`. This exercises authentication, the WebSocket, server-side
+session parsing, and historical rendering without starting a live pi
+subprocess.
 
-### 1. Start the pi-chat server (dev mode)
+## Paths and URLs
+
+The examples assume the Linux paths used by the local agent environment.
+Change these variables if either repository lives elsewhere:
 
 ```bash
-cd /home/bbilbro/pi-chat
-PI_CHAT_DEV=1 uv run python server.py &
+export PI_CHAT_ROOT=/home/bbilbro/pi-chat
+export CAMOFOX_ROOT=/home/bbilbro/camoufox-testing/camofox-browser
+export PI_CHAT_URL=http://127.0.0.1:9000
+export CAMOFOX_URL=http://127.0.0.1:9377
 ```
 
-The `PI_CHAT_DEV=1` env var enables the `?session=PATH` URL parameter for loading session files directly without spawning a pi subprocess.
+## Start pi chat in test mode
 
-Verify:
+Create a temporary scrypt hash for the known test password `test-only`, then
+pass it only to this server process:
+
 ```bash
-curl -s http://localhost:9000/ | head -3
-# → <!DOCTYPE html>...
+cd "$PI_CHAT_ROOT"
+
+PI_CHAT_TEST_HASH="$(
+  uv run python -c \
+    "from pi_chat.auth import hash_password; print(hash_password('test-only'))"
+)"
+
+PI_CHAT_DEV=1 \
+PI_CHAT_B_PASSWORD_HASH="$PI_CHAT_TEST_HASH" \
+uv run python server.py > /tmp/pi-chat.log 2>&1 &
+
+PI_CHAT_SERVER_PID=$!
 ```
 
-### 2. Start camoufox-browser
+This is real server-side authentication, not a browser bypass. The password
+hash is generated at startup, is not written to the repository, and disappears
+with the shell variable.
+
+Verify the server:
 
 ```bash
-# Source env vars (includes CAMOFOX_API_KEY)
+curl -fsS "$PI_CHAT_URL/" | head -3
+```
+
+If startup fails:
+
+```bash
+tail -50 /tmp/pi-chat.log
+```
+
+## Start camoufox-browser
+
+```bash
 source ~/.bashrc
-
-# Start the server
-cd /home/bbilbro/camoufox-testing/camofox-browser
+cd "$CAMOFOX_ROOT"
 node server.js > /tmp/camofox-browser.log 2>&1 &
-
-# Wait for browser to pre-warm (~10-12s)
-sleep 12
-
-# Verify
-curl -s http://localhost:9377/health
-# → {"ok":true,"engine":"camoufox","browserConnected":true,"browserRunning":true,...}
+CAMOFOX_SERVER_PID=$!
 ```
 
-If camoufox binary is not installed:
+Allow roughly 10–12 seconds for the browser to pre-warm, then check it:
+
+```bash
+sleep 12
+curl -fsS "$CAMOFOX_URL/health"
+```
+
+Expected fields include:
+
+```json
+{
+  "ok": true,
+  "engine": "camoufox",
+  "browserConnected": true,
+  "browserRunning": true
+}
+```
+
+If the Camofox binary is missing:
+
 ```bash
 cd /home/bbilbro/camoufox-testing
 uv run python -m camoufox fetch
 ```
 
-## Core Workflow
+## Core screenshot workflow
 
-### Step 1: Create a Tab
+### 1. Create a tab
 
 ```bash
-TAB=$(curl -s -X POST http://localhost:9377/tabs \
+PI_CHAT_TAB_ID="$(
+  curl -fsS -X POST "$CAMOFOX_URL/tabs" \
+    -H 'Content-Type: application/json' \
+    -d "{\"userId\":\"agent\",\"sessionKey\":\"pichat\",\"url\":\"$PI_CHAT_URL\"}" \
+  | python3 -c "import json,sys; print(json.load(sys.stdin)['tabId'])"
+)"
+```
+
+### 2. Log in through the real UI
+
+The evaluation only fills and submits the existing form. FastAPI verifies the
+password and Camofox stores the returned HTTP-only cookie.
+
+```bash
+PI_CHAT_LOGIN_PAYLOAD="$(
+python3 - <<'PY'
+import json
+
+expression = """
+document.querySelector('#icon-b').click();
+document.querySelector('#passphrase').value = 'test-only';
+document.querySelector('#login-btn').click();
+'login submitted';
+"""
+
+print(json.dumps({
+    "userId": "agent",
+    "expression": expression,
+}))
+PY
+)"
+
+curl -fsS -X POST \
+  "$CAMOFOX_URL/tabs/$PI_CHAT_TAB_ID/evaluate" \
   -H 'Content-Type: application/json' \
-  -d '{"userId":"agent","sessionKey":"pichat","url":"http://localhost:9000"}' \
-  | python3 -c "import sys,json;print(json.load(sys.stdin)['tabId'])")
+  -d "$PI_CHAT_LOGIN_PAYLOAD"
+
+sleep 2
 ```
 
-### Step 2: Bypass Login
+Unlike the old bypass script, this checks the same login path used by a normal
+browser. The cookie remains attached to this Camofox tab across navigation.
 
-The app requires password authentication. For testing, bypass it via JS evaluation:
+### 3. Load a recorded session
 
-```bash
-# Execute the bypass script (stored in static/bypass_login.js)
-python3 -c "import json; print(json.dumps({'userId':'agent','expression':open('/home/bbilbro/pi-chat/static/bypass_login.js').read()}))" | \
-  curl -s -X POST "http://localhost:9377/tabs/$TAB/evaluate" \
-  -H 'Content-Type: application/json' -d @-
-```
-
-### Step 3: Navigate to a Session
-
-Use the `?session=PATH` param to load a JSONL file (pi session or RPC capture):
+Use an absolute path visible to the pi chat server:
 
 ```bash
-# Load an RPC capture file
-curl -s -X POST "http://localhost:9377/tabs/$TAB/navigate" \
+export PI_CHAT_SESSION_PATH="$PI_CHAT_ROOT/data-samples/subagent_rpc_capture.jsonl"
+export PI_CHAT_SESSION_URL="$PI_CHAT_URL/?session=$PI_CHAT_SESSION_PATH"
+test -f "$PI_CHAT_SESSION_PATH"
+
+PI_CHAT_NAVIGATION_PAYLOAD="$(
+python3 - <<'PY'
+import json
+import os
+
+print(json.dumps({
+    "userId": "agent",
+    "url": os.environ["PI_CHAT_SESSION_URL"],
+}))
+PY
+)"
+
+curl -fsS -X POST \
+  "$CAMOFOX_URL/tabs/$PI_CHAT_TAB_ID/navigate" \
   -H 'Content-Type: application/json' \
-  -d '{"userId":"agent","url":"http://localhost:9000/?session=/home/bbilbro/pi-chat/subagent_rpc_capture.jsonl"}'
+  -d "$PI_CHAT_NAVIGATION_PAYLOAD"
 
-# Wait for page to reload + WS to connect + session to load
-sleep 5
-
-# Bypass login again (page reload resets JS state)
-python3 -c "import json; print(json.dumps({'userId':'agent','expression':open('/home/bbilbro/pi-chat/static/bypass_login.js').read()}))" | \
-  curl -s -X POST "http://localhost:9377/tabs/$TAB/evaluate" \
-  -H 'Content-Type: application/json' -d @-
-
-# Wait for WS to deliver session_loaded event
-sleep 3
+sleep 4
 ```
 
-### Step 4: Take a Screenshot
+There is no second login step. The existing cookie lets `auth.js` restore the
+profile, connect `/ws?session=...`, and receive `session_loaded`.
+If the `test -f` check fails, choose a native pi session or generate a fresh
+capture using the commands later in this guide.
+
+### 4. Inspect before taking a screenshot
+
+The accessibility snapshot is useful for confirming that expected content
+rendered:
 
 ```bash
-curl -s "http://localhost:9377/tabs/$TAB/screenshot?userId=agent" > /tmp/screenshot.png
+curl -fsS \
+  "$CAMOFOX_URL/tabs/$PI_CHAT_TAB_ID/snapshot?userId=agent"
 ```
 
-### Step 5: Cleanup
+Look for the first user prompt, assistant text, and any expected tool or
+sub-agent labels.
+
+### 5. Capture both themes
 
 ```bash
-curl -s -X DELETE "http://localhost:9377/tabs/$TAB?userId=agent"
+curl -fsS \
+  "$CAMOFOX_URL/tabs/$PI_CHAT_TAB_ID/screenshot?userId=agent" \
+  > /tmp/pi-chat-theme-a.png
 ```
 
-## Available Session Files
-
-| File | Description |
-|------|-------------|
-| `~/pi-chat/subagent_rpc_capture.jsonl` | Sub-agent spawn with 3 bash tool calls |
-| `~/pi-chat/rpc_capture.jsonl` | Basic RPC capture with ls + file read |
-| `~/.pi/agent/sessions/--home-bbilbro-pi-chat--/*.jsonl` | Live pi-chat sessions |
-| `~/.pi/agent/sessions/--home-bbilbro--/*.jsonl` | Live home directory sessions |
-
-Sessions are organized by working directory in subdirectories under `~/.pi/agent/sessions/`. Each subdirectory name is the URL-encoded path (e.g., `--home-bbilbro-pi-chat--` = `/home/bbilbro/pi-chat/`).
-
-## Generating RPC Capture Files
-
-The agent can generate its own RPC JSONL files using the Python scripts in this repo. This is useful for creating test data or capturing specific interactions.
-
-### capture_rpc.py — Standard RPC Capture
-
-Captures a full pi RPC session with tool calls, thinking, and responses:
+Switch themes through the real toggle:
 
 ```bash
-cd /home/bbilbro/pi-chat
-uv run python capture_rpc.py
-# → outputs: rpc_capture.jsonl
+PI_CHAT_THEME_PAYLOAD="$(
+python3 - <<'PY'
+import json
+
+print(json.dumps({
+    "userId": "agent",
+    "expression": """
+document.querySelector('#chat-screen [data-theme-toggle]').click();
+'theme switched';
+""",
+}))
+PY
+)"
+
+curl -fsS -X POST \
+  "$CAMOFOX_URL/tabs/$PI_CHAT_TAB_ID/evaluate" \
+  -H 'Content-Type: application/json' \
+  -d "$PI_CHAT_THEME_PAYLOAD"
+
+sleep 1
+
+curl -fsS \
+  "$CAMOFOX_URL/tabs/$PI_CHAT_TAB_ID/screenshot?userId=agent" \
+  > /tmp/pi-chat-theme-b.png
 ```
 
-This script:
-1. Spawns `pi --mode rpc --no-session --approve`
-2. Sends predefined prompts and captures all events
-3. Waits for `agent_settled` between prompts
-4. Writes each event as JSONL with sequence numbers and timestamps
+Theme selection is stored in browser local storage, so “theme A” is whichever
+mode that Camofox session last used; “theme B” is the opposite mode.
 
-The output contains the full event stream: `agent_start`, `turn_start`, `message_start/end`, `message_update` (thinking/toolcall/text deltas), `tool_execution_*`, `turn_end`, `agent_end`, and `agent_settled`.
-
-### capture_subagent_rpc.py — Sub-Agent RPC Capture
-
-Captures a sub-agent spawn with nested tool calls:
+### 6. Close the tab
 
 ```bash
-cd /home/bbilbro/pi-chat
-uv run python capture_subagent_rpc.py
-# → outputs: subagent_rpc_capture.jsonl
+curl -fsS -X DELETE \
+  "$CAMOFOX_URL/tabs/$PI_CHAT_TAB_ID?userId=agent"
 ```
 
-### Creating Custom Captures
+### Other Camofox interactions
 
-To create a custom capture with your own prompts, edit the `prompts` list in `capture_rpc.py`:
-
-```python
-prompts = [
-    "Your first prompt here.",
-    "Your second prompt here.",
-]
-```
-
-Then run the script. Each prompt triggers a full agent turn with reasoning and tool use.
-
-## Helper Functions
-
-### Get Snapshot (Accessibility Tree)
+Use a reference from the accessibility snapshot to click a control:
 
 ```bash
-curl -s "http://localhost:9377/tabs/$TAB/snapshot?userId=agent"
-```
-
-Returns element refs (`e1`, `e2`, ...) for clicking/interaction.
-
-### Click an Element
-
-```bash
-curl -s -X POST "http://localhost:9377/tabs/$TAB/click" \
+curl -fsS -X POST \
+  "$CAMOFOX_URL/tabs/$PI_CHAT_TAB_ID/click" \
   -H 'Content-Type: application/json' \
   -d '{"userId":"agent","ref":"e1"}'
 ```
 
-### Execute JS in Page
+For behavior that is not exposed by a dedicated endpoint, use the same
+`/evaluate` payload pattern shown in the login and theme examples. Prefer
+clicking real controls over directly mutating application state.
+
+When the full test run is finished, stop only the processes started by the
+current shell:
 
 ```bash
-# Write JS to temp file (avoids nested JSON quoting issues)
-cat > /tmp/script.js << 'EOF'
-// Your JS here
-"result"
-EOF
-
-python3 -c "import json; print(json.dumps({'userId':'agent','expression':open('/tmp/script.js').read()}))" | \
-  curl -s -X POST "http://localhost:9377/tabs/$TAB/evaluate" \
-  -H 'Content-Type: application/json' -d @-
+kill "$PI_CHAT_SERVER_PID"
+kill "$CAMOFOX_SERVER_PID"
 ```
 
-## Typical Testing Loop
+## Useful session files
+
+The JSONL files are ignored by Git, so their availability depends on the local
+machine:
+
+| Path | Purpose |
+|------|---------|
+| `$PI_CHAT_ROOT/data-samples/subagent_rpc_capture.jsonl` | Historical sub-agent card and nested tool calls |
+| `$PI_CHAT_ROOT/data-samples/rpc_capture.jsonl` | General thinking, tool, and Markdown rendering |
+| `$PI_CHAT_ROOT/data-samples/*.jsonl` | Other locally saved fixtures |
+| `~/.pi/agent/sessions/**/*.jsonl` | Native sessions recorded by pi |
+
+Find recent native sessions with:
 
 ```bash
-# 1. Make code changes
-# 2. Restart server (kill + start)
-pkill -f "uv run python server.py" 2>/dev/null
-sleep 1
-cd /home/bbilbro/pi-chat && PI_CHAT_DEV=1 uv run python server.py &
-sleep 3
-
-# 3. Create tab + bypass login
-TAB=$(curl -s -X POST http://localhost:9377/tabs \
-  -H 'Content-Type: application/json' \
-  -d '{"userId":"agent","sessionKey":"pichat","url":"http://localhost:9000"}' \
-  | python3 -c "import sys,json;print(json.load(sys.stdin)['tabId'])")
-
-python3 -c "import json; print(json.dumps({'userId':'agent','expression':open('/home/bbilbro/pi-chat/static/bypass_login.js').read()}))" | \
-  curl -s -X POST "http://localhost:9377/tabs/$TAB/evaluate" \
-  -H 'Content-Type: application/json' -d @-
-
-# 4. Navigate to session
-curl -s -X POST "http://localhost:9377/tabs/$TAB/navigate" \
-  -H 'Content-Type: application/json' \
-  -d '{"userId":"agent","url":"http://localhost:9000/?session=/home/bbilbro/pi-chat/subagent_rpc_capture.jsonl"}'
-
-sleep 5
-
-# 5. Bypass login again (page reload)
-python3 -c "import json; print(json.dumps({'userId':'agent','expression':open('/home/bbilbro/pi-chat/static/bypass_login.js').read()}))" | \
-  curl -s -X POST "http://localhost:9377/tabs/$TAB/evaluate" \
-  -H 'Content-Type: application/json' -d @-
-
-sleep 3
-
-# 6. Screenshot
-curl -s "http://localhost:9377/tabs/$TAB/screenshot?userId=agent" > /tmp/result.png
+find ~/.pi/agent/sessions -name '*.jsonl' -type f | tail -20
 ```
 
-## Server Architecture
+The development viewer can load both the wrapped RPC capture format and native
+pi session JSONL. The query parameter is an absolute server-side path, not a
+path inside Camofox.
 
-### Dev Mode (`PI_CHAT_DEV=1`)
+## Generate fresh RPC data
 
-When enabled, the WebSocket endpoint accepts a `?session=PATH` query parameter. On connect:
+The capture scripts call the locally installed `pi` executable and overwrite
+their output file in the current working directory.
 
-1. Server parses the JSONL file (supports both pi session and RPC capture formats)
-2. Extracts messages from `agent_end` event or collects all user/assistant messages
-3. Sends a single `session_loaded` WebSocket event with the messages
-4. Frontend renders them via `renderHistoricalMessages()`
+### General RPC capture
 
-No pi subprocess is spawned — it's a static render of recorded data.
-
-### JSONL Formats Supported
-
-**RPC Capture** (`subagent_rpc_capture.jsonl`, `rpc_capture.jsonl`):
-```json
-{"seq": 1, "ts": "...", "event": {"type": "agent_end", "messages": [...]}}
+```bash
+cd "$PI_CHAT_ROOT"
+uv run python capture_rpc.py
 ```
-Server looks for `agent_end` event and extracts its `messages` array.
 
-**Pi Session** (`~/.pi/agent/sessions/--home-bbilbro-*/`):
-```json
-{"type": "message", "message": {"role": "user", "content": [...]}}
-{"type": "message", "message": {"role": "assistant", "content": [...]}}
+Output:
+
+```text
+rpc_capture.jsonl
 ```
-Server collects all user/assistant messages in order.
+
+The default prompts exercise thinking, tool calls, multiple turns, and final
+assistant text.
+
+### Sub-agent capture
+
+```bash
+cd "$PI_CHAT_ROOT"
+uv run python capture_subagent_rpc.py
+```
+
+Output:
+
+```text
+subagent_rpc_capture.jsonl
+```
+
+The default prompt spawns a sub-agent and asks it to run three commands. This
+exercises live sub-agent updates and historical nested-tool extraction.
+
+To keep generated files together:
+
+```bash
+mv -i rpc_capture.jsonl data-samples/
+mv -i subagent_rpc_capture.jsonl data-samples/
+```
+
+To create a different scenario, edit the `prompts` list in `capture_rpc.py` or
+the `prompt` value in `capture_subagent_rpc.py`, then regenerate the file.
+
+## Fast non-visual checks
+
+Run these before opening Camofox:
+
+```bash
+cd "$PI_CHAT_ROOT"
+
+python3 -m compileall -q \
+  pi_chat \
+  server.py \
+  capture_rpc.py \
+  capture_subagent_rpc.py
+
+for file in static/*.js; do
+  if [ "$(basename "$file")" != "marked.min.js" ]; then
+    node --check "$file"
+  fi
+done
+
+git diff --check
+```
+
+Check the files served by FastAPI:
+
+```bash
+curl -fsS "$PI_CHAT_URL/" > /dev/null
+curl -fsS "$PI_CHAT_URL/static/app.js" > /dev/null
+curl -fsS "$PI_CHAT_URL/static/chat.js" > /dev/null
+curl -fsS "$PI_CHAT_URL/static/history.js" > /dev/null
+curl -fsS "$PI_CHAT_URL/static/sessions.js" > /dev/null
+curl -fsS "$PI_CHAT_URL/static/socket.js" > /dev/null
+```
+
+## What the historical-render test covers
+
+With `PI_CHAT_DEV=1` and `?session=/absolute/file.jsonl`:
+
+1. Camofox performs the normal login flow.
+2. `auth.js` restores the HTTP-only cookie after navigation.
+3. `socket.js` opens the authenticated WebSocket.
+4. `websocket.py` reads the development session path.
+5. `sessions.py` parses native pi records or wrapped RPC events.
+6. The server sends one `session_loaded` message.
+7. `app.js` routes it through `sessions.js`.
+8. `history.js` renders user, assistant, tool, Markdown, and sub-agent content.
+
+No pi subprocess is spawned for this path. Use a normal live prompt separately
+when testing `chat.js` streaming behavior or changes to `PiProcess`.
+
+## Troubleshooting
+
+### The login screen remains visible
+
+- Confirm the server was started with `PI_CHAT_B_PASSWORD_HASH`.
+- Confirm the test password is exactly `test-only`.
+- Inspect `/tmp/pi-chat.log`.
+- Use the Camofox snapshot endpoint to confirm that the expected login controls
+  exist before evaluating the login expression.
+
+### The page is logged in but no session appears
+
+- Confirm `PI_CHAT_DEV=1` was set on the server process.
+- Confirm `PI_CHAT_SESSION_PATH` is absolute and readable by the server.
+- Reload the same URL after confirming the cookie was created.
+- Inspect `/tmp/pi-chat.log` for `Failed to parse session file`.
+
+### Camofox is unavailable
+
+- Check `"$CAMOFOX_URL/health"`.
+- Inspect `/tmp/camofox-browser.log`.
+- Allow the initial browser pre-warm to finish before creating a tab.
+
+### A screenshot is blank or premature
+
+- Request a snapshot first.
+- Wait for known text from the fixture rather than relying only on a fixed
+  delay.
+- Keep the same `userId`, `sessionKey`, and tab ID throughout the run.
