@@ -133,10 +133,11 @@ shutdown still ends its subprocess.
 
 ## Theme
 
-The palette lives in `static/theme.css`. The interface is built primarily from
-blue-gray `#ABBFD3` and cream `#FFFACD`. The theme toggle swaps their roles:
+The palette lives in `static/theme.css`. The interface uses Deep Koamaru
+`#2D336B` and Lavender Blush `#FFF2F2`. The theme toggle swaps their roles:
 one becomes the full-page background while the other becomes headers, panels,
-inputs, buttons, and message surfaces. The selected theme is saved locally in
+inputs, buttons, and message surfaces. Foreground tokens also invert to keep
+text and icons readable in both modes. The selected theme is saved locally in
 the browser.
 
 ## Capture utilities

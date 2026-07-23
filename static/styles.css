@@ -153,7 +153,7 @@
   }
 
   .login-error {
-    color: var(--error);
+    color: var(--page-error);
     font-size: 13px;
     min-height: 20px;
   }
@@ -442,6 +442,11 @@
 
   .input-wrapper textarea:focus { border-color: var(--accent); }
 
+  .input-wrapper textarea::placeholder {
+    color: var(--text-dim);
+    opacity: 0.8;
+  }
+
   .input-actions {
     position: absolute;
     right: 8px;
@@ -510,7 +515,7 @@
     right: -6px;
     background: var(--surface2);
     border: none;
-    color: var(--text);
+    color: var(--surface-text);
     width: 18px;
     height: 18px;
     border-radius: 50%;
@@ -627,7 +632,7 @@
   .markdown-content p:last-child { margin-bottom: 0; }
 
   .markdown-content code {
-    background: rgba(0,0,0,0.3);
+    background: var(--code-bg);
     padding: 2px 6px;
     border-radius: 4px;
     font-family: 'SF Mono', 'Fira Code', monospace;
@@ -635,7 +640,7 @@
   }
 
   .markdown-content pre {
-    background: rgba(0,0,0,0.4);
+    background: var(--pre-bg);
     padding: 12px 16px;
     border-radius: 8px;
     overflow-x: auto;
@@ -1127,4 +1132,31 @@
     color: var(--error);
     background: var(--error-surface);
     border-color: var(--error-border);
+  }
+
+  /*
+   * Opposite-color surfaces need their own foreground tokens. This keeps
+   * navy-on-blush and blush-on-navy readable in both palette orientations.
+   */
+  .theme-toggle,
+  .login-icon,
+  .login-password-area input,
+  .chat-header,
+  .input-area,
+  .session-panel,
+  .message.assistant .message-bubble,
+  .timeline-item.text-bubble,
+  .message.assistant .historical-text,
+  .subagent-tool,
+  .historical-subagent {
+    --text: var(--surface-text);
+    --text-dim: var(--surface-text-dim);
+    --detail: var(--surface-detail);
+    color: var(--text);
+  }
+
+  .input-wrapper {
+    --text: var(--page-text);
+    --text-dim: var(--page-text-dim);
+    --detail: var(--page-detail);
   }

@@ -1,38 +1,59 @@
 :root,
-:root[data-theme="blue"] {
-  --primary: #ABBFD3;
-  --primary-dark: #72889D;
-  --primary-light: #D3DFEA;
-  --cream: #FFFACD;
-  --cream-dim: #E9E3B8;
-  --bg: var(--primary);
-  --surface: var(--cream);
-  --surface2: #EFE8B7;
-  --text: #17232F;
-  --text-dim: #42586C;
-  --page-accent: var(--cream);
-  --detail: var(--primary-dark);
-  --success: #2B6B4A;
-  --warning: #8A6200;
-  --error: #A83232;
-  --error-surface: #FFD6D6;
-  --error-border: #C86B6B;
-  --neutral: #6B8298;
+:root[data-theme="navy"] {
+  --navy: #9ca2d1;
+  --blush: #FFF2F2;
+  --bg: var(--navy);
+  --surface: var(--blush);
+  --surface2: #E7DADD;
+  --page-text: var(--blush);
+  --page-text-dim: #DCCED4;
+  --page-detail: #FFD2DC;
+  --surface-text: var(--navy);
+  --surface-text-dim: #5D638E;
+  --surface-detail: #414A82;
+  --text: var(--page-text);
+  --text-dim: var(--page-text-dim);
+  --page-accent: var(--blush);
+  --detail: var(--page-detail);
+  --success: #286A4A;
+  --warning: #8A5B16;
+  --error: #A43B4B;
+  --page-error: #FFB9C2;
+  --error-surface: #FFE1E5;
+  --error-border: #CF7E89;
+  --neutral: #79758E;
   --radius: 12px;
-  --accent: var(--cream);
-  --accent-contrast: var(--text);
-  --accent-glow: rgba(171, 191, 211, 0.2);
+  --accent: var(--blush);
+  --accent-contrast: var(--navy);
+  --accent-glow: rgba(255, 242, 242, 0.25);
+  --code-bg: rgba(45, 51, 107, 0.1);
+  --pre-bg: rgba(45, 51, 107, 0.14);
 }
 
-:root[data-theme="cream"] {
-  --bg: var(--cream);
-  --surface: var(--primary);
-  --surface2: #99AEC3;
-  --text: #17232F;
-  --text-dim: #42586C;
-  --page-accent: var(--primary);
-  --detail: #6A5540;
-  --accent: var(--primary);
-  --accent-contrast: var(--text);
-  --accent-glow: rgba(255, 250, 205, 0.35);
+:root[data-theme="blush"] {
+  --bg: var(--blush);
+  --surface: var(--navy);
+  --surface2: #464D82;
+  --page-text: var(--navy);
+  --page-text-dim: #62678F;
+  --page-detail: #465083;
+  --surface-text: var(--blush);
+  --surface-text-dim: #DED2D8;
+  --surface-detail: #FFD2DC;
+  --text: var(--page-text);
+  --text-dim: var(--page-text-dim);
+  --page-accent: var(--navy);
+  --detail: var(--page-detail);
+  --success: #8FD8B0;
+  --warning: #FFD17A;
+  --error: #FFB9C2;
+  --page-error: #A43B4B;
+  --error-surface: #4A3159;
+  --error-border: #BC7482;
+  --neutral: #AAA6BD;
+  --accent: var(--navy);
+  --accent-contrast: var(--blush);
+  --accent-glow: rgba(45, 51, 107, 0.18);
+  --code-bg: rgba(255, 242, 242, 0.1);
+  --pre-bg: rgba(255, 242, 242, 0.14);
 }

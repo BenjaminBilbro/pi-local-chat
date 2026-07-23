@@ -1,5 +1,5 @@
 const STORAGE_KEY = 'pi-chat-theme';
-const DEFAULT_THEME = 'blue';
+const DEFAULT_THEME = 'navy';
 
 export function setupTheme() {
   applyTheme(readStoredTheme());
@@ -7,14 +7,14 @@ export function setupTheme() {
   document.querySelectorAll('[data-theme-toggle]').forEach((button) => {
     button.addEventListener('click', () => {
       const currentTheme = document.documentElement.dataset.theme;
-      applyTheme(currentTheme === 'cream' ? 'blue' : 'cream');
+      applyTheme(currentTheme === 'blush' ? 'navy' : 'blush');
     });
   });
 }
 
 function applyTheme(theme) {
-  const activeTheme = theme === 'cream' ? 'cream' : 'blue';
-  const nextTheme = activeTheme === 'blue' ? 'cream' : 'blue';
+  const activeTheme = theme === 'blush' ? 'blush' : 'navy';
+  const nextTheme = activeTheme === 'navy' ? 'blush' : 'navy';
   document.documentElement.dataset.theme = activeTheme;
 
   try {
