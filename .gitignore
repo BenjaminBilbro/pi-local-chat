@@ -4,3 +4,6 @@ __pycache__/
 .venv/
 *.jsonl
 sessions/
+node_modules/
+package-lock.json
+tests/output_*.html

@@ -1,5 +1,6 @@
 import { renderHistoricalMessages } from './history.js';
 import { escapeHtml } from './utils.js';
+import { createSubagentCard, addAssistantMessage, addToolCall, addSummary, updateTurnCount, updateStatus, parseReceipt, firstText } from './subagent.js';
 
 const messagesElement = document.getElementById('messages');
 const userInput = document.getElementById('user-input');
@@ -183,13 +184,14 @@ function handleToolStart(event) {
   showFirstContent();
   if (lastTimelineItem) addConnector();
 
-  const tool = createSubagentToolItem(
-    toolCallId,
+  const card = createSubagentCard(
     arguments_.name || 'sub-agent',
     arguments_.task || '',
+    { live: true },
   );
-  timeline.appendChild(tool);
-  lastTimelineItem = tool;
+  timeline.appendChild(card.element);
+  lastTimelineItem = card.element;
+  subagentTools.set(toolCallId, { card, lastMessageCount: 0 });
   scrollToBottom();
 }
 
@@ -237,13 +239,15 @@ function renderCompletedToolCall(toolCall) {
   if (toolName === 'subagent') {
     if (subagentTools.has(toolId)) return;
     const arguments_ = toolCall.arguments || {};
-    tool = createSubagentToolItem(
-      toolId,
+    const card = createSubagentCard(
       arguments_.name || 'sub-agent',
       arguments_.task || '',
+      { live: true },
     );
+    tool = card.element;
+    subagentTools.set(toolId, { card, lastMessageCount: 0 });
   } else {
-    tool = createToolItem(toolName);
+    tool = createToolItem(toolName, toolCall.isError || false);
   }
 
   timeline.appendChild(tool);
@@ -295,9 +299,9 @@ function finalizeThinking(item, completeText) {
   scrollToBottom();
 }
 
-function createToolItem(toolName) {
+function createToolItem(toolName, isError = false) {
   const element = document.createElement('div');
-  element.className = 'timeline-item tool';
+  element.className = `timeline-item tool${isError ? ' is-error' : ''}`;
 
   const name = document.createElement('span');
   name.className = 'tool-name';
@@ -306,96 +310,41 @@ function createToolItem(toolName) {
   return element;
 }
 
-function createSubagentToolItem(toolCallId, agentName, task) {
-  const element = document.createElement('div');
-  element.className = 'timeline-item subagent-timeline-item';
-
-  const dot = document.createElement('div');
-  dot.className = 'subagent-dot';
-  element.appendChild(dot);
-
-  const card = document.createElement('div');
-  card.className = 'subagent-tool';
-
-  const header = document.createElement('div');
-  header.className = 'subagent-header';
-  header.innerHTML = `
-    <span class="subagent-icon">🤖</span>
-    <span class="subagent-name">${escapeHtml(agentName)}</span>
-    <span class="subagent-task">${escapeHtml(task)}</span>
-    <span class="subagent-chevron">▼</span>
-  `;
-
-  const body = document.createElement('div');
-  body.className = 'subagent-body open';
-
-  const statusElement = document.createElement('div');
-  statusElement.className = 'subagent-status';
-  statusElement.textContent = '(running...)';
-
-  const activeToolElement = document.createElement('div');
-  activeToolElement.className = 'subagent-active-tool hidden';
-
-  const turnsElement = document.createElement('div');
-  turnsElement.className = 'subagent-turns';
-
-  body.appendChild(statusElement);
-  body.appendChild(activeToolElement);
-  body.appendChild(turnsElement);
-  card.appendChild(header);
-  card.appendChild(body);
-  element.appendChild(card);
-
-  const chevron = header.querySelector('.subagent-chevron');
-  chevron.classList.add('open');
-  header.addEventListener('click', () => {
-    const isOpen = body.classList.toggle('open');
-    chevron.classList.toggle('open', isOpen);
-  });
-
-  subagentTools.set(toolCallId, {
-    statusElement,
-    activeToolElement,
-    turnsElement,
-  });
-  return element;
-}
-
 function updateSubagentToolItem(toolCallId, event) {
   const state = subagentTools.get(toolCallId);
   if (!state) return;
 
+  const { card, lastMessageCount } = state;
   const partial = event.partialResult || {};
-  const content = partial.content || [];
   const results = partial.details?.results || [];
-  const statusText = firstText(content);
-
-  if (statusText && statusText !== lastSubagentUpdate) {
-    state.statusElement.textContent = statusText;
-    lastSubagentUpdate = statusText;
-  }
 
   if (results.length > 0) {
     const result = results[0];
-    const activeTool = result.activeToolExecutions?.[0];
-    if (activeTool) {
-      const arguments_ = activeTool.args || {};
-      const description = (
-        arguments_.command
-        || arguments_.prompt
-        || JSON.stringify(arguments_)
-      ).substring(0, 80);
-      state.activeToolElement.className = 'subagent-active-tool';
-      state.activeToolElement.textContent = `${activeTool.toolName}: ${description}`;
-    } else {
-      state.activeToolElement.className = 'subagent-active-tool hidden';
-    }
+    const messages = result.messages || [];
 
-    const turns = result.usage?.turns || 0;
-    const maxTurns = result.maxTurnsLimit || 0;
-    state.turnsElement.textContent = maxTurns
-      ? `${turns}/${maxTurns} turns`
-      : `${turns} turns`;
+    // Diff: only process NEW messages since last update
+    const newMessages = messages.slice(lastMessageCount || 0);
+    for (const msg of newMessages) {
+      if (msg.role !== 'assistant') continue;
+      const content = msg.content || [];
+      for (const item of content) {
+        if (item.type === 'text' && item.text) {
+          addAssistantMessage(card.timeline, item.text);
+        } else if (item.type === 'toolCall') {
+          const argsDesc = toolCallArgsDescription(item.arguments || {});
+          addToolCall(card.timeline, item.name, argsDesc, item.isError || false);
+        }
+      }
+    }
+    state.lastMessageCount = messages.length;
+
+    // Update turns
+    const usage = result.usage || {};
+    updateTurnCount(card.turnsElement, usage.turns || 0, result.maxTurnsLimit);
+
+    // Update status text
+    const statusText = firstText(partial.content || []);
+    if (statusText) updateStatus(card.statusElement, statusText);
   }
 
   scrollToBottom();
@@ -405,42 +354,36 @@ function finalizeSubagentToolItem(toolCallId, event) {
   const state = subagentTools.get(toolCallId);
   if (!state) return;
 
+  const { card } = state;
   const content = event.result?.content || [];
-  const finalText = firstText(content);
-  const summary = receiptSummary(content);
+  const receipt = parseReceipt(content);
 
-  if (summary) {
-    state.statusElement.textContent = summary;
-  } else if (finalText && !finalText.startsWith('PI_SUBAGENT_RECEIPT')) {
-    state.statusElement.textContent = finalText;
+  if (receipt && receipt.summary) {
+    addSummary(card.timeline, receipt.summary, receipt.status, event.isError || false);
+  } else {
+    const finalText = firstText(content);
+    if (finalText && !finalText.startsWith('PI_SUBAGENT_RECEIPT')) {
+      addAssistantMessage(card.timeline, finalText);
+    }
   }
 
-  state.activeToolElement.className = 'subagent-active-tool hidden';
-  if (event.isError) {
-    state.statusElement.classList.add('is-error');
+  if (card.statusElement && event.isError) {
+    card.statusElement.classList.add('is-error');
   }
   lastSubagentUpdate = null;
 }
 
-function firstText(content) {
-  return content.find((item) => item.type === 'text' && item.text)?.text || '';
-}
-
-function receiptSummary(content) {
-  for (const item of content) {
-    if (item.type !== 'text' || !item.text?.includes('PI_SUBAGENT_RECEIPT_V1')) {
-      continue;
-    }
-
-    const jsonStart = item.text.indexOf('{');
-    if (jsonStart < 0) continue;
-    try {
-      return JSON.parse(item.text.substring(jsonStart)).summary || '';
-    } catch {
-      return '';
+function toolCallArgsDescription(arguments_) {
+  if (!arguments_ || typeof arguments_ !== 'object') return '';
+  for (const key of ['command', 'prompt', 'path', 'query', 'questions', 'url']) {
+    if (key in arguments_) {
+      return String(arguments_[key]).substring(0, 120);
     }
   }
-  return '';
+  if (arguments_.name) {
+    return `${arguments_.name}${arguments_.task ? ': ' + String(arguments_.task).substring(0, 80) : ''}`;
+  }
+  return JSON.stringify(arguments_).substring(0, 120);
 }
 
 function createTextItem() {

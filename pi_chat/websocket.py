@@ -219,21 +219,28 @@ async def _load_session(
             _request_id(),
             timeout=15.0,
         )
-        if messages_result.get("success"):
-            messages = messages_result.get("data", {}).get("messages", [])
-            await websocket.send_json(
-                {
-                    "type": "session_loaded",
-                    "messages": messages,
-                    "sessionId": pi.session_id,
-                    "messageCount": len(messages),
-                }
-            )
-        else:
+        if not messages_result.get("success"):
             await _send_error(
                 websocket,
                 f"Failed to get messages: {messages_result.get('error', 'unknown')}",
             )
+            return
+
+        # Use enriched messages from sessions.py (has sub-agent timeline data)
+        # rather than raw messages from pi RPC
+        messages = parse_jsonl_messages(session_path)
+        if not messages:
+            # Fallback to raw messages from pi if parsing fails
+            messages = messages_result.get("data", {}).get("messages", [])
+
+        await websocket.send_json(
+            {
+                "type": "session_loaded",
+                "messages": messages,
+                "sessionId": pi.session_id,
+                "messageCount": len(messages),
+            }
+        )
     except asyncio.TimeoutError:
         await _send_error(websocket, "Timed out loading session")
     except Exception as error:

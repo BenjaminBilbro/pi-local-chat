@@ -93,17 +93,33 @@ def parse_jsonl_messages(session_path: str) -> list[dict] | None:
 
         subagent_tool_calls = _collect_subagent_tool_calls(content)
 
+        # Check for native session format (type:message records)
+        has_message_records = False
         for line in content:
             try:
-                record = json.loads(line)
-                event = record.get("event", record)
-                if event.get("type") == "agent_end" and "messages" in event:
-                    messages = event["messages"]
-                    _attach_subagent_details(messages, subagent_tool_calls)
-                    return messages
+                entry = json.loads(line)
+                if entry.get("type") == "message":
+                    has_message_records = True
+                    break
             except json.JSONDecodeError:
                 continue
 
+        if not has_message_records:
+            # RPC capture format — collect from ALL agent_end events
+            all_messages = []
+            for line in content:
+                try:
+                    record = json.loads(line)
+                    event = record.get("event", record)
+                    if event.get("type") == "agent_end" and "messages" in event:
+                        all_messages.extend(event["messages"])
+                except json.JSONDecodeError:
+                    continue
+            if all_messages:
+                _attach_subagent_details(all_messages, subagent_tool_calls)
+                return all_messages
+
+        # Native session fallback
         messages = []
         for line in content:
             try:
@@ -236,12 +252,18 @@ def _record_subagent_update(subagent_tool_calls: dict[str, dict], event: dict) -
     if not result_items or not tool_call_id:
         return
 
-    tool_calls = _extract_tool_calls_from_result(result_items[0])
+    result = result_items[0]
+    tool_calls = _extract_tool_calls_from_result(result)
+    usage = result.get("usage", {})
+
+    entry = subagent_tool_calls.setdefault(tool_call_id, {
+        "name": event.get("args", {}).get("name", "sub-agent"),
+    })
     if tool_calls:
-        subagent_tool_calls[tool_call_id] = {
-            "name": event.get("args", {}).get("name", "sub-agent"),
-            "toolCalls": tool_calls,
-        }
+        entry["toolCalls"] = tool_calls
+    entry["timelineMessages"] = result.get("messages", [])
+    entry["turns"] = usage.get("turns")
+    entry["maxTurns"] = result.get("maxTurnsLimit")
 
 
 def _record_subagent_result(
@@ -250,10 +272,11 @@ def _record_subagent_result(
 ) -> None:
     tool_call_id = message.get("toolCallId", "")
     result_items = message.get("details", {}).get("results", [])
-    if not result_items or not tool_call_id:
-        return
-
     is_error = message.get("isError", False)
+
+    # Always register the toolCallId from the toolResult, even without results
+    subagent_tool_calls.setdefault(tool_call_id, {})
+
     _extract_receipt_status_from_text(
         subagent_tool_calls,
         tool_call_id,
@@ -261,11 +284,20 @@ def _record_subagent_result(
         is_error,
     )
 
-    tool_calls = _extract_tool_calls_from_result(result_items[0])
+    if not result_items:
+        return
+
+    result = result_items[0]
+    tool_calls = _extract_tool_calls_from_result(result)
+    usage = result.get("usage", {})
+
+    entry = subagent_tool_calls[tool_call_id]
     if tool_calls:
-        subagent_tool_calls.setdefault(tool_call_id, {})
-        subagent_tool_calls[tool_call_id]["toolCalls"] = tool_calls
-        subagent_tool_calls[tool_call_id]["isError"] = is_error
+        entry["toolCalls"] = tool_calls
+    entry["isError"] = is_error
+    entry["timelineMessages"] = result.get("messages", [])
+    entry["turns"] = usage.get("turns")
+    entry["maxTurns"] = result.get("maxTurnsLimit")
 
 
 def _extract_tool_calls_from_result(result: dict) -> list[dict]:
@@ -402,3 +434,6 @@ def _attach_subagent_details(
             content["_status"] = details.get("status")
             content["_summary"] = details.get("summary")
             content["_isError"] = details.get("isError", False)
+            content["_timelineMessages"] = details.get("timelineMessages", [])
+            content["_turns"] = details.get("turns")
+            content["_maxTurns"] = details.get("maxTurns")
