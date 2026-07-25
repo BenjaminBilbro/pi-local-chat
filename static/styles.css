@@ -284,8 +284,11 @@
     max-width: 300px;
     max-height: 200px;
     border-radius: 8px;
-    margin-bottom: 8px;
     display: block;
+  }
+
+  .message-bubble span + img.user-image {
+    margin-top: 8px;
   }
 
   /* Timeline */
@@ -550,88 +553,6 @@
 
   .welcome p { font-size: 14px; }
 
-  /* ── Mobile Responsive ──────────────────────────────────────────── */
-
-  @media (max-width: 600px) {
-    .session-panel {
-      width: 100vw;
-    }
-
-    .login-icons {
-      gap: 24px;
-    }
-
-    .login-icon {
-      width: 64px;
-      height: 64px;
-      font-size: 26px;
-    }
-
-    .chat-header {
-      padding: 10px 12px;
-    }
-
-    .chat-header h1 {
-      font-size: 15px;
-    }
-
-    .btn-icon {
-      padding: 8px;
-      font-size: 0;
-    }
-
-    .login-theme-toggle {
-      top: 12px;
-      right: 12px;
-    }
-
-    .login-theme-toggle span {
-      display: none;
-    }
-
-    .btn-icon svg {
-      width: 16px;
-      height: 16px;
-    }
-
-    .messages {
-      padding: 12px;
-      gap: 12px;
-    }
-
-    .message-bubble {
-      padding: 10px 14px;
-      font-size: 15px;
-    }
-
-    .timeline-item.thinking {
-      font-size: 14px;
-      padding: 4px 0 4px 16px;
-    }
-
-    .timeline-item.tool {
-      font-size: 13px;
-      padding: 4px 0 4px 16px;
-    }
-
-    .timeline-item.text-bubble {
-      font-size: 15px;
-      padding: 10px 14px;
-    }
-
-    .timeline-connector {
-      margin-left: 7px;
-    }
-
-    .input-area {
-      padding: 10px 12px;
-    }
-
-    .image-preview {
-      padding: 8px 12px;
-    }
-  }
-
   /* ── Markdown Rendering ─────────────────────────────────────────── */
 
   .markdown-content p { margin: 0 0 0.6em 0; }
@@ -860,45 +781,7 @@
 
   .session-load-overlay.active { display: flex; }
 
-  /* Historical assistant message (non-timeline) */
-  .message.assistant .historical-text {
-    padding: 12px 16px;
-    border-radius: var(--radius);
-    background: var(--surface);
-    border: 1px solid var(--surface2);
-    font-size: 14px;
-    line-height: 1.6;
-    white-space: normal;
-    word-break: break-word;
-  }
-
-  .message.assistant .historical-thinking {
-    font-size: 13px;
-    line-height: 1.5;
-    color: var(--text-dim);
-    opacity: 0.6;
-    margin-bottom: 6px;
-    white-space: pre-wrap;
-  }
-
-  .message.assistant .historical-tool {
-    font-size: 12px;
-    font-family: 'SF Mono', 'Fira Code', monospace;
-    color: var(--detail);
-    margin-bottom: 4px;
-  }
-
-  .message.assistant .historical-tool .tool-name::before {
-    content: "✓ ";
-    color: var(--success);
-  }
-
-  .message.assistant .historical-tool.is-error .tool-name::before {
-    content: "✗ ";
-    color: var(--error);
-  }
-
-  /* ── Sub-agent Tool Item (live streaming) ──────────────────────────── */
+  /* ── Sub-agent Tool Item (shared live + historic) ─────────────────── */
 
   .subagent-tool {
     border: 1px solid var(--surface2);
@@ -913,6 +796,10 @@
   .subagent-timeline-item {
     position: relative;
     padding: 4px 0 4px 18px;
+  }
+
+  .subagent-timeline-item.is-error .subagent-tool {
+    border-left-color: var(--error);
   }
 
   .subagent-dot {
@@ -930,18 +817,19 @@
     display: flex;
     align-items: center;
     gap: 8px;
+    width: 100%;
     padding: 8px 12px;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
     cursor: pointer;
     user-select: none;
     transition: background 0.15s;
   }
 
   .subagent-header:hover { background: var(--surface2); }
-
-  .subagent-icon {
-    font-size: 14px;
-    flex-shrink: 0;
-  }
 
   .subagent-name {
     font-size: 12px;
@@ -991,34 +879,6 @@
   .subagent-status::-webkit-scrollbar { width: 3px; }
   .subagent-status::-webkit-scrollbar-track { background: transparent; }
   .subagent-status::-webkit-scrollbar-thumb { background: var(--surface2); border-radius: 2px; }
-
-  .subagent-active-tool {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 11px;
-    font-family: 'SF Mono', 'Fira Code', monospace;
-    color: var(--detail);
-    padding: 4px 0;
-  }
-
-  .subagent-active-tool.hidden {
-    display: none;
-  }
-
-  .subagent-active-tool::before {
-    content: "▶";
-    font-size: 8px;
-  }
-
-  .subagent-active-tool.done {
-    color: var(--success);
-  }
-
-  .subagent-active-tool.done::before {
-    content: "✓";
-    font-size: 10px;
-  }
 
   .subagent-turns {
     font-size: 10px;
@@ -1109,130 +969,12 @@
     background: rgba(255, 173, 173, 0.1);
   }
 
-  /* ── Historical Sub-agent Tool Calls (collapsible) ─────────────────── */
-
-  .historical-subagent {
-    border: 1px solid var(--surface2);
-    border-left: 3px solid var(--detail);
-    border-radius: 8px;
-    background: var(--surface);
-    margin-bottom: 8px;
-    overflow: hidden;
-  }
-
-  .historical-subagent-header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 12px;
-    cursor: pointer;
-    user-select: none;
-    transition: background 0.15s;
-  }
-
-  .historical-subagent-header:hover { background: var(--surface2); }
-
-  .historical-subagent-icon {
-    font-size: 13px;
-  }
-
-  .historical-subagent-name {
-    font-size: 12px;
-    font-family: 'SF Mono', 'Fira Code', monospace;
-    font-weight: 600;
-    color: var(--detail);
-  }
-
-  .historical-subagent-chevron {
-    font-size: 10px;
-    color: var(--text-dim);
-    transition: transform 0.2s;
-    margin-left: auto;
-  }
-
-  .historical-subagent-chevron.open { transform: rotate(180deg); }
-
-  .historical-subagent-body {
-    display: none;
-    padding: 0 12px 10px 12px;
-    border-top: 1px solid var(--surface2);
-  }
-
-  .historical-subagent-body.open { display: block; }
-
-  .historical-subagent-tool-calls {
-    padding: 8px 0;
-  }
-
-  .historical-subagent-tool-call {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 11px;
-    font-family: 'SF Mono', 'Fira Code', monospace;
-    color: var(--text-dim);
-    padding: 3px 0;
-  }
-
-  .historical-subagent-tool-call::before {
-    content: "✓";
-    font-size: 10px;
-    color: var(--success) !important;
-    width: 14px;
-    text-align: center;
-    flex-shrink: 0;
-    padding-right: 2px;
-  }
-
-  .historical-subagent-tool-call.is-error::before {
-    content: "✗";
-    color: var(--error) !important;
-  }
-
-  .historical-subagent-tool-call .hsc-tool-name {
-    color: var(--detail);
-    font-weight: 600;
-  }
-
-  .historical-subagent-tool-call .hsc-tool-args {
-    color: var(--text-dim);
-    opacity: 0.7;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .historical-subagent-summary {
-    font-size: 12px;
-    color: var(--text-dim);
-    padding: 8px 0;
-    line-height: 1.5;
-    white-space: normal;
-    word-break: break-word;
-  }
-
-  .historical-subagent-status {
-    font-size: 10px;
-    padding: 2px 6px;
-    border-radius: 4px;
-    font-weight: 600;
-  }
-
-  .historical-subagent-status.completed {
-    color: var(--success);
-    background: rgba(183, 228, 199, 0.1);
-  }
-
-  .historical-subagent-status.failed {
-    color: var(--error);
-    background: rgba(255, 173, 173, 0.1);
-  }
-
   .subagent-status.is-error {
     color: var(--error);
   }
 
-  .message-bubble.error-bubble {
+  .message-bubble.error-bubble,
+  .timeline-item.text-bubble.error-bubble {
     color: var(--error);
     background: var(--error-surface);
     border-color: var(--error-border);
@@ -1261,4 +1003,86 @@
     --text: var(--page-text);
     --text-dim: var(--page-text-dim);
     --detail: var(--page-detail);
+  }
+
+  /* ── Mobile Responsive ──────────────────────────────────────────── */
+
+  @media (max-width: 600px) {
+    .session-panel {
+      width: 100vw;
+    }
+
+    .login-icons {
+      gap: 24px;
+    }
+
+    .login-icon {
+      width: 64px;
+      height: 64px;
+      font-size: 26px;
+    }
+
+    .chat-header {
+      padding: 10px 12px;
+    }
+
+    .chat-header h1 {
+      font-size: 15px;
+    }
+
+    .btn-icon {
+      padding: 8px;
+      font-size: 0;
+    }
+
+    .login-theme-toggle {
+      top: 12px;
+      right: 12px;
+    }
+
+    .login-theme-toggle span {
+      display: none;
+    }
+
+    .btn-icon svg {
+      width: 16px;
+      height: 16px;
+    }
+
+    .messages {
+      padding: 12px;
+      gap: 12px;
+    }
+
+    .message-bubble {
+      padding: 10px 14px;
+      font-size: 15px;
+    }
+
+    .timeline-item.thinking {
+      font-size: 14px;
+      padding: 4px 0 4px 16px;
+    }
+
+    .timeline-item.tool {
+      font-size: 13px;
+      padding: 4px 0 4px 16px;
+    }
+
+    .timeline-item.text-bubble {
+      font-size: 15px;
+      padding: 10px 14px;
+    }
+
+    .timeline-connector {
+      margin-left: 7px;
+    }
+
+    .input-area {
+      padding: 10px 12px;
+    }
+
+    .image-preview {
+      padding: 8px 12px;
+    }
   }

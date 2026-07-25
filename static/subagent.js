@@ -1,12 +1,7 @@
-import { escapeHtml } from './utils.js';
+import { setMarkdownContent } from './timeline.js';
 
 /**
- * Creates a sub-agent timeline card.
- * @param {string} agentName - Display name of the sub-agent
- * @param {string} task - Task description
- * @param {object} [options] - Optional config
- * @param {boolean} [options.live=false] - If true, show live status elements
- * @returns {{element, header, body, timeline, statusElement, turnsElement, chevron}}
+ * Create the shared live/historical sub-agent card shell.
  */
 export function createSubagentCard(agentName, task, options = {}) {
   const { live = false } = options;
@@ -16,18 +11,29 @@ export function createSubagentCard(agentName, task, options = {}) {
 
   const dot = document.createElement('div');
   dot.className = 'subagent-dot';
-  element.appendChild(dot);
 
   const card = document.createElement('div');
   card.className = 'subagent-tool';
 
-  const header = document.createElement('div');
+  const header = document.createElement('button');
   header.className = 'subagent-header';
-  header.innerHTML = `
-    <span class="subagent-name">${escapeHtml(agentName)}</span>
-    <span class="subagent-task">${escapeHtml(task)}</span>
-    <span class="subagent-chevron">▼</span>
-  `;
+  header.type = 'button';
+  header.setAttribute('aria-expanded', 'true');
+
+  const name = document.createElement('span');
+  name.className = 'subagent-name';
+  name.textContent = agentName;
+
+  const taskElement = document.createElement('span');
+  taskElement.className = 'subagent-task';
+  taskElement.textContent = task;
+
+  const chevron = document.createElement('span');
+  chevron.className = 'subagent-chevron open';
+  chevron.textContent = '▼';
+  chevron.setAttribute('aria-hidden', 'true');
+
+  header.append(name, taskElement, chevron);
 
   const body = document.createElement('div');
   body.className = 'subagent-body open';
@@ -35,67 +41,54 @@ export function createSubagentCard(agentName, task, options = {}) {
   const timeline = document.createElement('div');
   timeline.className = 'subagent-timeline';
 
-  const statusElement = live
-    ? createLiveStatusElement()
-    : null;
-
+  const statusElement = live ? createLiveStatusElement() : null;
   const turnsElement = document.createElement('div');
   turnsElement.className = 'subagent-turns';
 
-  if (statusElement) {
-    body.appendChild(statusElement);
-  }
-  body.appendChild(timeline);
-  body.appendChild(turnsElement);
+  if (statusElement) body.appendChild(statusElement);
+  body.append(timeline, turnsElement);
+  card.append(header, body);
+  element.append(dot, card);
 
-  card.appendChild(header);
-  card.appendChild(body);
-  element.appendChild(card);
-
-  const chevron = header.querySelector('.subagent-chevron');
-  chevron.classList.add('open');
   header.addEventListener('click', () => {
     const isOpen = body.classList.toggle('open');
     chevron.classList.toggle('open', isOpen);
+    header.setAttribute('aria-expanded', String(isOpen));
   });
 
-  return { element, header, body, timeline, statusElement, turnsElement, chevron };
+  return {
+    element,
+    header,
+    body,
+    timeline,
+    statusElement,
+    turnsElement,
+    chevron,
+  };
 }
 
-/**
- * Creates the live status text element shown during streaming.
- */
 function createLiveStatusElement() {
-  const el = document.createElement('div');
-  el.className = 'subagent-status';
-  el.textContent = '(running...)';
-  return el;
+  const element = document.createElement('div');
+  element.className = 'subagent-status';
+  element.textContent = '(running...)';
+  return element;
 }
 
-/**
- * Adds an assistant text message to the timeline.
- * @param {HTMLElement} timeline - The timeline container
- * @param {string} text - The text content
- */
 export function addAssistantMessage(timeline, text) {
   if (!text) return;
+
   const item = document.createElement('div');
   item.className = 'timeline-item subagent-assistant-message';
-  const md = document.createElement('div');
-  md.className = 'markdown-content';
-  md.innerHTML = marked.parse(text, { async: false });
-  item.appendChild(md);
+  setMarkdownContent(item, text);
   timeline.appendChild(item);
 }
 
-/**
- * Adds a tool call to the timeline, colored by success/failure.
- * @param {HTMLElement} timeline - The timeline container
- * @param {string} toolName - Name of the tool
- * @param {string} [argsDescription] - Truncated args description
- * @param {boolean} [isError=false] - Whether the tool call failed
- */
-export function addToolCall(timeline, toolName, argsDescription, isError = false) {
+export function addToolCall(
+  timeline,
+  toolName,
+  argsDescription,
+  isError = false,
+) {
   const item = document.createElement('div');
   item.className = `timeline-item subagent-tool-call${isError ? ' is-error' : ''}`;
 
@@ -106,9 +99,7 @@ export function addToolCall(timeline, toolName, argsDescription, isError = false
   const name = document.createElement('span');
   name.className = 'subagent-tool-name';
   name.textContent = toolName;
-
-  item.appendChild(icon);
-  item.appendChild(name);
+  item.append(icon, name);
 
   if (argsDescription) {
     const args = document.createElement('span');
@@ -120,13 +111,6 @@ export function addToolCall(timeline, toolName, argsDescription, isError = false
   timeline.appendChild(item);
 }
 
-/**
- * Adds the receipt summary to the timeline.
- * @param {HTMLElement} timeline - The timeline container
- * @param {string} summary - The receipt summary text (rendered as markdown)
- * @param {string} [status] - The status ("completed", "failed", etc.)
- * @param {boolean} [isError=false] - Whether the sub-agent failed
- */
 export function addSummary(timeline, summary, status, isError = false) {
   if (!summary && !status) return;
 
@@ -135,149 +119,226 @@ export function addSummary(timeline, summary, status, isError = false) {
 
   if (status) {
     const badge = document.createElement('span');
-    badge.className = `subagent-summary-status ${isError ? 'is-error' : ''}`;
+    badge.className = `subagent-summary-status${isError ? ' is-error' : ''}`;
     badge.textContent = status;
     item.appendChild(badge);
   }
 
-  if (summary) {
-    const md = document.createElement('div');
-    md.className = 'markdown-content';
-    md.innerHTML = marked.parse(summary, { async: false });
-    item.appendChild(md);
-  }
-
+  if (summary) setMarkdownContent(item, summary);
   timeline.appendChild(item);
 }
 
-/**
- * Adds or updates the turn count display.
- * @param {HTMLElement} element - The turns element from createSubagentCard
- * @param {number} turns - Current turn count
- * @param {number} [maxTurns] - Maximum turns (optional)
- */
 export function updateTurnCount(element, turns, maxTurns) {
   if (!element) return;
+
+  element.textContent = '';
   if (maxTurns) {
-    element.textContent = `${turns}/${maxTurns} turns`;
+    element.textContent = `${turns || 0}/${maxTurns} turns`;
   } else if (turns) {
     element.textContent = `${turns} turns`;
   }
 }
 
-/**
- * Updates the status text element (live mode only).
- * @param {HTMLElement} element - The status element from createSubagentCard
- * @param {string} text - New status text
- */
 export function updateStatus(element, text) {
   if (!element || !text) return;
   element.textContent = text;
 }
 
 /**
- * Builds the full timeline from a messages array (historic mode).
- * Iterates messages, adds assistant text and tool calls.
- * @param {HTMLElement} timeline - The timeline container
- * @param {Array} messages - Full messages array from details.results[0].messages
- * @param {string} summary - Receipt summary text
- * @param {string} [status] - Receipt status
- * @param {boolean} [isError=false] - Whether the sub-agent failed
- * @param {number} [turns] - Final turn count
- * @param {number} [maxTurns] - Max turns limit
+ * Render the latest complete message snapshot into an existing card.
+ * Rebuilding this small inner timeline avoids fragile incremental diff state.
  */
-export function buildHistoricalTimeline(timeline, messages, summary, status, isError = false, turns, maxTurns) {
-  if (!messages || messages.length === 0) {
-    // No timeline data, show summary only
-    if (summary || status) {
-      addSummary(timeline, summary, status, isError);
-    }
-    return;
+export function renderSubagentSnapshot(card, snapshot, options = {}) {
+  const { settled = false } = options;
+  const {
+    messages = [],
+    summary = '',
+    status = '',
+    fallbackText = '',
+    isError = false,
+    turns,
+    maxTurns,
+  } = snapshot || {};
+
+  renderSubagentMessages(card.timeline, messages);
+  updateTurnCount(card.turnsElement, turns, maxTurns);
+  card.element.classList.toggle('is-error', Boolean(isError));
+
+  if (settled) {
+    if (fallbackText) addAssistantMessage(card.timeline, fallbackText);
+    addSummary(card.timeline, summary, status, isError);
+    card.statusElement?.remove();
   }
+}
 
-  for (const msg of messages) {
-    if (msg.role !== 'assistant') continue;
+function renderSubagentMessages(timeline, messages) {
+  timeline.replaceChildren();
+  enrichToolCalls(messages);
 
-    const content = msg.content || [];
-    for (const item of content) {
+  for (const message of messages || []) {
+    if (message.role !== 'assistant') continue;
+
+    for (const item of message.content || []) {
       if (item.type === 'text' && item.text) {
         addAssistantMessage(timeline, item.text);
-      } else if (item.type === 'toolCall') {
-        const argsDesc = toolCallArgsDescription(item.arguments || {});
-        addToolCall(timeline, item.name, argsDesc, item.isError || false);
+      } else if (item.type === 'toolCall' && item.name) {
+        addToolCall(
+          timeline,
+          item.name,
+          toolCallArgsDescription(item.arguments || {}),
+          item.isError || false,
+        );
+      }
+    }
+  }
+}
+
+/**
+ * Convert a pi sub-agent result into the single display shape used by both
+ * historical enrichment and live tool completion.
+ */
+export function subagentSnapshotFromResult(
+  result = {},
+  content = [],
+  isError = false,
+) {
+  const receipt = structuredReceipt(result.receipt, isError)
+    || parseReceipt(content);
+  const resultText = firstText(content);
+  const fallbackText = !receipt && !resultText.startsWith('PI_SUBAGENT_')
+    ? resultText
+    : '';
+
+  return {
+    messages: result.messages || [],
+    summary: receipt?.summary || '',
+    status: receipt?.status || (isError ? 'failed' : ''),
+    fallbackText,
+    isError: Boolean(isError || receipt?.isError),
+    turns: result.usage?.turns,
+    maxTurns: result.maxTurnsLimit,
+  };
+}
+
+/**
+ * Attach sub-agent details and tool-result error state to assistant tool calls.
+ * RPC agent_end messages contain toolResult records; historical Python parsing
+ * may already have added the same underscore-prefixed fields.
+ */
+export function enrichToolCalls(messages) {
+  const toolResults = new Map();
+
+  for (const message of messages || []) {
+    if (message.role !== 'toolResult' || !message.toolCallId) continue;
+
+    const result = message.details?.results?.[0] || {};
+    toolResults.set(message.toolCallId, {
+      isError: Boolean(message.isError),
+      subagent: message.toolName === 'subagent'
+        ? subagentSnapshotFromResult(
+          result,
+          message.content || [],
+          message.isError || false,
+        )
+        : null,
+    });
+  }
+
+  for (const message of messages || []) {
+    if (message.role !== 'assistant') continue;
+
+    for (const item of message.content || []) {
+      if (item.type !== 'toolCall' || !item.id) continue;
+
+      const toolResult = toolResults.get(item.id);
+      if (!toolResult) continue;
+      item.isError = toolResult.isError;
+
+      if (item.name === 'subagent' && toolResult.subagent) {
+        const snapshot = toolResult.subagent;
+        item._timelineMessages = snapshot.messages;
+        item._summary = snapshot.summary;
+        item._status = snapshot.status;
+        item._fallbackText = snapshot.fallbackText;
+        item._isError = snapshot.isError;
+        item._turns = snapshot.turns;
+        item._maxTurns = snapshot.maxTurns;
       }
     }
   }
 
-  // Turn count
-  const turnsEl = document.createElement('div');
-  turnsEl.className = 'subagent-turns';
-  if (maxTurns) {
-    turnsEl.textContent = `${turns || 0}/${maxTurns} turns`;
-  } else if (turns) {
-    turnsEl.textContent = `${turns} turns`;
-  }
-  timeline.appendChild(turnsEl);
-
-  // Summary
-  addSummary(timeline, summary, status, isError);
+  return messages;
 }
 
-/**
- * Extracts a short description from tool call arguments for display.
- * @param {object} arguments_ - The tool call arguments
- * @returns {string} A short description
- */
-function toolCallArgsDescription(arguments_) {
+export function toolCallArgsDescription(arguments_) {
   if (!arguments_ || typeof arguments_ !== 'object') return '';
 
   for (const key of ['command', 'prompt', 'path', 'query', 'questions', 'url']) {
     if (key in arguments_) {
-      return str(arguments_[key]).substring(0, 120);
+      return stringify(arguments_[key]).substring(0, 120);
     }
   }
 
-  // Fallback: subagent gets name + task preview
   if (arguments_.name) {
-    return `${arguments_.name}${arguments_.task ? ': ' + str(arguments_.task).substring(0, 80) : ''}`;
+    const task = arguments_.task
+      ? `: ${stringify(arguments_.task).substring(0, 80)}`
+      : '';
+    return `${arguments_.name}${task}`;
   }
 
   return JSON.stringify(arguments_).substring(0, 120);
 }
 
-function str(v) {
-  return typeof v === 'string' ? v : JSON.stringify(v);
+function stringify(value) {
+  return typeof value === 'string' ? value : JSON.stringify(value);
 }
 
 /**
- * Parses a PI_SUBAGENT_RECEIPT_V1 block from content array.
- * @param {Array} content - Content array from a toolResult
- * @returns {{summary: string, status: string} | null}
+ * Parse receipt or failure marker text. Structured `result.receipt` data is
+ * preferred because older marker strings can contain non-JSON values.
  */
 export function parseReceipt(content) {
-  if (!content) return null;
-  for (const item of content) {
-    if (item.type !== 'text' || !item.text?.includes('PI_SUBAGENT_RECEIPT_V1')) continue;
+  for (const item of content || []) {
+    if (item.type !== 'text' || !item.text) continue;
+
+    const isFailure = item.text.includes('PI_SUBAGENT_FAILURE_V1');
+    const isReceipt = item.text.includes('PI_SUBAGENT_RECEIPT_V1');
+    if (!isFailure && !isReceipt) continue;
+
     const jsonStart = item.text.indexOf('{');
     if (jsonStart < 0) continue;
+
     try {
       const parsed = JSON.parse(item.text.substring(jsonStart));
+      const status = parsed.status || (isFailure ? 'failed' : 'completed');
       return {
-        summary: parsed.summary || '',
-        status: parsed.status || 'completed',
+        summary: parsed.summary || parsed.error || parsed.cause || '',
+        status,
+        isError: isFailure || ['failed', 'error'].includes(status),
       };
-    } catch { /* skip */ }
+    } catch {
+      // The structured receipt path remains authoritative when marker JSON
+      // comes from Python-style output such as `False`.
+    }
   }
+
   return null;
 }
 
-/**
- * Extracts the first text item from a content array.
- * @param {Array} content - Content array
- * @returns {string}
- */
+function structuredReceipt(receipt, isError) {
+  if (!receipt || typeof receipt !== 'object') return null;
+
+  const status = receipt.status || (isError ? 'failed' : 'completed');
+  return {
+    summary: receipt.summary || receipt.error || receipt.cause || '',
+    status,
+    isError: Boolean(isError || ['failed', 'error'].includes(status)),
+  };
+}
+
 export function firstText(content) {
-  if (!content) return '';
-  const item = content.find(i => i.type === 'text' && i.text);
+  const item = (content || []).find(
+    (entry) => entry.type === 'text' && entry.text,
+  );
   return item?.text || '';
 }

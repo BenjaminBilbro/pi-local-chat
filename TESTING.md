@@ -331,6 +331,9 @@ Run these before opening Camofox:
 ```bash
 cd "$PI_CHAT_ROOT"
 
+npm ci
+npm test
+
 python3 -m compileall -q \
   pi_chat \
   server.py \
@@ -345,6 +348,14 @@ done
 
 git diff --check
 ```
+
+`npm test` uses jsdom only as a development dependency. It replays the
+checked-in RPC fixtures through the production live renderer, renders the same
+completed messages through the production history renderer, and requires the
+settled assistant HTML to match exactly. It also verifies native assistant-turn
+grouping, structured receipt preference, retries, multi-block streaming,
+generic failures, prompt/connection recovery, and settled-card interaction
+state.
 
 Check the files served by FastAPI:
 

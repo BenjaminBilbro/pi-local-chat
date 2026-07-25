@@ -92,6 +92,7 @@ def parse_jsonl_messages(session_path: str) -> list[dict] | None:
             return None
 
         subagent_tool_calls = _collect_subagent_tool_calls(content)
+        tool_errors = _collect_tool_errors(content)
 
         # Check for native session format (type:message records)
         has_message_records = False
@@ -117,7 +118,12 @@ def parse_jsonl_messages(session_path: str) -> list[dict] | None:
                     continue
             if all_messages:
                 _attach_subagent_details(all_messages, subagent_tool_calls)
-                return all_messages
+                _attach_tool_errors(all_messages, tool_errors)
+                return [
+                    message
+                    for message in all_messages
+                    if message.get("role") in ("user", "assistant")
+                ]
 
         # Native session fallback
         messages = []
@@ -133,6 +139,7 @@ def parse_jsonl_messages(session_path: str) -> list[dict] | None:
                 continue
 
         _attach_subagent_details(messages, subagent_tool_calls)
+        _attach_tool_errors(messages, tool_errors)
         return messages or None
     except Exception as error:
         log.error("Failed to parse JSONL %s: %s", session_path, error)
@@ -242,6 +249,31 @@ def _collect_subagent_tool_calls(content: list[str]) -> dict[str, dict]:
     return subagent_tool_calls
 
 
+def _collect_tool_errors(content: list[str]) -> dict[str, bool]:
+    """Collect final tool error state before toolResult records are filtered."""
+    tool_errors: dict[str, bool] = {}
+
+    for line in content:
+        try:
+            record = json.loads(line)
+            event = record.get("event", record)
+
+            if event.get("type") == "tool_execution_end":
+                tool_call_id = event.get("toolCallId", "")
+                if tool_call_id:
+                    tool_errors[tool_call_id] = bool(event.get("isError"))
+
+            if event.get("type") == "message":
+                message = event.get("message", {})
+                tool_call_id = message.get("toolCallId", "")
+                if message.get("role") == "toolResult" and tool_call_id:
+                    tool_errors[tool_call_id] = bool(message.get("isError"))
+        except json.JSONDecodeError:
+            continue
+
+    return tool_errors
+
+
 def _record_subagent_update(subagent_tool_calls: dict[str, dict], event: dict) -> None:
     tool_call_id = event.get("toolCallId", "")
     result_items = (
@@ -253,17 +285,19 @@ def _record_subagent_update(subagent_tool_calls: dict[str, dict], event: dict) -
         return
 
     result = result_items[0]
-    tool_calls = _extract_tool_calls_from_result(result)
     usage = result.get("usage", {})
 
     entry = subagent_tool_calls.setdefault(tool_call_id, {
         "name": event.get("args", {}).get("name", "sub-agent"),
     })
-    if tool_calls:
-        entry["toolCalls"] = tool_calls
     entry["timelineMessages"] = result.get("messages", [])
     entry["turns"] = usage.get("turns")
     entry["maxTurns"] = result.get("maxTurnsLimit")
+    _apply_structured_receipt(
+        entry,
+        result.get("receipt"),
+        is_error=False,
+    )
 
 
 def _record_subagent_result(
@@ -277,69 +311,34 @@ def _record_subagent_result(
     # Always register the toolCallId from the toolResult, even without results
     subagent_tool_calls.setdefault(tool_call_id, {})
 
-    _extract_receipt_status_from_text(
-        subagent_tool_calls,
-        tool_call_id,
-        _first_text(message.get("content", [])),
-        is_error,
-    )
-
     if not result_items:
+        _extract_receipt_status_from_text(
+            subagent_tool_calls,
+            tool_call_id,
+            _first_text(message.get("content", [])),
+            is_error,
+        )
         return
 
     result = result_items[0]
-    tool_calls = _extract_tool_calls_from_result(result)
     usage = result.get("usage", {})
 
     entry = subagent_tool_calls[tool_call_id]
-    if tool_calls:
-        entry["toolCalls"] = tool_calls
     entry["isError"] = is_error
     entry["timelineMessages"] = result.get("messages", [])
     entry["turns"] = usage.get("turns")
     entry["maxTurns"] = result.get("maxTurnsLimit")
-
-
-def _extract_tool_calls_from_result(result: dict) -> list[dict]:
-    tool_calls = []
-    for message in result.get("messages", []):
-        if message.get("role") != "assistant":
-            continue
-
-        for content in message.get("content", []):
-            if (
-                content.get("type") != "toolCall"
-                or content.get("name") == "subagent"
-            ):
-                continue
-
-            arguments = content.get("arguments", {})
-            argument_description = ""
-            if isinstance(arguments, dict):
-                for key in (
-                    "command",
-                    "prompt",
-                    "path",
-                    "query",
-                    "questions",
-                    "url",
-                ):
-                    if key in arguments:
-                        argument_description = str(arguments[key])[:120]
-                        break
-                if not argument_description:
-                    argument_description = json.dumps(
-                        arguments,
-                        ensure_ascii=False,
-                    )[:120]
-
-            tool_calls.append(
-                {
-                    "name": content.get("name", ""),
-                    "args": argument_description,
-                }
-            )
-    return tool_calls
+    if not _apply_structured_receipt(
+        entry,
+        result.get("receipt"),
+        is_error,
+    ):
+        _extract_receipt_status_from_text(
+            subagent_tool_calls,
+            tool_call_id,
+            _first_text(message.get("content", [])),
+            is_error,
+        )
 
 
 def _extract_receipt_status(
@@ -348,8 +347,23 @@ def _extract_receipt_status(
     result: dict,
     is_error: bool,
 ) -> None:
-    if not tool_call_id or tool_call_id not in subagent_tool_calls:
+    if not tool_call_id:
         return
+
+    entry = subagent_tool_calls.setdefault(tool_call_id, {})
+    result_items = result.get("details", {}).get("results", [])
+    if result_items:
+        final_result = result_items[0]
+        entry["isError"] = is_error
+        entry["timelineMessages"] = final_result.get("messages", [])
+        entry["turns"] = final_result.get("usage", {}).get("turns")
+        entry["maxTurns"] = final_result.get("maxTurnsLimit")
+        if _apply_structured_receipt(
+            entry,
+            final_result.get("receipt"),
+            is_error,
+        ):
+            return
 
     _extract_receipt_status_from_text(
         subagent_tool_calls,
@@ -359,23 +373,51 @@ def _extract_receipt_status(
     )
 
 
+def _apply_structured_receipt(
+    entry: dict,
+    receipt: dict | None,
+    is_error: bool,
+) -> bool:
+    """Apply authoritative receipt fields when pi provides them as a dict."""
+    if not isinstance(receipt, dict):
+        return False
+
+    status = receipt.get("status") or (
+        "failed" if is_error else "completed"
+    )
+    entry["isError"] = is_error or status in ("failed", "error")
+    entry["status"] = status
+    entry["summary"] = (
+        receipt.get("summary", "")
+        or receipt.get("error", "")
+        or receipt.get("cause", "")
+    )
+    return True
+
+
 def _extract_receipt_status_from_text(
     subagent_tool_calls: dict[str, dict],
     tool_call_id: str,
     text: str,
     is_error: bool,
 ) -> None:
-    if not tool_call_id or not text:
+    if not tool_call_id:
         return
 
     subagent_tool_calls.setdefault(tool_call_id, {})
-    subagent_tool_calls[tool_call_id]["isError"] = is_error
+    entry = subagent_tool_calls[tool_call_id]
+    entry["isError"] = is_error
+    if is_error:
+        entry["status"] = "failed"
+    if not text:
+        return
 
     if "PI_SUBAGENT_FAILURE_V1" in text:
-        subagent_tool_calls[tool_call_id]["status"] = "failed"
+        entry["isError"] = True
+        entry["status"] = "failed"
         payload = _parse_embedded_json(text)
         if payload:
-            subagent_tool_calls[tool_call_id]["summary"] = (
+            entry["summary"] = (
                 payload.get("error", "") or payload.get("cause", "")
             )
         return
@@ -383,14 +425,21 @@ def _extract_receipt_status_from_text(
     if "PI_SUBAGENT_RECEIPT_V1" in text:
         payload = _parse_embedded_json(text)
         if payload:
-            subagent_tool_calls[tool_call_id]["status"] = payload.get(
+            status = payload.get(
                 "status",
                 "completed",
             )
-            subagent_tool_calls[tool_call_id]["summary"] = payload.get(
+            entry["status"] = status
+            if status in ("failed", "error"):
+                entry["isError"] = True
+            entry["summary"] = payload.get(
                 "summary",
                 "",
             )
+        return
+
+    if "PI_SUBAGENT_" not in text:
+        entry["fallbackText"] = text
 
 
 def _parse_embedded_json(text: str) -> dict | None:
@@ -430,10 +479,24 @@ def _attach_subagent_details(
                 continue
 
             details = subagent_tool_calls[tool_call_id]
-            content["_toolCalls"] = details.get("toolCalls", [])
             content["_status"] = details.get("status")
             content["_summary"] = details.get("summary")
+            content["_fallbackText"] = details.get("fallbackText")
             content["_isError"] = details.get("isError", False)
             content["_timelineMessages"] = details.get("timelineMessages", [])
             content["_turns"] = details.get("turns")
             content["_maxTurns"] = details.get("maxTurns")
+
+
+def _attach_tool_errors(
+    messages: list[dict],
+    tool_errors: dict[str, bool],
+) -> None:
+    for message in messages:
+        if message.get("role") != "assistant":
+            continue
+
+        for content in message.get("content", []):
+            tool_call_id = content.get("id", "")
+            if content.get("type") == "toolCall" and tool_call_id in tool_errors:
+                content["isError"] = tool_errors[tool_call_id]

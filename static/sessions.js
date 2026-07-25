@@ -15,16 +15,23 @@ export function createSessionPanel({
   menuButton.addEventListener('click', open);
   closeButton.addEventListener('click', close);
   backdrop.addEventListener('click', close);
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && panel.classList.contains('active')) close();
+  });
 
   function open() {
     panel.classList.add('active');
     backdrop.classList.add('active');
+    panel.setAttribute('aria-hidden', 'false');
+    closeButton.focus();
     fetchSessions();
   }
 
   function close() {
     panel.classList.remove('active');
     backdrop.classList.remove('active');
+    panel.setAttribute('aria-hidden', 'true');
+    menuButton.focus();
   }
 
   async function fetchSessions() {

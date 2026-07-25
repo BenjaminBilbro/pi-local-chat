@@ -1,6 +1,27 @@
-import { renderHistoricalMessages } from './history.js';
+import {
+  renderAssistantRun,
+  renderHistoricalMessages,
+} from './history.js';
+import {
+  createSubagentCard,
+  firstText,
+  renderSubagentSnapshot,
+  subagentSnapshotFromResult,
+  updateStatus,
+} from './subagent.js';
+import {
+  appendTimelineItem,
+  createAssistantTimeline,
+  createErrorItem,
+  createTextItem,
+  createThinkingItem,
+  createToolItem,
+  setMarkdownContent,
+  setThinkingText,
+} from './timeline.js';
 import { escapeHtml } from './utils.js';
-import { createSubagentCard, addAssistantMessage, addToolCall, addSummary, updateTurnCount, updateStatus, parseReceipt, firstText } from './subagent.js';
+
+const PROMPT_START_GRACE_MS = 2_000;
 
 const messagesElement = document.getElementById('messages');
 const userInput = document.getElementById('user-input');
@@ -15,15 +36,16 @@ const waitingIndicator = document.getElementById('waiting-indicator');
 
 let sendCommand = () => false;
 let pendingImage = null;
-let assistantContainer = null;
 let timeline = null;
-let lastTimelineItem = null;
 let currentThinking = null;
 let currentText = null;
 let firstContentReceived = false;
-let lastSubagentUpdate = null;
+let isAgentRunning = false;
+let completedRunMessages = [];
+let promptStartTimer = null;
 
 const seenToolIds = new Set();
+const toolItems = new Map();
 const subagentTools = new Map();
 
 export function setupChat(options) {
@@ -45,82 +67,81 @@ export function setConnectionStatus(connected) {
   statusDot.className = connected
     ? 'status-dot connected'
     : 'status-dot';
+
+  if (!connected) {
+    isAgentRunning = false;
+    hideWaiting();
+    messagesElement.appendChild(waitingIndicator);
+    resetStreamingState();
+    updateSendButton();
+  }
 }
 
 export function handlePiEvent(event) {
-  const type = event.type;
-
-  if (type === 'agent_start') {
-    statusDot.className = 'status-dot thinking';
-    removeWelcome();
-    assistantContainer = createAssistantContainer();
-    timeline = document.createElement('div');
-    timeline.className = 'timeline';
-    assistantContainer.appendChild(timeline);
-    timeline.appendChild(waitingIndicator);
-    lastTimelineItem = null;
-    messagesElement.appendChild(assistantContainer);
-    showWaiting();
-  }
-
-  if (type === 'message_start') {
-    const message = event.message || {};
-    if (message.role === 'assistant') {
-      seenToolIds.clear();
-      currentThinking = null;
-      currentText = null;
-      firstContentReceived = false;
-    }
-  }
-
-  if (type === 'message_update') {
-    handleMessageUpdate(event.assistantMessageEvent || {});
-  }
-
-  if (type === 'tool_execution_start') {
-    handleToolStart(event);
-  }
-
-  if (type === 'tool_execution_update') {
-    if (event.toolName === 'subagent' && event.toolCallId) {
-      updateSubagentToolItem(event.toolCallId, event);
-    }
-  }
-
-  if (type === 'tool_execution_end') {
-    if (event.toolName === 'subagent' && event.toolCallId) {
-      finalizeSubagentToolItem(event.toolCallId, event);
-    }
-  }
-
-  if (type === 'message_end') {
-    handleMessageEnd(event.message || {});
-  }
-
-  if (type === 'agent_settled') {
-    finishAgentRun();
+  switch (event.type) {
+    case 'agent_start':
+      startAgentRun();
+      break;
+    case 'response':
+      handleResponse(event);
+      break;
+    case 'message_start':
+      startMessage(event.message || {});
+      break;
+    case 'message_update':
+      handleMessageUpdate(event.assistantMessageEvent || {});
+      break;
+    case 'tool_execution_start':
+      handleToolStart(event);
+      break;
+    case 'tool_execution_update':
+      if (event.toolName === 'subagent' && event.toolCallId) {
+        updateSubagentToolItem(event.toolCallId, event);
+      }
+      break;
+    case 'tool_execution_end':
+      handleToolEnd(event);
+      break;
+    case 'message_end':
+      finishMessage(event.message || {});
+      break;
+    case 'agent_end':
+      reconcileAgentRun(event.messages || []);
+      break;
+    case 'agent_settled':
+      finishAgentRun();
+      break;
   }
 }
 
 export function resetConversation() {
   clearConversation();
   resetStreamingState();
+  isAgentRunning = false;
 
   const welcome = document.createElement('div');
   welcome.className = 'welcome';
   welcome.innerHTML = '<h2>New Session</h2><p>Start a fresh conversation</p>';
   messagesElement.insertBefore(welcome, waitingIndicator);
-  sendButton.disabled = false;
+  updateSendButton();
 }
 
-export function loadHistoricalMessages(messages) {
-  if (!messages || messages.length === 0) return;
-
+export function loadHistoricalMessages(messages = []) {
   clearConversation();
   resetStreamingState();
-  renderHistoricalMessages(messages, messagesElement);
+  isAgentRunning = false;
+
+  if (messages.length > 0) {
+    renderHistoricalMessages(messages, messagesElement);
+  } else {
+    const welcome = document.createElement('div');
+    welcome.className = 'welcome';
+    welcome.innerHTML = '<h2>Empty Session</h2><p>Start a conversation</p>';
+    messagesElement.appendChild(welcome);
+  }
+
   messagesElement.appendChild(waitingIndicator);
-  sendButton.disabled = false;
+  updateSendButton();
 }
 
 export function showChatError(message) {
@@ -134,40 +155,160 @@ export function showChatError(message) {
   scrollToBottom();
 }
 
+function startAgentRun() {
+  const isRetry = Boolean(timeline);
+  if (isRetry) {
+    resetCycleState();
+  } else {
+    resetStreamingState();
+    timeline = createAssistantTimeline();
+    messagesElement.appendChild(timeline.container);
+  }
+
+  isAgentRunning = true;
+  statusDot.className = 'status-dot thinking';
+  removeWelcome();
+
+  timeline.element.appendChild(waitingIndicator);
+  showWaiting();
+  updateSendButton();
+}
+
+function handleResponse(event) {
+  if (event.command !== 'prompt') return;
+
+  if (event.success !== false) {
+    clearTimeout(promptStartTimer);
+    promptStartTimer = setTimeout(() => {
+      if (isAgentRunning && !timeline) {
+        isAgentRunning = false;
+        updateSendButton();
+      }
+    }, PROMPT_START_GRACE_MS);
+    return;
+  }
+
+  clearTimeout(promptStartTimer);
+  promptStartTimer = null;
+  isAgentRunning = false;
+  hideWaiting();
+  messagesElement.appendChild(waitingIndicator);
+  resetStreamingState();
+  updateSendButton();
+  showChatError(event.error || event.message || 'Prompt was rejected');
+}
+
+function startMessage(message) {
+  if (message.role !== 'assistant') return;
+  currentThinking = null;
+  currentText = null;
+  firstContentReceived = false;
+}
+
 function handleMessageUpdate(update) {
-  const updateType = update.type;
+  switch (update.type) {
+    case 'text_delta':
+      appendText(update.delta || '');
+      break;
+    case 'text_start':
+      currentText = null;
+      break;
+    case 'text_end':
+      finalizeText(update.content || '');
+      currentText = null;
+      break;
+    case 'thinking_delta':
+      appendThinking(update.delta || '');
+      break;
+    case 'thinking_start':
+      currentThinking = null;
+      break;
+    case 'thinking_end':
+      finalizeThinking(update.content || '');
+      currentThinking = null;
+      break;
+    case 'toolcall_end':
+      renderCompletedToolCall(update.toolCall || {});
+      break;
+  }
+}
 
-  if (updateType === 'text_delta') {
-    showFirstContent();
-    if (!currentText) {
-      if (lastTimelineItem) addConnector();
-      currentText = createTextItem();
-    }
-    appendText(currentText, update.delta);
+function appendText(delta) {
+  showFirstContent();
+  if (!currentText) {
+    currentText = {
+      element: createTextItem(),
+      rawText: '',
+    };
+    appendTimelineItem(timeline, currentText.element);
   }
 
-  if (updateType === 'text_end' && currentText) {
-    finalizeText(currentText, update.content);
+  currentText.rawText += delta;
+  setMarkdownContent(currentText.element, currentText.rawText);
+  scrollToBottom();
+}
+
+function finalizeText(completeText) {
+  if (!currentText && completeText) appendText(completeText);
+  if (!currentText || !completeText) return;
+
+  currentText.rawText = completeText;
+  setMarkdownContent(currentText.element, completeText);
+  scrollToBottom();
+}
+
+function appendThinking(delta) {
+  showFirstContent();
+  if (!currentThinking) {
+    currentThinking = {
+      element: createThinkingItem(),
+      rawText: '',
+    };
+    appendTimelineItem(timeline, currentThinking.element);
   }
 
-  if (updateType === 'thinking_delta') {
-    showFirstContent();
-    if (!currentThinking) {
-      if (lastTimelineItem) addConnector();
-      currentThinking = createThinkingItem();
-      timeline.appendChild(currentThinking.element);
-      lastTimelineItem = currentThinking.element;
-    }
-    appendThinking(currentThinking, update.delta);
+  currentThinking.rawText += delta;
+  setThinkingText(currentThinking.element, currentThinking.rawText);
+  scrollToBottom();
+}
+
+function finalizeThinking(completeText) {
+  if (!currentThinking && completeText) appendThinking(completeText);
+  if (!currentThinking || !completeText) return;
+
+  currentThinking.rawText = completeText;
+  setThinkingText(currentThinking.element, completeText);
+  scrollToBottom();
+}
+
+function renderCompletedToolCall(toolCall) {
+  const toolId = toolCall.id;
+  const toolName = toolCall.name;
+  if (!toolName || !toolId || seenToolIds.has(toolId)) return;
+
+  seenToolIds.add(toolId);
+  if (subagentTools.has(toolId)) return;
+
+  showFirstContent();
+  let item;
+
+  if (toolName === 'subagent') {
+    const arguments_ = toolCall.arguments || {};
+    const card = createSubagentCard(
+      arguments_.name || 'sub-agent',
+      arguments_.task || '',
+      { live: true },
+    );
+    item = card.element;
+    item.dataset.toolCallId = toolId;
+    subagentTools.set(toolId, { card });
+  } else {
+    item = createToolItem(toolName, toolCall.isError || false);
   }
 
-  if (updateType === 'thinking_end' && currentThinking) {
-    finalizeThinking(currentThinking, update.content);
-  }
-
-  if (updateType === 'toolcall_end') {
-    renderCompletedToolCall(update.toolCall || {});
-  }
+  appendTimelineItem(timeline, item);
+  toolItems.set(toolId, item);
+  scrollToBottom();
 }
 
 function handleToolStart(event) {
@@ -181,33 +322,108 @@ function handleToolStart(event) {
   }
 
   const arguments_ = event.args || {};
-  showFirstContent();
-  if (lastTimelineItem) addConnector();
-
   const card = createSubagentCard(
     arguments_.name || 'sub-agent',
     arguments_.task || '',
     { live: true },
   );
-  timeline.appendChild(card.element);
-  lastTimelineItem = card.element;
-  subagentTools.set(toolCallId, { card, lastMessageCount: 0 });
+  card.element.dataset.toolCallId = toolCallId;
+
+  showFirstContent();
+  appendTimelineItem(timeline, card.element);
+  subagentTools.set(toolCallId, { card });
+  toolItems.set(toolCallId, card.element);
   scrollToBottom();
 }
 
-function handleMessageEnd(message) {
-  if (message.role !== 'assistant') return;
+function handleToolEnd(event) {
+  const item = toolItems.get(event.toolCallId);
+  item?.classList.toggle('is-error', Boolean(event.isError));
 
-  if (currentText && !currentText.hasText && currentText.element.parentNode) {
-    currentText.element.remove();
-    if (
-      lastTimelineItem instanceof Element
-      && lastTimelineItem.previousElementSibling?.className === 'timeline-connector'
-    ) {
-      lastTimelineItem.previousElementSibling.remove();
-    }
+  if (event.toolName === 'subagent' && event.toolCallId) {
+    finalizeSubagentToolItem(event.toolCallId, event);
+  }
+}
+
+function updateSubagentToolItem(toolCallId, event) {
+  const state = subagentTools.get(toolCallId);
+  const result = event.partialResult?.details?.results?.[0];
+  if (!state || !result) return;
+
+  renderSubagentSnapshot(
+    state.card,
+    subagentSnapshotFromResult(
+      result,
+      event.partialResult?.content || [],
+      false,
+    ),
+  );
+
+  const statusText = firstText(event.partialResult?.content || []);
+  if (statusText) updateStatus(state.card.statusElement, statusText);
+  scrollToBottom();
+}
+
+function finalizeSubagentToolItem(toolCallId, event) {
+  const result = event.result?.details?.results?.[0] || {};
+  let state = subagentTools.get(toolCallId);
+
+  if (!state) {
+    const card = createSubagentCard(
+      result.agent || 'sub-agent',
+      result.task || '',
+      { live: true },
+    );
+    card.element.dataset.toolCallId = toolCallId;
+    showFirstContent();
+    appendTimelineItem(timeline, card.element);
+    state = { card };
+    subagentTools.set(toolCallId, state);
+    toolItems.set(toolCallId, card.element);
   }
 
+  const content = event.result?.content || [];
+  const snapshot = subagentSnapshotFromResult(
+    result,
+    content,
+    event.isError || false,
+  );
+  renderSubagentSnapshot(state.card, snapshot, { settled: true });
+
+  scrollToBottom();
+}
+
+function reconcileAgentRun(messages) {
+  if (!timeline || messages.length === 0) return;
+
+  const lastUserIndex = messages.reduce(
+    (latest, message, index) => message.role === 'user' ? index : latest,
+    -1,
+  );
+  const currentRun = messages.slice(lastUserIndex + 1);
+  if (!currentRun.some((message) => message.role === 'assistant')) return;
+
+  completedRunMessages = mergeRunMessages(
+    completedRunMessages,
+    currentRun,
+  );
+  const interaction = captureTimelineInteraction();
+  showFirstContent();
+  renderAssistantRun(
+    cloneMessages(completedRunMessages),
+    timeline,
+    { replace: true },
+  );
+  restoreTimelineInteraction(interaction);
+  scrollToBottom();
+}
+
+function finishMessage(message) {
+  if (message.role !== 'assistant') return;
+  if (message.stopReason === 'error' && message.errorMessage && timeline) {
+    appendTimelineItem(timeline, createErrorItem(message.errorMessage));
+    showFirstContent();
+  }
   currentThinking = null;
   currentText = null;
 }
@@ -216,215 +432,15 @@ function finishAgentRun() {
   setConnectionStatus(true);
   hideWaiting();
   messagesElement.appendChild(waitingIndicator);
-  sendButton.disabled = false;
+  isAgentRunning = false;
   resetStreamingState();
+  updateSendButton();
 }
 
 function showFirstContent() {
   if (firstContentReceived) return;
   firstContentReceived = true;
   hideWaiting();
-}
-
-function renderCompletedToolCall(toolCall) {
-  const toolId = toolCall.id;
-  const toolName = toolCall.name;
-  if (!toolName || !toolId || seenToolIds.has(toolId)) return;
-
-  seenToolIds.add(toolId);
-  showFirstContent();
-  if (lastTimelineItem) addConnector();
-
-  let tool;
-  if (toolName === 'subagent') {
-    if (subagentTools.has(toolId)) return;
-    const arguments_ = toolCall.arguments || {};
-    const card = createSubagentCard(
-      arguments_.name || 'sub-agent',
-      arguments_.task || '',
-      { live: true },
-    );
-    tool = card.element;
-    subagentTools.set(toolId, { card, lastMessageCount: 0 });
-  } else {
-    tool = createToolItem(toolName, toolCall.isError || false);
-  }
-
-  timeline.appendChild(tool);
-  lastTimelineItem = tool;
-  scrollToBottom();
-}
-
-function addConnector() {
-  const connector = document.createElement('div');
-  connector.className = 'timeline-connector';
-  timeline.appendChild(connector);
-  lastTimelineItem = connector;
-}
-
-function createAssistantContainer() {
-  const container = document.createElement('div');
-  container.className = 'message assistant';
-
-  const label = document.createElement('div');
-  label.className = 'message-label';
-  label.textContent = 'assistant';
-  container.appendChild(label);
-  return container;
-}
-
-function createThinkingItem() {
-  const element = document.createElement('div');
-  element.className = 'timeline-item thinking';
-  return { element, hasText: false, textElement: null };
-}
-
-function appendThinking(item, delta) {
-  if (!item.hasText) {
-    item.hasText = true;
-    item.textElement = document.createElement('span');
-    item.element.appendChild(item.textElement);
-  }
-  item.textElement.textContent += delta;
-  scrollToBottom();
-}
-
-function finalizeThinking(item, completeText) {
-  if (!completeText) return;
-  if (!item.textElement) {
-    item.textElement = document.createElement('span');
-    item.element.appendChild(item.textElement);
-  }
-  item.textElement.textContent = completeText;
-  scrollToBottom();
-}
-
-function createToolItem(toolName, isError = false) {
-  const element = document.createElement('div');
-  element.className = `timeline-item tool${isError ? ' is-error' : ''}`;
-
-  const name = document.createElement('span');
-  name.className = 'tool-name';
-  name.textContent = toolName;
-  element.appendChild(name);
-  return element;
-}
-
-function updateSubagentToolItem(toolCallId, event) {
-  const state = subagentTools.get(toolCallId);
-  if (!state) return;
-
-  const { card, lastMessageCount } = state;
-  const partial = event.partialResult || {};
-  const results = partial.details?.results || [];
-
-  if (results.length > 0) {
-    const result = results[0];
-    const messages = result.messages || [];
-
-    // Diff: only process NEW messages since last update
-    const newMessages = messages.slice(lastMessageCount || 0);
-    for (const msg of newMessages) {
-      if (msg.role !== 'assistant') continue;
-      const content = msg.content || [];
-      for (const item of content) {
-        if (item.type === 'text' && item.text) {
-          addAssistantMessage(card.timeline, item.text);
-        } else if (item.type === 'toolCall') {
-          const argsDesc = toolCallArgsDescription(item.arguments || {});
-          addToolCall(card.timeline, item.name, argsDesc, item.isError || false);
-        }
-      }
-    }
-    state.lastMessageCount = messages.length;
-
-    // Update turns
-    const usage = result.usage || {};
-    updateTurnCount(card.turnsElement, usage.turns || 0, result.maxTurnsLimit);
-
-    // Update status text
-    const statusText = firstText(partial.content || []);
-    if (statusText) updateStatus(card.statusElement, statusText);
-  }
-
-  scrollToBottom();
-}
-
-function finalizeSubagentToolItem(toolCallId, event) {
-  const state = subagentTools.get(toolCallId);
-  if (!state) return;
-
-  const { card } = state;
-  const content = event.result?.content || [];
-  const receipt = parseReceipt(content);
-
-  if (receipt && receipt.summary) {
-    addSummary(card.timeline, receipt.summary, receipt.status, event.isError || false);
-  } else {
-    const finalText = firstText(content);
-    if (finalText && !finalText.startsWith('PI_SUBAGENT_RECEIPT')) {
-      addAssistantMessage(card.timeline, finalText);
-    }
-  }
-
-  if (card.statusElement && event.isError) {
-    card.statusElement.classList.add('is-error');
-  }
-  lastSubagentUpdate = null;
-}
-
-function toolCallArgsDescription(arguments_) {
-  if (!arguments_ || typeof arguments_ !== 'object') return '';
-  for (const key of ['command', 'prompt', 'path', 'query', 'questions', 'url']) {
-    if (key in arguments_) {
-      return String(arguments_[key]).substring(0, 120);
-    }
-  }
-  if (arguments_.name) {
-    return `${arguments_.name}${arguments_.task ? ': ' + String(arguments_.task).substring(0, 80) : ''}`;
-  }
-  return JSON.stringify(arguments_).substring(0, 120);
-}
-
-function createTextItem() {
-  const element = document.createElement('div');
-  element.className = 'timeline-item text-bubble';
-  return {
-    element,
-    hasText: false,
-    contentElement: null,
-    rawText: '',
-  };
-}
-
-function appendText(item, text) {
-  if (!item.hasText) {
-    item.hasText = true;
-    timeline.appendChild(item.element);
-    lastTimelineItem = item.element;
-  }
-  item.rawText += text;
-  renderMarkdown(item);
-  scrollToBottom();
-}
-
-function finalizeText(item, completeText) {
-  if (!item.hasText || !completeText) return;
-  item.rawText = completeText;
-  renderMarkdown(item);
-  scrollToBottom();
-}
-
-function renderMarkdown(item) {
-  if (!item.contentElement) {
-    item.contentElement = document.createElement('div');
-    item.contentElement.className = 'markdown-content';
-    item.element.appendChild(item.contentElement);
-  }
-  item.contentElement.innerHTML = marked.parse(
-    item.rawText.replace(/\n+$/, ''),
-    { async: false },
-  );
 }
 
 function submitPrompt() {
@@ -447,8 +463,9 @@ function submitPrompt() {
   createUserMessage(text, imageData);
   userInput.value = '';
   userInput.style.height = 'auto';
-  sendButton.disabled = true;
+  isAgentRunning = true;
   clearPendingImage();
+  updateSendButton();
 }
 
 function createUserMessage(text, imageData) {
@@ -460,6 +477,13 @@ function createUserMessage(text, imageData) {
 
   const bubble = document.createElement('div');
   bubble.className = 'message-bubble';
+
+  if (text) {
+    const textElement = document.createElement('span');
+    textElement.textContent = text;
+    bubble.appendChild(textElement);
+  }
+
   if (imageData) {
     const image = document.createElement('img');
     image.className = 'user-image';
@@ -467,9 +491,6 @@ function createUserMessage(text, imageData) {
     bubble.appendChild(image);
   }
 
-  const textElement = document.createElement('span');
-  textElement.textContent = text;
-  bubble.appendChild(textElement);
   container.appendChild(bubble);
   messagesElement.appendChild(container);
   scrollToBottom();
@@ -516,8 +537,8 @@ function handleComposerKeydown(event) {
 }
 
 function updateSendButton() {
-  const hasText = userInput.value.trim().length > 0;
-  sendButton.disabled = !(hasText || pendingImage);
+  const hasContent = userInput.value.trim().length > 0 || pendingImage;
+  sendButton.disabled = isAgentRunning || !hasContent;
 }
 
 function clearConversation() {
@@ -529,15 +550,75 @@ function clearConversation() {
 }
 
 function resetStreamingState() {
-  assistantContainer = null;
+  clearTimeout(promptStartTimer);
+  promptStartTimer = null;
   timeline = null;
-  lastTimelineItem = null;
+  completedRunMessages = [];
+  resetCycleState();
+}
+
+function resetCycleState() {
   currentThinking = null;
   currentText = null;
   firstContentReceived = false;
-  lastSubagentUpdate = null;
   seenToolIds.clear();
+  toolItems.clear();
   subagentTools.clear();
+}
+
+function mergeRunMessages(completed, current) {
+  const previous = completed.map((message) => JSON.stringify(message));
+  const next = cloneMessages(current);
+  const nextKeys = next.map((message) => JSON.stringify(message));
+  let overlap = Math.min(previous.length, nextKeys.length);
+
+  while (
+    overlap > 0
+    && !previous
+      .slice(-overlap)
+      .every((message, index) => message === nextKeys[index])
+  ) {
+    overlap -= 1;
+  }
+
+  return [...completed, ...next.slice(overlap)];
+}
+
+function cloneMessages(messages) {
+  return JSON.parse(JSON.stringify(messages));
+}
+
+function captureTimelineInteraction() {
+  const collapsedIds = [];
+  let focusedId = '';
+
+  for (const card of timeline.element.querySelectorAll('[data-tool-call-id]')) {
+    const header = card.querySelector('.subagent-header');
+    if (header?.getAttribute('aria-expanded') === 'false') {
+      collapsedIds.push(card.dataset.toolCallId);
+    }
+    if (header && header.contains(document.activeElement)) {
+      focusedId = card.dataset.toolCallId;
+    }
+  }
+
+  return { collapsedIds, focusedId };
+}
+
+function restoreTimelineInteraction({ collapsedIds, focusedId }) {
+  for (const card of timeline.element.querySelectorAll('[data-tool-call-id]')) {
+    const id = card.dataset.toolCallId;
+    const header = card.querySelector('.subagent-header');
+    if (!header) continue;
+
+    if (
+      collapsedIds.includes(id)
+      && header.getAttribute('aria-expanded') === 'true'
+    ) {
+      header.click();
+    }
+    if (focusedId === id) header.focus();
+  }
 }
 
 function removeWelcome() {

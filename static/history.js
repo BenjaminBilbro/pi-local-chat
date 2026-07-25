@@ -1,15 +1,58 @@
-import { createSubagentCard, buildHistoricalTimeline } from './subagent.js';
+import {
+  createSubagentCard,
+  enrichToolCalls,
+  renderSubagentSnapshot,
+} from './subagent.js';
+import {
+  appendTimelineItem,
+  createAssistantTimeline,
+  createErrorItem,
+  createTextItem,
+  createThinkingItem,
+  createToolItem,
+  resetTimeline,
+} from './timeline.js';
 
+/**
+ * Render saved messages as user messages plus one assistant timeline per run.
+ * Tool-result records may sit between assistant turns, so only a new user
+ * message closes the current assistant run.
+ */
 export function renderHistoricalMessages(messages, messagesElement) {
+  enrichToolCalls(messages);
+  let assistantTimeline = null;
+
   for (const message of messages) {
     if (message.role === 'user') {
       renderUserMessage(message, messagesElement);
+      assistantTimeline = null;
     } else if (message.role === 'assistant') {
-      renderAssistantMessage(message, messagesElement);
+      removeWelcome(messagesElement);
+      if (!assistantTimeline) {
+        assistantTimeline = createAssistantTimeline();
+        messagesElement.appendChild(assistantTimeline.container);
+      }
+      renderAssistantMessage(message, assistantTimeline);
     }
   }
 
   messagesElement.scrollTop = messagesElement.scrollHeight;
+}
+
+/**
+ * Replace or extend one assistant timeline using completed messages.
+ * Live rendering calls this at agent_end so its settled DOM is identical to
+ * historical rendering.
+ */
+export function renderAssistantRun(messages, timeline, options = {}) {
+  if (options.replace) resetTimeline(timeline);
+  enrichToolCalls(messages);
+
+  for (const message of messages) {
+    if (message.role === 'assistant') {
+      renderAssistantMessage(message, timeline);
+    }
+  }
 }
 
 function renderUserMessage(message, messagesElement) {
@@ -21,14 +64,12 @@ function renderUserMessage(message, messagesElement) {
   const label = document.createElement('div');
   label.className = 'message-label';
   label.textContent = 'you';
-  container.appendChild(label);
 
   const bubble = document.createElement('div');
   bubble.className = 'message-bubble';
-  const content = message.content;
 
-  if (Array.isArray(content)) {
-    for (const item of content) {
+  if (Array.isArray(message.content)) {
+    for (const item of message.content) {
       if (item.type === 'image' && item.data) {
         const image = document.createElement('img');
         image.className = 'user-image';
@@ -40,120 +81,60 @@ function renderUserMessage(message, messagesElement) {
         bubble.appendChild(text);
       }
     }
-  } else if (typeof content === 'string') {
-    bubble.textContent = content;
+  } else if (typeof message.content === 'string') {
+    bubble.textContent = message.content;
   }
 
-  container.appendChild(bubble);
+  container.append(label, bubble);
   messagesElement.appendChild(container);
 }
 
-function renderAssistantMessage(message, messagesElement) {
-  removeWelcome(messagesElement);
-
-  const container = document.createElement('div');
-  container.className = 'message assistant';
-
-  const label = document.createElement('div');
-  label.className = 'message-label';
-  label.textContent = 'assistant';
-  container.appendChild(label);
-
+function renderAssistantMessage(message, timeline) {
   const content = message.content;
-  if (!content) return;
-
-  // Use the same timeline structure as live rendering
-  const timeline = document.createElement('div');
-  timeline.className = 'timeline';
-  let lastItem = null;
-
-  function addConnector() {
-    const connector = document.createElement('div');
-    connector.className = 'timeline-connector';
-    timeline.appendChild(connector);
-    lastItem = connector;
-  }
-
-  function addTimelineItem(element) {
-    if (lastItem) addConnector();
-    timeline.appendChild(element);
-    lastItem = element;
-  }
-
   if (Array.isArray(content)) {
     for (const item of content) {
+      let element = null;
+
       if (item.type === 'thinking' && item.thinking) {
-        const thinking = document.createElement('div');
-        thinking.className = 'timeline-item thinking';
-        const span = document.createElement('span');
-        span.textContent = item.thinking;
-        thinking.appendChild(span);
-        addTimelineItem(thinking);
+        element = createThinkingItem(item.thinking);
       } else if (item.type === 'toolCall' && item.name === 'subagent') {
-        renderSubagentTool(timeline, item);
+        element = createHistoricalSubagent(item);
       } else if (item.type === 'toolCall' && item.name) {
-        const tool = document.createElement('div');
-        tool.className = `timeline-item tool${item.isError ? ' is-error' : ''}`;
-        const name = document.createElement('span');
-        name.className = 'tool-name';
-        name.textContent = item.name;
-        tool.appendChild(name);
-        addTimelineItem(tool);
+        element = createToolItem(item.name, item.isError || false);
       } else if (item.type === 'text' && item.text) {
-        const textBubble = document.createElement('div');
-        textBubble.className = 'timeline-item text-bubble';
-        const md = document.createElement('div');
-        md.className = 'markdown-content';
-        md.innerHTML = marked.parse(item.text, { async: false });
-        textBubble.appendChild(md);
-        addTimelineItem(textBubble);
+        element = createTextItem(item.text);
       }
+
+      if (element) appendTimelineItem(timeline, element);
     }
-  } else if (typeof content === 'string') {
-    const textBubble = document.createElement('div');
-    textBubble.className = 'timeline-item text-bubble';
-    const md = document.createElement('div');
-    md.className = 'markdown-content';
-    md.innerHTML = marked.parse(content, { async: false });
-    textBubble.appendChild(md);
-    timeline.appendChild(textBubble);
+  } else if (typeof content === 'string' && content) {
+    appendTimelineItem(timeline, createTextItem(content));
   }
 
-  container.appendChild(timeline);
-  messagesElement.appendChild(container);
+  if (message.stopReason === 'error' && message.errorMessage) {
+    appendTimelineItem(timeline, createErrorItem(message.errorMessage));
+  }
 }
 
-function renderSubagentTool(timeline, toolCall) {
+function createHistoricalSubagent(toolCall) {
   const arguments_ = toolCall.arguments || {};
-  const agentName = arguments_.name || 'sub-agent';
-  const task = arguments_.task || '';
-  const summary = toolCall._summary || '';
-  const status = toolCall._status || '';
-  const isError = toolCall._isError || false;
-  const messages = toolCall._timelineMessages || [];
-  const turns = toolCall._turns;
-  const maxTurns = toolCall._maxTurns;
-
-  const card = createSubagentCard(agentName, task);
-
-  // Add connector before the card
-  const lastChild = timeline.lastElementChild;
-  if (lastChild && lastChild.className !== 'timeline-connector') {
-    const connector = document.createElement('div');
-    connector.className = 'timeline-connector';
-    timeline.appendChild(connector);
-  }
-  timeline.appendChild(card.element);
-
-  buildHistoricalTimeline(
-    card.timeline,
-    messages,
-    summary,
-    status,
-    isError,
-    turns,
-    maxTurns,
+  const card = createSubagentCard(
+    arguments_.name || 'sub-agent',
+    arguments_.task || '',
   );
+  if (toolCall.id) card.element.dataset.toolCallId = toolCall.id;
+
+  renderSubagentSnapshot(card, {
+    messages: toolCall._timelineMessages || [],
+    summary: toolCall._summary || '',
+    status: toolCall._status || '',
+    fallbackText: toolCall._fallbackText || '',
+    isError: toolCall._isError || false,
+    turns: toolCall._turns,
+    maxTurns: toolCall._maxTurns,
+  }, { settled: true });
+
+  return card.element;
 }
 
 function removeWelcome(messagesElement) {

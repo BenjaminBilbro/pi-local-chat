@@ -1,80 +1,103 @@
 /**
- * render_message.js
+ * Render production historical messages or live pi events in jsdom.
  *
- * Takes a JSON array of assistant messages on stdin, renders each one
- * using the existing history.js functions, and prints the HTML to stdout.
+ * Input:
+ *   {"mode":"history","messages":[...]}
+ *   {"mode":"live","events":[...]}
  *
- * Usage:
- *   echo '[{"role":"assistant","content":[...]}]' | node tests/render_message.js
+ * Output:
+ *   {"assistantHtml":["..."]}
  */
 
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { JSDOM } from 'jsdom';
-import { readFileSync } from 'fs';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
-// Create DOM
-const dom = new JSDOM(`<!DOCTYPE html><body><div id="messages"></div></body>`, {
-  url: 'http://localhost',
-  runScripts: 'dangerously',
-  resources: 'usable',
+const testsDirectory = dirname(fileURLToPath(import.meta.url));
+const projectRoot = join(testsDirectory, '..');
+const page = readFileSync(join(projectRoot, 'static/index.html'), 'utf8');
+const dom = new JSDOM(page, {
+  url: 'http://localhost/',
+  runScripts: 'outside-only',
 });
 
 const { window } = dom;
-const { document } = window;
+Object.assign(globalThis, {
+  window,
+  document: window.document,
+  Element: window.Element,
+  HTMLElement: window.HTMLElement,
+  Node: window.Node,
+});
 
-// Load marked via a script tag in the DOM
-const markedSrc = readFileSync(join(__dirname, '../static/marked.min.js'), 'utf-8');
-const markedScript = document.createElement('script');
-markedScript.textContent = markedSrc;
-document.head.appendChild(markedScript);
+window.eval(
+  readFileSync(join(projectRoot, 'static/marked.min.js'), 'utf8'),
+);
+globalThis.marked = window.marked;
+marked.setOptions({ breaks: true, gfm: true });
 
-// marked UMD sets itself on window.marked when module is not available
-// But in jsdom it may set module.exports instead. Copy to window.
-if (!window.marked && window.module && window.module.exports) {
-  window.marked = window.module.exports;
+let input = '';
+for await (const chunk of process.stdin) input += chunk;
+
+const payload = JSON.parse(input);
+const messagesElement = document.getElementById('messages');
+
+if (payload.mode === 'live') {
+  const {
+    handlePiEvent,
+    setConnectionStatus,
+    setupChat,
+  } = await import('../static/chat.js');
+
+  if (payload.submitText) {
+    setupChat({ sendCommand: () => true });
+    const input = document.getElementById('user-input');
+    input.value = payload.submitText;
+    input.dispatchEvent(new window.Event('input', { bubbles: true }));
+    document.getElementById('send-btn').click();
+  }
+
+  let interactionApplied = false;
+  for (const event of payload.events || []) {
+    if (
+      !interactionApplied
+      && payload.collapseBeforeEventType === event.type
+    ) {
+      const header = document.querySelector('.subagent-header');
+      header?.click();
+      header?.focus();
+      interactionApplied = true;
+    }
+    handlePiEvent(event);
+  }
+  if (payload.disconnect) setConnectionStatus(false);
+
+  if (payload.afterEventsComposerText) {
+    const input = document.getElementById('user-input');
+    input.value = payload.afterEventsComposerText;
+    input.dispatchEvent(new window.Event('input', { bubbles: true }));
+  }
+  if (payload.waitAfterEventsMs) {
+    await new Promise((resolve) => setTimeout(resolve, payload.waitAfterEventsMs));
+  }
+} else {
+  const { renderHistoricalMessages } = await import('../static/history.js');
+  messagesElement
+    .querySelectorAll('.message, .welcome')
+    .forEach((element) => element.remove());
+  renderHistoricalMessages(payload.messages || [], messagesElement);
 }
 
-window.marked.setOptions({ breaks: true, gfm: true });
+const assistantHtml = Array.from(
+  messagesElement.querySelectorAll('.message.assistant'),
+  (element) => element.outerHTML,
+);
 
-// Load history.js — strip 'export' so functions become global
-const historySrc = readFileSync(join(__dirname, '../static/history.js'), 'utf-8');
-const historyCode = historySrc.replace(/^export function /gm, 'function ');
-
-const historyScript = document.createElement('script');
-historyScript.textContent = historyCode;
-document.head.appendChild(historyScript);
-
-// Now the functions should be on window
-const { renderAssistantMessage } = window;
-if (typeof renderAssistantMessage !== 'function') {
-  console.error('renderAssistantMessage not found on window after loading history.js');
-  process.exit(1);
-}
-
-// Read messages from stdin
-let stdin = '';
-for await (const chunk of process.stdin) {
-  stdin += chunk;
-}
-
-const messages = JSON.parse(stdin);
-
-for (const msg of messages) {
-  if (msg.role !== 'assistant') continue;
-
-  // Create a fresh container for each message
-  const tempDiv = document.createElement('div');
-  tempDiv.id = 'messages';
-
-  renderAssistantMessage(msg, tempDiv);
-
-  // Output the inner HTML
-  let html = tempDiv.innerHTML;
-  console.log(`---MESSAGE---`);
-  console.log(html);
-  console.log(`---END---`);
-}
+process.stdout.write(JSON.stringify({
+  assistantHtml,
+  sendDisabled: document.getElementById('send-btn').disabled,
+  focusedToolCallId: document.activeElement
+    ?.closest?.('[data-tool-call-id]')
+    ?.dataset.toolCallId || '',
+}));

@@ -1,5 +1,13 @@
 {
-  "dependencies": {
+  "name": "pi-local-chat",
+  "private": true,
+  "engines": {
+    "node": "^20.19.0 || ^22.13.0 || >=24.0.0"
+  },
+  "scripts": {
+    "test": "python3 tests/compare_render.py"
+  },
+  "devDependencies": {
     "jsdom": "^29.1.1"
   },
   "type": "module"

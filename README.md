@@ -12,6 +12,9 @@ The application is intentionally designed for local, personal use.
 - [`uv`](https://docs.astral.sh/uv/)
 - A working `pi` executable available on your `PATH`
 
+The optional renderer-parity tests require a jsdom-supported Node.js release:
+20.19+, 22.13+, or 24+.
+
 ## Run locally
 
 Install the Python dependencies:
@@ -53,6 +56,8 @@ pi-local-chat/
 │   ├── socket.js       # WebSocket, heartbeat, and reconnect behavior
 │   ├── chat.js         # Composer and live event rendering
 │   ├── history.js      # Historical message rendering
+│   ├── timeline.js     # Shared timeline DOM primitives
+│   ├── subagent.js     # Shared sub-agent cards and result adapters
 │   ├── sessions.js     # Session drawer and load workflow
 │   ├── theme.js        # Persistent palette-role toggle
 │   ├── utils.js        # Browser-side formatting helpers
@@ -83,6 +88,13 @@ http://localhost:9000/?session=/absolute/path/to/session.jsonl
 Both native pi session files and the wrapped RPC capture format are supported.
 See `ARCHITECTURE.md` for the runtime flows and `TESTING.md` for the Camofox
 visual testing workflow.
+
+Run the non-visual live/history parity suite with:
+
+```bash
+npm ci
+npm test
+```
 
 ## Authentication
 
