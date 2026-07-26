@@ -8,6 +8,7 @@ import {
   setupChat,
   showChatError,
 } from './chat.js';
+import { setupPalette } from './palette.js';
 import { createSessionPanel } from './sessions.js';
 import { createSocket } from './socket.js';
 import { setupTheme } from './theme.js';
@@ -29,6 +30,34 @@ const sessions = createSessionPanel({
   onError: showChatError,
 });
 
+// Command palette actions
+window.__paletteActions = {
+  newSession: () => {
+    if (sendCommand({ type: 'new_session' })) {
+      resetConversation();
+    }
+  },
+  openSessions: () => {
+    document.getElementById('session-menu-btn')?.click();
+  },
+  toggleTheme: () => {
+    document.querySelector('#chat-screen [data-theme-toggle]')?.click();
+  },
+  focusComposer: () => {
+    focusComposer();
+  },
+  signOut: async () => {
+    socket.disconnect();
+    try {
+      await fetch('/api/logout', { method: 'POST' });
+    } finally {
+      location.reload();
+    }
+  },
+};
+
+setupPalette();
+
 socket = createSocket({
   onOpen: () => setConnectionStatus(true),
   onClose: () => setConnectionStatus(false),
@@ -37,18 +66,11 @@ socket = createSocket({
 });
 
 document.getElementById('new-session-btn').addEventListener('click', () => {
-  if (sendCommand({ type: 'new_session' })) {
-    resetConversation();
-  }
+  window.__paletteActions.newSession();
 });
 
-document.getElementById('logout-btn').addEventListener('click', async () => {
-  socket.disconnect();
-  try {
-    await fetch('/api/logout', { method: 'POST' });
-  } finally {
-    location.reload();
-  }
+document.getElementById('logout-btn').addEventListener('click', () => {
+  window.__paletteActions.signOut();
 });
 
 setupAuth(() => {

@@ -33,6 +33,30 @@
   </div>
 </div>
 
+<!-- Command Palette -->
+<div class="command-palette-backdrop" id="command-palette"></div>
+
+<!-- Shortcut Hint -->
+<div class="shortcut-hint" id="shortcut-hint">
+  <span>Press <kbd>Ctrl</kbd> <kbd>K</kbd> for commands</span>
+  <button class="shortcut-hint-dismiss" id="shortcut-hint-dismiss" type="button">&times;</button>
+</div>
+
+<!-- Command Palette Dialog -->
+<div class="command-palette" id="command-palette-dialog" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="command-palette-title">
+  <div class="command-palette-header">
+    <h3 id="command-palette-title">Commands</h3>
+  </div>
+  <input
+    type="text"
+    id="command-palette-search"
+    class="command-palette-search"
+    placeholder="Type a command..."
+    autocomplete="off"
+  />
+  <div class="command-palette-body" id="command-palette-list"></div>
+</div>
+
 <!-- Session Panel -->
 <div class="session-backdrop" id="session-backdrop"></div>
 <div class="session-panel" id="session-panel" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="session-panel-title">
