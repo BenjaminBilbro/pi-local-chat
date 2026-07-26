@@ -211,8 +211,8 @@
   }
 
   .status-dot {
-    width: 8px;
-    height: 8px;
+    width: 10px;
+    height: 10px;
     border-radius: 50%;
     background: var(--neutral);
     transition: background 0.3s;
@@ -453,7 +453,7 @@
 
   .input-wrapper textarea::placeholder {
     color: var(--text-dim);
-    opacity: 0.8;
+    opacity: 1;
   }
 
   .input-actions {
@@ -541,7 +541,7 @@
   /* Welcome */
   .welcome {
     text-align: center;
-    padding: 60px 20px;
+    padding: 30px 20px;
     color: var(--text-dim);
   }
 
@@ -894,8 +894,8 @@
   }
 
   .subagent-assistant-message {
-    font-size: 16px;
-    color: var(--text);
+    font-size: 14px;
+    color: var(--surface-text);
     line-height: 1.5;
     padding: 4px 0 4px 0;
     white-space: pre-wrap;
@@ -913,7 +913,7 @@
     gap: 6px;
     font-size: 11px;
     font-family: 'SF Mono', 'Fira Code', monospace;
-    color: var(--text-dim);
+    color: var(--surface-text-dim);
     padding: 3px 0;
   }
 
@@ -932,7 +932,7 @@
 
   .subagent-tool-name {
     font-weight: 600;
-    color: var(--detail);
+    color: var(--surface-detail);
     flex-shrink: 0;
   }
 
@@ -949,6 +949,7 @@
     padding: 8px 0 2px 0;
     font-size: 12px;
     line-height: 1.5;
+    color: var(--surface-text);
     white-space: pre-wrap;
     word-break: break-word;
   }
@@ -1049,9 +1050,23 @@
       height: 16px;
     }
 
+    .welcome {
+      padding: 20px 16px;
+      margin-top: 10vh;
+    }
+
+    .welcome h2 {
+      font-size: 18px;
+    }
+
+    .welcome p {
+      font-size: 13px;
+    }
+
     .messages {
       padding: 12px;
       gap: 12px;
+      min-height: 0;
     }
 
     .message-bubble {
@@ -1079,7 +1094,12 @@
     }
 
     .input-area {
-      padding: 10px 12px;
+      padding: 8px 12px;
+    }
+
+    .input-wrapper textarea::placeholder {
+      opacity: 1;
+      color: var(--page-text-dim);
     }
 
     .image-preview {
