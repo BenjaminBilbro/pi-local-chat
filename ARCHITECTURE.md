@@ -97,13 +97,16 @@ Sub-agent result fields map as follows:
 
 Always prefer the structured `receipt` object. Some older captures contain
 Python-style values such as `False` in the marker text, which is not valid
-JSON. `sessions.py` enriches historical sub-agent tool calls before returning
-only user and assistant messages; `subagent.js` performs the equivalent
-tool-result join for raw `agent_end` messages. Both adapters also join ordinary
-tool failure state by `toolCallId` before tool-result records are hidden. A
-receipt-less sub-agent result keeps its plain result text, and assistant
-messages with `stopReason: "error"` render `errorMessage` rather than an empty
-timeline.
+JSON. `sessions.py` returns raw messages (including `toolResult`) without
+sub-agent enrichment. `subagent.js` performs all sub-agent parsing via
+`enrichToolCalls()`, which joins `toolResult` records to their corresponding
+`toolCall` items and attaches `_timelineMessages`, `_status`, `_summary`,
+`_turns`, `_maxTurns`, and `_isError`. Both the historic and live paths use
+the same JS rendering modules (`history.js`, `chat.js`, `subagent.js`,
+`timeline.js`), so a completed run produces identical DOM regardless of
+source. A receipt-less sub-agent result keeps its plain result text, and
+assistant messages with `stopReason: "error"` render `errorMessage` rather
+than an empty timeline.
 
 A failed prompt `response` or WebSocket disconnect is terminal for the current
 browser-side run. `chat.js` clears the transient streaming state and unlocks
@@ -168,9 +171,10 @@ browser command is sent.
 4. `websocket.py` validates that the path belongs to the authenticated profile.
 5. The server sends `switch_session` and then `get_messages` to the existing
    pi subprocess.
-6. `sessions.py` normalizes the public list to user/assistant messages and
-   attaches completed sub-agent details.
-7. The browser receives `session_loaded`; `history.js` groups and renders runs.
+6. `sessions.py` extracts raw messages from the JSONL (user, assistant,
+   toolResult) without sub-agent enrichment.
+7. The browser receives `session_loaded`; `history.js` calls `enrichToolCalls`
+   to join `toolResult` records to `toolCall` items, then renders runs.
 
 ## Browser WebSocket protocol
 
@@ -215,6 +219,38 @@ Set `PI_CHAT_DEV=1` before starting the server. The historical messages are
 rendered without spawning pi, although normal browser authentication is still
 required.
 
+## Data flow
+
+### Historic path (loaded session)
+
+```
+JSONL file → Python (read + extract raw messages) → WebSocket → JS
+  → enrichToolCalls (join toolResult → toolCall) → history.js → HTML
+```
+
+Python's role is thin: auth, ownership validation, file I/O, and raw message
+extraction. All sub-agent parsing and rendering lives in JS.
+
+### Live path (pi RPC streaming)
+
+```
+pi subprocess → stdout events → Python (wrap as pi_event) → WebSocket → JS
+  → chat.js (incremental) → subagent.js (enrichment) → HTML
+```
+
+Live events bypass Python parsing entirely. The JS renderer handles both
+incremental streaming and final reconciliation from `agent_end` messages.
+
+### Debug endpoint
+
+```
+JSONL file → Python (read + extract) → Node subprocess → render_message.js
+  → same JS modules → HTML string → HTTP response
+```
+
+The debug endpoint reuses the production JS renderer via subprocess, so the
+HTML it returns is identical to what the browser renders. See `TESTING.md`.
+
 ## Where to make common changes
 
 - Browser/server commands: `pi_chat/websocket.py` and `static/app.js`
@@ -223,7 +259,7 @@ required.
 - Saved-message grouping: `static/history.js`
 - Shared timeline markup/connectors: `static/timeline.js`
 - Shared sub-agent normalization/cards: `static/subagent.js`
-- Session discovery and parsing: `pi_chat/sessions.py`
+- Session discovery and raw parsing: `pi_chat/sessions.py`
 - Login/session behavior: `pi_chat/auth.py`, `pi_chat/app.py`, and
   `static/auth.js`
 - Colors: `static/theme.css`

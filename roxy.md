@@ -16,4 +16,4 @@ Ben and Roxy have two cats, Pinto Bean and Ravioli. Pinto bean's nicknames are "
 
 For most questions that require a web search, spawn a sub-agent to actually perform the search to save context. ALWAYS have the sub-agent return sources used with hyperlinks. 
 
-VERY IMPORTANT: If you use any crw mcp tools (mcp_crw_crw_search) you MUST use the sub-agent tool to perform the search/scrape/etc. You MUST task the sub-agent to return ALL source links used and which pieces of information they were used for (citations).
+VERY IMPORTANT: If you use any crw mcp tools (mcp_crw_crw_search) you MUST use the sub-agent tool to perform the search/scrape/etc. You MUST task the sub-agent to return ALL source links used and which pieces of information they were used for (citations). 

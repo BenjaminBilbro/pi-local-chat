@@ -41,11 +41,11 @@ directory under `sessions/<profile>/`; pi's session history remains in
 ```text
 pi-local-chat/
 ├── pi_chat/
-│   ├── app.py          # FastAPI application and HTTP routes
+│   ├── app.py          # FastAPI application, HTTP routes, and debug endpoint
 │   ├── auth.py         # Password verification and browser sessions
 │   ├── config.py       # Shared paths and environment settings
 │   ├── process.py      # pi subprocess lifecycle and RPC responses
-│   ├── sessions.py     # Session discovery and JSONL parsing
+│   ├── sessions.py     # Session discovery and raw JSONL message extraction
 │   └── websocket.py    # Browser WebSocket command handling
 ├── static/
 │   ├── index.html      # Page structure
@@ -62,12 +62,15 @@ pi-local-chat/
 │   ├── theme.js        # Persistent palette-role toggle
 │   ├── utils.js        # Browser-side formatting helpers
 │   └── marked.min.js   # Vendored Markdown renderer
-├── server.py           # Backward-compatible launch entry point
-├── ARCHITECTURE.md     # Runtime flows, invariants, and component ownership
-├── TESTING.md          # Camofox visual testing and RPC capture workflow
-├── roxy.md             # Extra system prompt for the Roxy profile
-├── capture_rpc.py      # RPC event capture utility
-└── RPC_EVENT_FORMAT.md # Captured RPC event reference
+├── server.py               # Backward-compatible launch entry point
+├── test_historic_render.py # Standalone HTML preview generator for sessions
+├── ARCHITECTURE.md         # Runtime flows, invariants, and component ownership
+├── TESTING.md              # Camofox visual testing, debug endpoint, and RPC capture
+├── roxy.md                 # Extra system prompt for the Roxy profile
+├── capture_rpc.py          # RPC event capture utility
+├── capture_subagent_rpc.py # Sub-agent RPC capture utility
+├── capture_nested_subagent_rpc.py # Nested sub-agent RPC capture utility
+└── RPC_EVENT_FORMAT.md     # Captured RPC event reference
 ```
 
 ## Development session viewer

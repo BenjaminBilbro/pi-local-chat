@@ -1,11 +1,14 @@
 """FastAPI application factory for pi chat."""
 
 import asyncio
+import json
 import logging
+import subprocess
 from collections.abc import Callable
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request, Response, WebSocket
+from fastapi import FastAPI, HTTPException, Query, Request, Response, WebSocket
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -15,6 +18,7 @@ from .config import PROJECT_ROOT, STATIC_DIR
 from .process import PiProcess
 from .sessions import (
     list_sessions,
+    parse_jsonl_messages,
     preview_session,
     session_belongs_to_account,
 )
@@ -119,6 +123,44 @@ def create_app(
         ):
             raise HTTPException(status_code=404, detail="Session not found")
         return preview_session(session_path)
+
+    @application.get("/api/debug/session")
+    async def debug_session(
+        request: Request,
+        session_path: str = Query(..., description="Absolute path to session JSONL"),
+    ):
+        """Render a session through the full Python→JS pipeline for debugging."""
+        account = _require_account(request, auth)
+        if not session_belongs_to_account(
+            session_path,
+            PROJECT_ROOT,
+            account,
+        ):
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        messages = parse_jsonl_messages(session_path)
+        if messages is None:
+            raise HTTPException(status_code=400, detail="Failed to parse session file")
+
+        render_result = subprocess.run(
+            ["node", str(PROJECT_ROOT / "tests" / "render_message.js")],
+            input=json.dumps({"mode": "history", "messages": messages}),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if render_result.returncode != 0:
+            log.error("Debug render failed: %s", render_result.stderr)
+            raise HTTPException(
+                status_code=500, detail="Failed to render session"
+            )
+
+        rendered = json.loads(render_result.stdout)
+        return {
+            "messageCount": len(messages),
+            "messages": messages,
+            "assistantHtml": rendered.get("assistantHtml", []),
+        }
 
     @application.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket):
