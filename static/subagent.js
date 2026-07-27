@@ -1,6 +1,70 @@
 import { setMarkdownContent } from './timeline.js';
 
 /**
+ * Human-readable prefix map for MCP CRW tool names.
+ * Each entry is an array of phrases; one is picked randomly per render.
+ */
+const TOOL_NAME_MAP = {
+  mcp_crw_crw_search: [
+    'Searching for',
+    'Looking into',
+    'Querying the web for',
+  ],
+  mcp_crw_crw_scrape: [
+    'Scraping page',
+    'Fetching page content',
+    'Pulling page data',
+  ],
+  mcp_crw_crw_crawl: [
+    'Crawling site',
+    'Spidering URLs',
+    'Crawling the site',
+  ],
+  mcp_crw_crw_check_crawl_status: [
+    'Checking crawl progress',
+    'Polling crawl status',
+  ],
+  mcp_crw_crw_map: [
+    'Mapping site URLs',
+    'Discovering pages',
+    'Enumerating URLs',
+  ],
+  mcp_crw_crw_extract: [
+    'Extracting structured data',
+    'Pulling structured info',
+    'Extracting JSON from pages',
+  ],
+  mcp_crw_crw_check_extract_status: [
+    'Checking extraction progress',
+    'Polling extraction status',
+  ],
+  mcp_crw_crw_cancel_extract: [
+    'Cancelling extraction',
+    'Stopping extraction job',
+  ],
+  mcp_crw_crw_parse_file: [
+    'Parsing PDF',
+    'Extracting text from PDF',
+  ],
+  submit_result: [
+    'Wrapping up',
+    'Summarizing',
+  ],
+};
+
+function getToolDisplayName(toolName) {
+  const phrases = TOOL_NAME_MAP[toolName];
+  if (!phrases) return toolName;
+  // Deterministic selection based on tool name so live and historic match.
+  let hash = 0;
+  for (let i = 0; i < toolName.length; i++) {
+    hash = ((hash << 5) - hash) + toolName.charCodeAt(i);
+    hash |= 0;
+  }
+  return phrases[Math.abs(hash) % phrases.length];
+}
+
+/**
  * Create the shared live/historical sub-agent card shell.
  */
 export function createSubagentCard(agentName, task, options = {}) {
@@ -33,6 +97,8 @@ export function createSubagentCard(agentName, task, options = {}) {
   chevron.textContent = '▼';
   chevron.setAttribute('aria-hidden', 'true');
 
+  const spinner = live ? createSpinnerElement() : null;
+  if (spinner) header.appendChild(spinner);
   header.append(name, taskElement, chevron);
 
   const body = document.createElement('div');
@@ -64,6 +130,7 @@ export function createSubagentCard(agentName, task, options = {}) {
     statusElement,
     turnsElement,
     chevron,
+    spinner,
   };
 }
 
@@ -72,6 +139,13 @@ function createLiveStatusElement() {
   element.className = 'subagent-status';
   element.textContent = '(running...)';
   return element;
+}
+
+function createSpinnerElement() {
+  const spinner = document.createElement('span');
+  spinner.className = 'subagent-spinner';
+  spinner.setAttribute('aria-hidden', 'true');
+  return spinner;
 }
 
 export function addAssistantMessage(timeline, text) {
@@ -96,9 +170,11 @@ export function addToolCall(
   icon.className = 'subagent-tool-icon';
   icon.textContent = isError ? '✗' : '✓';
 
+  const displayName = getToolDisplayName(toolName);
   const name = document.createElement('span');
   name.className = 'subagent-tool-name';
-  name.textContent = toolName;
+  name.textContent = displayName;
+  name.dataset.toolName = toolName;
   item.append(icon, name);
 
   if (argsDescription) {
@@ -115,7 +191,7 @@ export function addSummary(timeline, summary, status, isError = false) {
   if (!summary && !status) return;
 
   const item = document.createElement('div');
-  item.className = 'timeline-item subagent-summary';
+  item.className = 'timeline-item subagent-summary collapsed';
 
   if (status) {
     const badge = document.createElement('span');
@@ -124,7 +200,33 @@ export function addSummary(timeline, summary, status, isError = false) {
     item.appendChild(badge);
   }
 
-  if (summary) setMarkdownContent(item, summary);
+  const content = document.createElement('div');
+  content.className = 'subagent-summary-content';
+  if (summary) setMarkdownContent(content, summary);
+  item.appendChild(content);
+
+  const toggle = document.createElement('button');
+  toggle.className = 'subagent-summary-toggle';
+  toggle.type = 'button';
+  toggle.setAttribute('aria-expanded', 'false');
+  toggle.textContent = 'Show summary';
+  item.appendChild(toggle);
+
+  item.addEventListener('click', (event) => {
+    // Don't toggle if the click was on the toggle button itself.
+    if (event.target === toggle || toggle.contains(event.target)) return;
+    const isExpanded = item.classList.toggle('collapsed');
+    toggle.setAttribute('aria-expanded', String(!isExpanded));
+    toggle.textContent = isExpanded ? 'Show summary' : 'Hide summary';
+  });
+
+  toggle.addEventListener('click', (event) => {
+    event.stopPropagation();
+    const isExpanded = item.classList.toggle('collapsed');
+    toggle.setAttribute('aria-expanded', String(!isExpanded));
+    toggle.textContent = isExpanded ? 'Show summary' : 'Hide summary';
+  });
+
   timeline.appendChild(item);
 }
 
@@ -168,6 +270,7 @@ export function renderSubagentSnapshot(card, snapshot, options = {}) {
     if (fallbackText) addAssistantMessage(card.timeline, fallbackText);
     addSummary(card.timeline, summary, status, isError);
     card.statusElement?.remove();
+    card.spinner?.remove();
   }
 }
 
@@ -181,7 +284,7 @@ function renderSubagentMessages(timeline, messages) {
     for (const item of message.content || []) {
       if (item.type === 'text' && item.text) {
         addAssistantMessage(timeline, item.text);
-      } else if (item.type === 'toolCall' && item.name) {
+      } else if (item.type === 'toolCall' && item.name && item.name !== 'agent_status') {
         addToolCall(
           timeline,
           item.name,

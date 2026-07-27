@@ -180,6 +180,16 @@ def _summarize_session(
         return None
 
 
+def _first_text(content):
+    """Extract the first text string from a message content array."""
+    if not isinstance(content, list):
+        return ""
+    for item in content:
+        if isinstance(item, dict) and item.get("type") == "text" and item.get("text"):
+            return item["text"]
+    return ""
+
+
 def _message_summary(lines: list[str], preview_limit: int) -> tuple[str, int]:
     first_message = ""
     message_count = 0

@@ -590,6 +590,7 @@ function cloneMessages(messages) {
 
 function captureTimelineInteraction() {
   const collapsedIds = [];
+  const collapsedSummaries = [];
   let focusedId = '';
 
   for (const card of timeline.element.querySelectorAll('[data-tool-call-id]')) {
@@ -600,12 +601,16 @@ function captureTimelineInteraction() {
     if (header && header.contains(document.activeElement)) {
       focusedId = card.dataset.toolCallId;
     }
+    const summary = card.querySelector('.subagent-summary');
+    if (summary?.classList.contains('collapsed')) {
+      collapsedSummaries.push(card.dataset.toolCallId);
+    }
   }
 
-  return { collapsedIds, focusedId };
+  return { collapsedIds, collapsedSummaries, focusedId };
 }
 
-function restoreTimelineInteraction({ collapsedIds, focusedId }) {
+function restoreTimelineInteraction({ collapsedIds, collapsedSummaries, focusedId }) {
   for (const card of timeline.element.querySelectorAll('[data-tool-call-id]')) {
     const id = card.dataset.toolCallId;
     const header = card.querySelector('.subagent-header');
@@ -618,6 +623,14 @@ function restoreTimelineInteraction({ collapsedIds, focusedId }) {
       header.click();
     }
     if (focusedId === id) header.focus();
+
+    if (collapsedSummaries.includes(id)) {
+      const summary = card.querySelector('.subagent-summary');
+      const toggle = summary?.querySelector('.subagent-summary-toggle');
+      if (summary && !summary.classList.contains('collapsed') && toggle) {
+        toggle.click();
+      }
+    }
   }
 }
 

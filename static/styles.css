@@ -857,6 +857,16 @@
 
   .subagent-chevron.open { transform: rotate(180deg); }
 
+  .subagent-spinner {
+    width: 10px;
+    height: 10px;
+    border: 2px solid var(--surface2);
+    border-top-color: var(--detail);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    flex-shrink: 0;
+  }
+
   .subagent-body {
     display: none;
     padding: 0 12px 10px 12px;
@@ -952,7 +962,46 @@
     color: var(--surface-text);
     white-space: pre-wrap;
     word-break: break-word;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.15s;
   }
+
+  .subagent-summary:hover {
+    background: var(--surface2);
+  }
+
+  .subagent-summary.collapsed .subagent-summary-content {
+    display: none;
+  }
+
+  .subagent-summary-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    background: none;
+    border: none;
+    color: var(--detail);
+    font: inherit;
+    font-size: 11px;
+    cursor: pointer;
+    padding: 2px 4px;
+    margin-left: 6px;
+    border-radius: 4px;
+    transition: background 0.15s, color 0.15s;
+  }
+
+  .subagent-summary-toggle:hover {
+    background: rgba(0,0,0,0.1);
+    color: var(--text);
+  }
+
+  .subagent-summary-toggle::before {
+    content: '▶';
+    font-size: 8px;
+  }
+
+
 
   .subagent-summary-status {
     display: inline-block;
