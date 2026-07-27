@@ -60,7 +60,13 @@ export function setupChat(options) {
 }
 
 export function focusComposer() {
-  userInput.focus();
+  const isTouchOnly = window.matchMedia?.(
+    '(hover: none) and (pointer: coarse)',
+  ).matches;
+
+  if (!isTouchOnly) {
+    userInput.focus({ preventScroll: true });
+  }
 }
 
 export function setConnectionStatus(connected) {
