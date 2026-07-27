@@ -70,10 +70,11 @@ function showHint() {
 
     hint.classList.add('active');
     const dismiss = hint.querySelector('#shortcut-hint-dismiss');
-    dismiss?.addEventListener('click', () => {
+    const dismissHandler = () => {
       hint.classList.remove('active');
       try { localStorage.setItem(STORAGE_KEY_SHORTCUT_HINT, 'dismissed'); } catch {}
-    });
+    };
+    dismiss?.addEventListener('click', dismissHandler);
 
     setTimeout(() => hint.classList.remove('active'), 4000);
   }, HINT_DELAY_MS);
@@ -107,7 +108,7 @@ function handleGlobalKeyDown(event) {
   }
 
   // Global shortcuts when palette is closed
-  const isMac = navigator.platform.toUpperCase().includes('MAC');
+  const isMac = navigator.userAgentData?.platform === 'macOS' || navigator.platform.toUpperCase().includes('MAC');
   const modifier = isMac ? event.metaKey : event.ctrlKey;
 
   // Ctrl+K / Cmd+K — open palette
@@ -234,12 +235,7 @@ function updateSelection() {
 function navigate(direction) {
   if (filteredCommands.length === 0) return;
 
-  if (selectedIndex < 0 && direction < 0) {
-    selectedIndex = filteredCommands.length - 1;
-  } else {
-    selectedIndex += direction;
-  }
-
+  selectedIndex += direction;
   if (selectedIndex < 0) selectedIndex = filteredCommands.length - 1;
   if (selectedIndex >= filteredCommands.length) selectedIndex = 0;
 

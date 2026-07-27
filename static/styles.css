@@ -1008,6 +1008,12 @@
 
   /* ── Command Palette ─────────────────────────────────────────────── */
 
+  .command-palette-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 199;
+  }
+
   .command-palette {
     position: fixed;
     top: 80px;
