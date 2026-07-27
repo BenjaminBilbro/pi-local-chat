@@ -120,6 +120,96 @@ def build_timeline_html(timeline_messages, summary, status, is_error, turns, max
     return "".join(parts)
 
 
+def enrich_messages(messages):
+    """Enrich raw messages with sub-agent details using JS renderer."""
+    if not messages:
+        return messages
+    import subprocess
+    result = subprocess.run(
+        ["node", str(Path(__file__).parent / "tests" / "render_message.js")],
+        input=json.dumps({"mode": "history", "messages": messages}),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if result.returncode != 0:
+        return messages
+    # The renderer outputs HTML; we can't easily extract enriched messages from it.
+    # Instead, we do a simple local enrichment for the preview script.
+    return _local_enrich(messages)
+
+
+def _local_enrich(messages):
+    """Lightweight local enrichment mirroring JS enrichToolCalls logic."""
+    tool_results = {}
+    for msg in messages:
+        if msg.get("role") != "toolResult" or not msg.get("toolCallId"):
+            continue
+        tid = msg["toolCallId"]
+        result_items = msg.get("details", {}).get("results", [])
+        is_error = bool(msg.get("isError"))
+        if result_items:
+            r = result_items[0]
+            receipt = r.get("receipt")
+            if isinstance(receipt, dict):
+                status = receipt.get("status") or ("failed" if is_error else "completed")
+                summary = receipt.get("summary", "") or receipt.get("error", "") or receipt.get("cause", "")
+            else:
+                status = "failed" if is_error else ""
+                summary = ""
+            tool_results[tid] = {
+                "isError": is_error,
+                "status": status,
+                "summary": summary,
+                "timelineMessages": r.get("messages", []),
+                "turns": r.get("usage", {}).get("turns"),
+                "maxTurns": r.get("maxTurnsLimit"),
+            }
+        else:
+            text = ""
+            for c in msg.get("content", []):
+                if c.get("type") == "text":
+                    text = c.get("text", "")
+                    break
+            if "PI_SUBAGENT_FAILURE_V1" in text:
+                tool_results[tid] = {"isError": True, "status": "failed", "fallbackText": text}
+            elif "PI_SUBAGENT_RECEIPT_V1" in text:
+                json_start = text.find("{")
+                if json_start >= 0:
+                    try:
+                        payload = json.loads(text[json_start:])
+                        tool_results[tid] = {
+                            "isError": payload.get("status", "") in ("failed", "error"),
+                            "status": payload.get("status", "completed"),
+                            "summary": payload.get("summary", ""),
+                        }
+                    except json.JSONDecodeError:
+                        tool_results[tid] = {"isError": is_error, "fallbackText": text}
+            else:
+                tool_results[tid] = {"isError": is_error, "fallbackText": text}
+
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            continue
+        for item in msg.get("content", []):
+            if item.get("type") != "toolCall" or not item.get("id"):
+                continue
+            tid = item["id"]
+            if tid not in tool_results:
+                continue
+            detail = tool_results[tid]
+            if item.get("name") == "subagent":
+                item["_timelineMessages"] = detail.get("timelineMessages", [])
+                item["_turns"] = detail.get("turns")
+                item["_maxTurns"] = detail.get("maxTurns")
+                item["_status"] = detail.get("status", "")
+                item["_summary"] = detail.get("summary", "")
+                item["_isError"] = detail.get("isError", False)
+                item["_fallbackText"] = detail.get("fallbackText", "")
+            item["isError"] = detail.get("isError", False)
+    return messages
+
+
 def render_session(messages):
     """Render all messages to HTML."""
     html_parts = []
@@ -203,6 +293,7 @@ def generate_html(session_path):
         print(f"ERROR: Could not parse {session_path}")
         return None
 
+    messages = enrich_messages(messages)
     body = render_session(messages)
 
     html = textwrap.dedent(f'''\

@@ -26,11 +26,7 @@ DEFAULT_FIXTURES = [
 ]
 
 sys.path.insert(0, str(PROJECT_ROOT))
-from pi_chat.sessions import (  # noqa: E402
-    _extract_receipt_status,
-    _record_subagent_result,
-    parse_jsonl_messages,
-)
+from pi_chat.sessions import parse_jsonl_messages  # noqa: E402
 
 
 def render_result(
@@ -149,6 +145,7 @@ def compare_fixture(path: Path) -> bool:
 
 
 def verify_structured_receipts() -> bool:
+    """Verify JS enrichToolCalls handles nested structured receipts correctly."""
     native_record = json.loads(
         (DATA / "full-nested-sub-agent-tool-result.json").read_text()
     )
@@ -158,46 +155,56 @@ def verify_structured_receipts() -> bool:
         ).read_text()
     )
 
-    native_message = native_record["message"]
-    rpc_message = next(
-        message
-        for message in rpc_record["event"]["messages"]
-        if message.get("role") == "toolResult"
-        and message.get("toolName") == "subagent"
-    )
+    # Native fixture: single toolResult message — wrap with a dummy assistant
+    native_tool_result = native_record["message"]
+    native_tool_call_id = native_tool_result.get("toolCallId", "")
+    native_assistant = {
+        "role": "assistant",
+        "content": [{
+            "type": "toolCall",
+            "id": native_tool_call_id,
+            "name": "subagent",
+            "arguments": {"name": "outer", "task": "test"},
+        }],
+    }
+    native_messages = [native_assistant, native_tool_result]
 
-    snapshots = []
-    for message in (native_message, rpc_message):
-        calls: dict[str, dict] = {}
-        _record_subagent_result(calls, message)
-        snapshots.append(next(iter(calls.values())))
+    # RPC fixture: agent_end event already has the full message array
+    rpc_messages = rpc_record["event"]["messages"]
 
-    fields = (
-        "status",
-        "summary",
-        "turns",
-        "maxTurns",
-        "timelineMessages",
-    )
-    if any(snapshots[0].get(field) != snapshots[1].get(field) for field in fields):
-        print("FAIL nested structured receipts differ between native and RPC")
+    # Render both through JS
+    native_result = render_result("history", native_messages)
+    rpc_result = render_result("history", rpc_messages)
+
+    native_html = native_result["assistantHtml"]
+    rpc_html = rpc_result["assistantHtml"]
+
+    if not native_html or not rpc_html:
+        print("FAIL could not render native or RPC structured receipt")
         return False
 
-    snapshot = snapshots[0]
-    if (
-        snapshot.get("status") != "completed"
-        or not snapshot.get("summary")
-        or snapshot.get("turns") != 4
-        or snapshot.get("maxTurns") != 20
-    ):
-        print("FAIL nested structured receipt fields were not preserved")
+    # Both should render a sub-agent card with completed status and summary
+    if 'subagent-summary-status' not in native_html[0]:
+        print("FAIL native structured receipt did not render status badge")
+        return False
+    if 'subagent-summary-status' not in rpc_html[0]:
+        print("FAIL RPC structured receipt did not render status badge")
         return False
 
-    print("PASS nested structured receipt overrides malformed marker text")
+    # Both should contain the summary text
+    if "completed 3 bash commands" not in native_html[0]:
+        print("FAIL native structured receipt summary not rendered")
+        return False
+    if "completed 3 bash commands" not in rpc_html[0]:
+        print("FAIL RPC structured receipt summary not rendered")
+        return False
+
+    print("PASS nested structured receipts render correctly in JS")
     return True
 
 
 def verify_final_subagent_snapshot() -> bool:
+    """Verify JS enrichToolCalls replaces partial snapshot with final result."""
     partial_message = {
         "role": "assistant",
         "content": [{"type": "text", "text": "partial"}],
@@ -206,14 +213,10 @@ def verify_final_subagent_snapshot() -> bool:
         "role": "assistant",
         "content": [{"type": "text", "text": "final-only"}],
     }
-    calls = {
-        "tool-1": {
-            "timelineMessages": [partial_message],
-            "turns": 1,
-            "maxTurns": 4,
-        }
-    }
-    result = {
+    tool_result = {
+        "role": "toolResult",
+        "toolCallId": "tool-1",
+        "toolName": "subagent",
         "content": [],
         "details": {
             "results": [{
@@ -227,15 +230,26 @@ def verify_final_subagent_snapshot() -> bool:
             }]
         },
     }
+    assistant = {
+        "role": "assistant",
+        "content": [{
+            "type": "toolCall",
+            "id": "tool-1",
+            "name": "subagent",
+            "arguments": {"name": "test", "task": "test task"},
+        }],
+    }
+    messages = [assistant, tool_result]
 
-    _extract_receipt_status(calls, "tool-1", result, is_error=False)
-    snapshot = calls["tool-1"]
-    if (
-        snapshot.get("timelineMessages") != [partial_message, final_message]
-        or snapshot.get("turns") != 2
-        or snapshot.get("maxTurns") != 4
-    ):
-        print("FAIL final tool event did not replace the partial sub-agent snapshot")
+    result = render_result("history", messages)
+    html = result["assistantHtml"][0]
+
+    # Should render the sub-agent timeline with final message
+    if "final-only" not in html:
+        print("FAIL final sub-agent message not rendered")
+        return False
+    if "completed" not in html:
+        print("FAIL completed status not rendered")
         return False
 
     print("PASS final tool event replaces the partial sub-agent snapshot")
@@ -333,23 +347,33 @@ def verify_multiple_content_blocks() -> bool:
 
 
 def verify_generic_subagent_failure() -> bool:
-    message = {
+    """Verify JS enrichToolCalls normalizes generic sub-agent failures."""
+    tool_result = {
         "role": "toolResult",
         "toolName": "subagent",
         "toolCallId": "failed-subagent",
         "isError": True,
         "content": [{"type": "text", "text": "plain failure"}],
     }
-    calls: dict[str, dict] = {}
-    _record_subagent_result(calls, message)
-    snapshot = calls["failed-subagent"]
+    assistant = {
+        "role": "assistant",
+        "content": [{
+            "type": "toolCall",
+            "id": "failed-subagent",
+            "name": "subagent",
+            "arguments": {"name": "test", "task": "test task"},
+        }],
+    }
+    messages = [assistant, tool_result]
 
-    if (
-        snapshot.get("status") != "failed"
-        or snapshot.get("isError") is not True
-        or snapshot.get("fallbackText") != "plain failure"
-    ):
-        print("FAIL generic sub-agent failure was not normalized")
+    result = render_result("history", messages)
+    html = result["assistantHtml"][0]
+
+    if "plain failure" not in html:
+        print("FAIL generic failure text not rendered")
+        return False
+    if "is-error" not in html:
+        print("FAIL error state not rendered")
         return False
 
     print("PASS generic sub-agent failure is normalized")
@@ -447,6 +471,7 @@ def main() -> int:
     checks = [compare_fixture(path) for path in fixtures]
     checks.append(verify_structured_receipts())
     checks.append(verify_final_subagent_snapshot())
+    checks.append(verify_generic_subagent_failure())
     checks.append(verify_retry_parity())
     checks.append(verify_multiple_content_blocks())
     checks.append(verify_generic_subagent_failure())

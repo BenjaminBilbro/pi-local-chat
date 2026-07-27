@@ -324,6 +324,69 @@ mv -i subagent_rpc_capture.jsonl data-samples/
 To create a different scenario, edit the `prompts` list in `capture_rpc.py` or
 the `prompt` value in `capture_subagent_rpc.py`, then regenerate the file.
 
+## Debug endpoint
+
+The `/api/debug/session` endpoint renders a session through the full
+Python→JS pipeline and returns both raw messages and final HTML. It reuses
+the same `render_message.js` harness that `npm test` uses, so the output is
+identical to what the browser renders.
+
+Start the server (same as the Camofox test setup):
+
+```bash
+cd "$PI_CHAT_ROOT"
+
+PI_CHAT_TEST_HASH="$(
+  uv run python -c \
+    "from pi_chat.auth import hash_password; print(hash_password('test-only'))"
+)"
+
+PI_CHAT_DEV=1 \
+PI_CHAT_B_PASSWORD_HASH="$PI_CHAT_TEST_HASH" \
+uv run python server.py > /tmp/pi-chat.log 2>&1 &
+
+PI_CHAT_SERVER_PID=$!
+```
+
+Login to get a cookie:
+
+```bash
+curl -fsS -X POST "$PI_CHAT_URL/api/login" \
+  -H 'Content-Type: application/json' \
+  -d '{"account":"b","password":"test-only"}' \
+  -c /tmp/pi-chat-cookies.txt
+```
+
+Call the debug endpoint with an absolute session path:
+
+```bash
+curl -fsS -b /tmp/pi-chat-cookies.txt \
+  "$PI_CHAT_URL/api/debug/session?session_path=/absolute/path/to/session.jsonl" \
+  | python3 -m json.tool
+```
+
+Response shape:
+
+```json
+{
+  "messageCount": 6,
+  "messages": [...],
+  "assistantHtml": ["<div class=\"message assistant\">...", ...]
+}
+```
+
+The `assistantHtml` array contains one HTML string per assistant run, with
+sub-agent cards fully rendered (tool calls, status, summary, turns). This is
+the fastest way to inspect what a session will look like without opening a
+browser.
+
+**Why it exists:** Before consolidating sub-agent parsing from Python into JS,
+debugging required either opening Camofox or manually tracing JSONL by hand.
+Now you can query any session and get the exact rendered HTML in seconds.
+
+**What it does not do:** It does not spawn a `pi` subprocess, and it does not
+execute live events. It only renders saved sessions through the historic path.
+
 ## Fast non-visual checks
 
 Run these before opening Camofox:
