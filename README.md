@@ -1,170 +1,96 @@
 # pi chat
 
-A small, local web interface for running the `pi` coding agent in RPC mode. It
-provides two local profiles, streaming chat output, image attachments, session
-history, Markdown rendering, and visual handling for sub-agent activity.
+A small, local web interface for running the `pi` coding agent in RPC mode.
+Streaming chat, image attachments, session history, Markdown rendering, and
+sub-agent activity cards.
 
-The application is intentionally designed for local, personal use.
+Intentionally designed for local, personal use.
+
+**For LLMs working on this repo:** read `AGENTS.md` first. It is the single
+source of truth for architecture, testing, RPC format, and development patterns.
 
 ## Requirements
 
 - Python 3.12 or newer
 - [`uv`](https://docs.astral.sh/uv/)
-- A working `pi` executable available on your `PATH`
+- A working `pi` executable on your `PATH`
 
-The optional renderer-parity tests require a jsdom-supported Node.js release:
-20.19+, 22.13+, or 24+.
+Optional: Node.js 20.19+, 22.13+, or 24+ for the renderer-parity tests.
 
 ## Run locally
 
-Install the Python dependencies:
-
 ```bash
 uv sync
-```
-
-Start the server:
-
-```bash
 uv run python server.py
 ```
 
-Then open [http://localhost:9000](http://localhost:9000).
-
-The server starts a `pi --mode rpc --approve` subprocess only after a profile
-has been selected and the first prompt is submitted. Each profile gets a work
-directory under `sessions/<profile>/`; pi's session history remains in
-`~/.pi/agent/sessions/` and is filtered by that work directory.
-
-## Project structure
-
-```text
-pi-local-chat/
-├── pi_chat/
-│   ├── app.py          # FastAPI application, HTTP routes, and debug endpoint
-│   ├── auth.py         # Password verification and browser sessions
-│   ├── config.py       # Shared paths and environment settings
-│   ├── process.py      # pi subprocess lifecycle and RPC responses
-│   ├── sessions.py     # Session discovery and raw JSONL message extraction
-│   └── websocket.py    # Browser WebSocket command handling
-├── static/
-│   ├── index.html      # Page structure
-│   ├── theme.css       # Color palette and shared design tokens
-│   ├── styles.css      # Component and responsive styles
-│   ├── app.js          # Frontend composition and message routing
-│   ├── auth.js         # Local profile selection
-│   ├── socket.js       # WebSocket, heartbeat, and reconnect behavior
-│   ├── chat.js         # Composer and live event rendering
-│   ├── history.js      # Historical message rendering
-│   ├── timeline.js     # Shared timeline DOM primitives
-│   ├── subagent.js     # Shared sub-agent cards and result adapters
-│   ├── sessions.js     # Session drawer and load workflow
-│   ├── theme.js        # Persistent palette-role toggle
-│   ├── utils.js        # Browser-side formatting helpers
-│   └── marked.min.js   # Vendored Markdown renderer
-├── server.py               # Backward-compatible launch entry point
-├── test_historic_render.py # Standalone HTML preview generator for sessions
-├── ARCHITECTURE.md         # Runtime flows, invariants, and component ownership
-├── TESTING.md              # Camofox visual testing, debug endpoint, and RPC capture
-├── roxy.md                 # Extra system prompt for the Roxy profile
-├── capture_rpc.py          # RPC event capture utility
-├── capture_subagent_rpc.py # Sub-agent RPC capture utility
-├── capture_nested_subagent_rpc.py # Nested sub-agent RPC capture utility
-└── RPC_EVENT_FORMAT.md     # Captured RPC event reference
-```
-
-## Development session viewer
-
-Set `PI_CHAT_DEV` to load a saved JSONL session directly in the browser without
-starting a `pi` subprocess:
-
-```bash
-PI_CHAT_DEV=1 uv run python server.py
-```
-
-Then visit:
-
-```text
-http://localhost:9000/?session=/absolute/path/to/session.jsonl
-```
-
-Both native pi session files and the wrapped RPC capture format are supported.
-See `ARCHITECTURE.md` for the runtime flows and `TESTING.md` for the Camofox
-visual testing workflow.
-
-Run the non-visual live/history parity suite with:
-
-```bash
-npm ci
-npm test
-```
+Open [http://localhost:9000](http://localhost:9000). Select a profile, log in,
+and start chatting. The `pi` subprocess starts on your first prompt.
 
 ## Authentication
 
-Profile passwords are verified by FastAPI. After a successful login, the
-browser receives an HTTP-only session cookie; password hashes and session
-tokens are not available to browser JavaScript. Sessions expire after seven
-days by default and are cleared whenever the server restarts.
+Profile passwords are verified by FastAPI. After login, the browser receives an
+HTTP-only session cookie; passwords and tokens are not exposed to JavaScript.
+Sessions expire after seven days by default and are cleared on server restart.
 
-The original profile passwords continue to work through legacy server-side
-hashes. Before exposing the app through a public hostname, create new salted
-scrypt hashes:
+For local use, the default profile passwords work out of the box. Before
+exposing the app publicly, generate new salted scrypt hashes:
 
 ```bash
 uv run python -m pi_chat.auth
 ```
 
-Set the generated values in the server environment:
+Then set them in the server environment:
 
 ```bash
 export PI_CHAT_B_PASSWORD_HASH='scrypt$...'
 export PI_CHAT_R_PASSWORD_HASH='scrypt$...'
 ```
 
-Use `PI_CHAT_SESSION_TTL` to override the cookie lifetime in seconds.
+## Multiple users
+
+Each WebSocket connection gets its own `pi` subprocess. Simultaneous users do
+not share streaming state. Session history is separated by profile.
+
+## Theme
+
+Soft periwinkle and Lavender Blush. The theme toggle swaps their roles — one
+becomes the page background, the other becomes panels and message surfaces.
+Your choice is saved locally in the browser.
 
 ## Cloudflare Tunnel
 
-When `cloudflared` runs on the same computer as pi chat, the app can listen only
-on the loopback interface:
+When `cloudflared` runs on the same machine, listen only on loopback:
 
 ```bash
 uv run uvicorn server:app --host 127.0.0.1 --port 9000
 ```
 
-Point the tunnel service URL at `http://127.0.0.1:9000`. This keeps port 9000
-unreachable directly from other computers while still allowing the local
-`cloudflared` process to proxy requests.
+Point the tunnel at `http://127.0.0.1:9000` and use Cloudflare Access to
+control who can reach the login page.
 
-A tunnel publishes connectivity; use a Cloudflare Access self-hosted
-application with an allow policy for the two or three approved email addresses
-to control who can reach the login page.
+## Development
 
-## Multiple users
+### Parity tests
 
-Each authenticated WebSocket connection gets its own `pi` subprocess, so
-simultaneous users do not share streaming state or overwrite each other's
-browser connection. Session history remains separated by profile work
-directory. With two or three users, this in-process design is sufficient as
-long as the machine and model backend can handle the concurrent agent requests.
+```bash
+npm test
+```
 
-The subprocess is created lazily on the connection's first prompt and stays
-alive for that WebSocket. Starting a new chat uses pi's `new_session` RPC
-command instead of replacing the subprocess. A small browser heartbeat keeps
-idle proxied WebSockets active; a browser disconnect, sign-out, or server
-shutdown still ends its subprocess.
+### RPC capture
 
-## Theme
+```bash
+uv run python tools/capture.py --scenario general
+uv run python tools/capture.py --scenario subagent
+uv run python tools/capture.py --prompt "custom prompt"
+```
 
-The palette lives in `static/theme.css`. The interface currently uses soft
-periwinkle `#9CA2D1` and Lavender Blush `#FFF2F2`. The theme toggle swaps their
-roles: one becomes the full-page background while the other becomes headers,
-panels, inputs, buttons, and message surfaces. Foreground tokens also invert to
-keep text and icons readable in both modes. The selected theme is saved locally
-in the browser.
+### Session viewer
 
-## Capture utilities
+```bash
+PI_CHAT_DEV=1 uv run python server.py
+# Visit: http://localhost:9000/?session=/path/to/session.jsonl
+```
 
-`capture_rpc.py` records a short general RPC interaction, while
-`capture_subagent_rpc.py` records a sub-agent-oriented interaction. These are
-development utilities and invoke the local `pi` executable directly.
+For full technical details (architecture, RPC events, testing, rendering
+contract), see `AGENTS.md`.

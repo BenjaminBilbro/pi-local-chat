@@ -35,7 +35,7 @@ def render_result(
     **options: object,
 ) -> dict:
     result = subprocess.run(
-        ["node", str(PROJECT_ROOT / "tests" / "render_message.js")],
+        ["node", str(PROJECT_ROOT / "tools" / "render_message.js")],
         input=json.dumps(
             {
                 "mode": mode,

@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .auth import AuthManager, COOKIE_NAME
-from .config import PROJECT_ROOT, STATIC_DIR
+from .config import DEV_MODE, PROJECT_ROOT, STATIC_DIR
 from .process import PiProcess
 from .sessions import (
     list_sessions,
@@ -131,7 +131,7 @@ def create_app(
     ):
         """Render a session through the full Python→JS pipeline for debugging."""
         account = _require_account(request, auth)
-        if not session_belongs_to_account(
+        if not DEV_MODE and not session_belongs_to_account(
             session_path,
             PROJECT_ROOT,
             account,
@@ -143,7 +143,7 @@ def create_app(
             raise HTTPException(status_code=400, detail="Failed to parse session file")
 
         render_result = subprocess.run(
-            ["node", str(PROJECT_ROOT / "tests" / "render_message.js")],
+            ["node", str(PROJECT_ROOT / "tools" / "render_message.js")],
             input=json.dumps({"mode": "history", "messages": messages}),
             capture_output=True,
             text=True,
