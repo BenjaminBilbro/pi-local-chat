@@ -514,8 +514,8 @@
   .send-btn:hover { filter: brightness(1.15); }
   .send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
-  /* Image preview */
-  .image-preview {
+  /* Attachment preview */
+  .attachment-preview {
     display: none;
     padding: 8px 20px;
     max-width: 720px;
@@ -523,38 +523,84 @@
     width: 100%;
   }
 
-  .image-preview.active { display: block; }
+  .attachment-preview.active { display: block; }
 
-  .image-preview-inner {
+  .attachment-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .attachment-item {
     position: relative;
-    display: inline-block;
-  }
-
-  .image-preview img {
-    height: 60px;
-    border-radius: 8px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    background: var(--surface);
     border: 1px solid var(--surface2);
+    border-radius: 8px;
+    font-size: 12px;
   }
 
-  .image-preview .remove-image {
+  .attachment-item img {
+    height: 40px;
+    border-radius: 4px;
+  }
+
+  .attachment-icon {
+    font-size: 16px;
+    line-height: 1;
+  }
+
+  .attachment-name {
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 150px;
+  }
+
+  .attachment-size {
+    color: var(--text-dim);
+    font-size: 11px;
+    margin-left: 4px;
+  }
+
+  .attachment-remove {
     position: absolute;
     top: -6px;
     right: -6px;
     background: var(--surface2);
     border: none;
     color: var(--surface-text);
-    width: 18px;
-    height: 18px;
+    width: 16px;
+    height: 16px;
     border-radius: 50%;
     cursor: pointer;
-    font-size: 11px;
+    font-size: 10px;
     display: flex;
     align-items: center;
     justify-content: center;
+    line-height: 1;
+    padding: 0;
+  }
+
+  /* File badge in user message */
+  .message-bubble .file-badge {
+    display: inline-block;
+    margin-top: 8px;
+    padding: 4px 10px;
+    background: var(--surface);
+    border: 1px solid var(--surface2);
+    border-radius: 6px;
+    font-size: 12px;
+    color: var(--text);
+    white-space: nowrap;
   }
 
   /* Hidden file input */
-  #image-input { display: none; }
+  #file-input { display: none; }
 
   /* Welcome */
   .welcome {
@@ -1170,7 +1216,11 @@
       color: var(--page-text-dim);
     }
 
-    .image-preview {
+    .attachment-preview {
       padding: 8px 12px;
+    }
+
+    .attachment-name {
+      max-width: 100px;
     }
   }

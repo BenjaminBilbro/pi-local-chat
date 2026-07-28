@@ -8,6 +8,10 @@ STATIC_DIR = PROJECT_ROOT / "static"
 DEV_MODE = os.environ.get("PI_CHAT_DEV", "").lower() in {"1", "true", "yes"}
 SESSION_TTL_SECONDS = int(os.environ.get("PI_CHAT_SESSION_TTL", 7 * 24 * 60 * 60))
 
+# Directory for uploaded file storage (PDFs, etc.)
+UPLOAD_DIR = Path.home() / ".pi-chat" / "uploads"
+UPLOAD_TTL_SECONDS = 3600  # Clean up files older than 1 hour
+
 # Legacy defaults preserve the existing profile passwords while moving their
 # verification off the client. Override these with scrypt hashes before
 # exposing the app outside the local machine.

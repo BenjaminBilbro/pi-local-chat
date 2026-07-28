@@ -1,13 +1,18 @@
 """WebSocket command handling between the browser and pi RPC."""
 
 import asyncio
+import base64
+import glob
 import json
 import logging
+import os
+import time
 import uuid
+from pathlib import Path
 
 from fastapi import WebSocket, WebSocketDisconnect
 
-from .config import DEV_MODE
+from .config import DEV_MODE, UPLOAD_DIR, UPLOAD_TTL_SECONDS
 from .process import PiProcess
 from .sessions import parse_jsonl_messages, session_belongs_to_account
 
@@ -102,6 +107,66 @@ async def _dispatch_command(
         await _get_messages(websocket, pi)
 
 
+def _cleanup_old_uploads() -> None:
+    """Remove uploaded files older than UPLOAD_TTL_SECONDS."""
+    if not UPLOAD_DIR.exists():
+        return
+    now = time.time()
+    for filepath in glob.glob(str(UPLOAD_DIR / "*")):
+        try:
+            stat = os.stat(filepath)
+            if now - stat.st_mtime > UPLOAD_TTL_SECONDS:
+                os.remove(filepath)
+                log.debug("Cleaned up old upload: %s", filepath)
+        except OSError:
+            pass
+
+
+def _save_uploaded_file(name: str, data: str, mimeType: str) -> str:
+    """Save a base64-encoded file to the upload directory. Returns the path."""
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    _cleanup_old_uploads()
+
+    # Generate a unique filename preserving the extension
+    ext = "" 
+    if "." in name:
+        ext = name.rsplit(".", 1)[1]
+    filename = f"{uuid.uuid4().hex}.{ext}"
+    filepath = UPLOAD_DIR / filename
+
+    file_bytes = base64.b64decode(data)
+    filepath.write_bytes(file_bytes)
+    log.info("Saved upload: %s (%d bytes)", filepath, len(file_bytes))
+    return str(filepath)
+
+
+async def _process_files(prompt_text: str, files: list[dict]) -> str:
+    """Process attached files and return updated prompt text.
+
+    - TXT files: content is embedded directly in the message.
+    - PDF files: saved to disk and path is referenced in the message.
+    """
+    file_refs = []
+    for file_obj in files:
+        file_type = file_obj.get("type", "txt")
+        name = file_obj.get("name", "unnamed")
+        data = file_obj.get("data", "")
+
+        if file_type == "txt":
+            # Embed text content directly (data is the raw text string)
+            file_refs.append(
+                f'<file name="{name}">\n{data}\n</file>'
+            )
+        elif file_type == "pdf":
+            # Save PDF to disk and reference the path
+            filepath = _save_uploaded_file(name, data, file_obj.get("mimeType", "application/pdf"))
+            file_refs.append(f"Attached file: `{filepath}`")
+
+    if file_refs:
+        prompt_text = prompt_text + "\n\n" + "\n\n".join(file_refs)
+    return prompt_text
+
+
 async def _handle_prompt(
     websocket: WebSocket,
     pi: PiProcess,
@@ -110,9 +175,15 @@ async def _handle_prompt(
     if not pi.proc:
         await _start_session(websocket, pi)
 
+    prompt_text = message["message"]
+
+    # Process attached files (TXT: embed content, PDF: save to disk)
+    if "files" in message:
+        prompt_text = await _process_files(prompt_text, message["files"])
+
     payload = {
         "type": "prompt",
-        "message": message["message"],
+        "message": prompt_text,
     }
     if "images" in message:
         payload["images"] = [

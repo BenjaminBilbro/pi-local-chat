@@ -27,15 +27,14 @@ const messagesElement = document.getElementById('messages');
 const userInput = document.getElementById('user-input');
 const sendButton = document.getElementById('send-btn');
 const statusDot = document.getElementById('status-dot');
-const imageInput = document.getElementById('image-input');
+const fileInput = document.getElementById('file-input');
 const attachButton = document.getElementById('attach-btn');
-const imagePreview = document.getElementById('image-preview');
-const previewImage = document.getElementById('preview-img');
-const removeImageButton = document.getElementById('remove-image');
+const attachmentPreview = document.getElementById('attachment-preview');
+const attachmentList = document.getElementById('attachment-list');
 const waitingIndicator = document.getElementById('waiting-indicator');
 
 let sendCommand = () => false;
-let pendingImage = null;
+let pendingFiles = [];
 let timeline = null;
 let currentThinking = null;
 let currentText = null;
@@ -51,9 +50,8 @@ const subagentTools = new Map();
 export function setupChat(options) {
   sendCommand = options.sendCommand;
 
-  attachButton.addEventListener('click', () => imageInput.click());
-  imageInput.addEventListener('change', handleImageSelection);
-  removeImageButton.addEventListener('click', clearPendingImage);
+  attachButton.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', handleFileSelection);
   userInput.addEventListener('input', handleComposerInput);
   userInput.addEventListener('keydown', handleComposerKeydown);
   sendButton.addEventListener('click', submitPrompt);
@@ -451,30 +449,40 @@ function showFirstContent() {
 
 function submitPrompt() {
   const text = userInput.value.trim();
-  if (!text && !pendingImage) return;
+  if (!text && pendingFiles.length === 0) return;
 
   const command = { type: 'prompt', message: text };
-  if (pendingImage) {
-    command.images = [{
+
+  // Separate images and files
+  const imageFiles = pendingFiles.filter((f) => f.type === 'image');
+  const nonImageFiles = pendingFiles.filter((f) => f.type !== 'image');
+
+  if (imageFiles.length > 0) {
+    command.images = imageFiles.map((f) => ({
       type: 'image',
-      data: pendingImage.data,
-      mimeType: pendingImage.mimeType,
-    }];
+      data: f.data,
+      mimeType: f.mimeType,
+    }));
+  }
+  if (nonImageFiles.length > 0) {
+    command.files = nonImageFiles.map((f) => ({
+      name: f.name,
+      data: f.data,
+      mimeType: f.mimeType,
+      type: f.type,
+    }));
   }
   if (!sendCommand(command)) return;
 
-  const imageData = pendingImage
-    ? `data:${pendingImage.mimeType};base64,${pendingImage.data}`
-    : null;
-  createUserMessage(text, imageData);
+  createUserMessage(text, pendingFiles);
   userInput.value = '';
   userInput.style.height = 'auto';
   isAgentRunning = true;
-  clearPendingImage();
+  clearPendingFiles();
   updateSendButton();
 }
 
-function createUserMessage(text, imageData) {
+function createUserMessage(text, files) {
   removeWelcome();
 
   const container = document.createElement('div');
@@ -490,11 +498,19 @@ function createUserMessage(text, imageData) {
     bubble.appendChild(textElement);
   }
 
-  if (imageData) {
-    const image = document.createElement('img');
-    image.className = 'user-image';
-    image.src = imageData;
-    bubble.appendChild(image);
+  for (const file of files) {
+    if (file.type === 'image') {
+      const image = document.createElement('img');
+      image.className = 'user-image';
+      image.src = `data:${file.mimeType};base64,${file.data}`;
+      bubble.appendChild(image);
+    } else {
+      const badge = document.createElement('span');
+      badge.className = 'file-badge';
+      const icon = file.type === 'pdf' ? '\ud83d\udcc4' : '\ud83d\udcc2';
+      badge.textContent = `${icon} ${file.name}`;
+      bubble.appendChild(badge);
+    }
   }
 
   container.appendChild(bubble);
@@ -502,30 +518,121 @@ function createUserMessage(text, imageData) {
   scrollToBottom();
 }
 
-function handleImageSelection(event) {
-  const file = event.target.files[0];
-  if (!file) return;
+function handleFileSelection(event) {
+  const files = Array.from(event.target.files);
+  if (files.length === 0) return;
 
-  const reader = new FileReader();
-  reader.onload = (loadEvent) => {
-    const rawImage = loadEvent.target.result;
-    const separator = rawImage.indexOf(',');
-    pendingImage = {
-      data: rawImage.substring(separator + 1),
-      mimeType: file.type,
+  let loaded = 0;
+  const total = files.length;
+
+  for (const file of files) {
+    const reader = new FileReader();
+    const fileType = getFileType(file.type, file.name);
+
+    reader.onload = (loadEvent) => {
+      let data;
+      let mimeType = file.type;
+
+      if (fileType === 'image') {
+        const raw = loadEvent.target.result;
+        const separator = raw.indexOf(',');
+        data = raw.substring(separator + 1);
+      } else if (fileType === 'txt') {
+        data = loadEvent.target.result; // raw text
+      } else {
+        // PDF - base64
+        const raw = loadEvent.target.result;
+        const separator = raw.indexOf(',');
+        data = raw.substring(separator + 1);
+      }
+
+      pendingFiles.push({
+        file,
+        data,
+        mimeType,
+        type: fileType,
+        name: file.name,
+        size: file.size,
+      });
+
+      loaded += 1;
+      if (loaded === total) {
+        renderAttachmentPreview();
+        updateSendButton();
+      }
     };
-    previewImage.src = rawImage;
-    imagePreview.classList.add('active');
-    updateSendButton();
-  };
-  reader.readAsDataURL(file);
-  imageInput.value = '';
+
+    if (fileType === 'txt') {
+      reader.readAsText(file);
+    } else {
+      reader.readAsDataURL(file);
+    }
+  }
+
+  fileInput.value = '';
 }
 
-function clearPendingImage() {
-  pendingImage = null;
-  imagePreview.classList.remove('active');
-  previewImage.src = '';
+function getFileType(mimeType, filename) {
+  if (mimeType.startsWith('image/')) return 'image';
+  if (mimeType === 'application/pdf' || filename.endsWith('.pdf')) return 'pdf';
+  if (mimeType.startsWith('text/') || filename.endsWith('.txt')) return 'txt';
+  return 'txt'; // fallback
+}
+
+function renderAttachmentPreview() {
+  attachmentList.innerHTML = '';
+
+  if (pendingFiles.length === 0) {
+    attachmentPreview.classList.remove('active');
+    return;
+  }
+
+  attachmentPreview.classList.add('active');
+
+  for (let i = 0; i < pendingFiles.length; i++) {
+    const file = pendingFiles[i];
+    const item = document.createElement('div');
+    item.className = 'attachment-item';
+
+    if (file.type === 'image') {
+      item.innerHTML = `
+        <img src="data:${file.mimeType};base64,${file.data}" alt="${escapeAttr(file.name)}">
+        <span class="attachment-name">${escapeHtml(file.name)}</span>
+        <button class="attachment-remove" type="button" aria-label="Remove ${escapeAttr(file.name)}">&times;</button>
+      `;
+    } else {
+      const icon = file.type === 'pdf' ? '\ud83d\udcc4' : '\ud83d\udcc2';
+      const size = formatFileSize(file.size);
+      item.innerHTML = `
+        <span class="attachment-icon">${icon}</span>
+        <span class="attachment-name">${escapeHtml(file.name)} <span class="attachment-size">${size}</span></span>
+        <button class="attachment-remove" type="button" aria-label="Remove ${escapeAttr(file.name)}">&times;</button>
+      `;
+    }
+
+    item.querySelector('.attachment-remove').addEventListener('click', () => {
+      pendingFiles.splice(i, 1);
+      renderAttachmentPreview();
+      updateSendButton();
+    });
+
+    attachmentList.appendChild(item);
+  }
+}
+
+function formatFileSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+function escapeAttr(str) {
+  return str.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function clearPendingFiles() {
+  pendingFiles = [];
+  renderAttachmentPreview();
   updateSendButton();
 }
 
@@ -543,7 +650,7 @@ function handleComposerKeydown(event) {
 }
 
 function updateSendButton() {
-  const hasContent = userInput.value.trim().length > 0 || pendingImage;
+  const hasContent = userInput.value.trim().length > 0 || pendingFiles.length > 0;
   sendButton.disabled = isAgentRunning || !hasContent;
 }
 
