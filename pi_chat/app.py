@@ -1,6 +1,7 @@
 """FastAPI application factory for pi chat."""
 
 import asyncio
+import io
 import json
 import logging
 import subprocess
@@ -8,7 +9,7 @@ from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query, Request, Response, WebSocket
+from fastapi import FastAPI, HTTPException, Query, Request, Response, UploadFile, WebSocket
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -22,6 +23,8 @@ from .sessions import (
     preview_session,
     session_belongs_to_account,
 )
+import pdfplumber
+
 from .websocket import handle_websocket
 
 logging.basicConfig(
@@ -123,6 +126,63 @@ def create_app(
         ):
             raise HTTPException(status_code=404, detail="Session not found")
         return preview_session(session_path)
+
+    @application.post("/api/upload-file")
+    async def upload_file(request: Request, file: UploadFile):
+        _require_account(request, auth)
+
+        filename = file.filename or ""
+        if not filename:
+            raise HTTPException(status_code=400, detail="No file provided")
+
+        # Validate file extension
+        ext = Path(filename).suffix.lower()
+        if ext not in (".pdf", ".txt"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported file type: {ext}. Only .pdf and .txt are allowed.",
+            )
+
+        # Read file content and check size
+        content_bytes = await file.read()
+        max_size = 5 * 1024 * 1024  # 5MB
+        if len(content_bytes) > max_size:
+            raise HTTPException(
+                status_code=413,
+                detail="File too large. Maximum size is 5MB.",
+            )
+
+        # Extract text based on file type
+        if ext == ".txt":
+            try:
+                text = content_bytes.decode("utf-8")
+            except UnicodeDecodeError:
+                raise HTTPException(
+                    status_code=400,
+                    detail="File is not valid UTF-8 text.",
+                )
+            mime_type = "text/plain"
+        else:  # .pdf
+            try:
+                text = ""
+                with pdfplumber.open(io.BytesIO(content_bytes)) as pdf:
+                    for page in pdf.pages:
+                        page_text = page.extract_text()
+                        if page_text:
+                            text += page_text + "\n"
+            except Exception as error:
+                log.error("PDF extraction failed: %s", error)
+                raise HTTPException(
+                    status_code=400,
+                    detail="Failed to extract text from PDF.",
+                )
+            mime_type = "application/pdf"
+
+        return {
+            "filename": filename,
+            "content": text,
+            "mimeType": mime_type,
+        }
 
     @application.get("/api/debug/session")
     async def debug_session(
