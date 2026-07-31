@@ -1,1856 +1,1854 @@
-# Voice Mode Implementation Plan for pi-chat
+# Voice Mode Implementation Guide for pi-chat
 
-## Overview
+## Purpose, authority, and required inputs
 
-Add voice mode to pi-chat using OmniVoice TTS. When enabled, assistant responses are spoken aloud to the user via streamed audio chunks over WebSocket. Audio generation begins as soon as the first complete sentence is streamed from the LLM, not after the full response completes.
+This is the complete feature-specific guide for implementing low-latency,
+output-only voice mode in pi-chat. It is intended to be given to one local LLM
+together with:
 
-**Key design decisions:**
-1. Chunk incoming `text_delta` events in real-time and trigger TTS per-chunk as soon as natural sentence boundaries are detected. This provides near-real-time audio feedback instead of waiting for the full LLM response.
-2. TTS generation runs sequentially (OmniVoice is single-threaded on GPU), but audio streaming to the frontend is pipelined: while chunk N is playing, chunk N+1 is generating. Audio frames are sent immediately upon completion, never batched.
-3. VRAM budget: OmniVoice needs ~5-6GB. pi's local LLM also uses VRAM. Combined usage must stay under 24GB. If OOM occurs, voice mode fails gracefully with a clear error. Document compatible pi models.
+1. Repository-root `AGENTS.md`, which defines the existing architecture,
+   runtime invariants, event formats, and baseline verification commands.
+2. The loaded orchestration skill at
+   `/Users/bbilbro/Documents/pi-subagent/skills/orchestrate-subagent-stack/SKILL.md`.
 
----
+This guide contains all feature-specific design, protocol, testing, and
+execution requirements needed for the implementation.
+When instructions conflict, follow this order:
 
-## OmniVoice Model Reference
+1. Direct user instructions
+2. Repository `AGENTS.md` runtime and rendering invariants
+3. This guide's voice-feature requirements
+4. The orchestration skill's delegation and receipt mechanics
 
-OmniVoice is a diffusion-based zero-shot TTS model supporting 600+ languages with voice cloning and voice design capabilities.
+The pinned OmniVoice source contract is upstream commit
+`28bc0889d92110491d726a9c79f26a895db5a074` dated 2026-07-30.
 
-**Source:** `experiments/OmniVoice/` (local clone of k2-fsa/OmniVoice)
+The implementation must remain additive and local. Do not replace the current
+WebSocket protocol, move pi RPC into another process, add a frontend framework,
+or change the existing live/historical rendering contract.
 
-### Key Characteristics
+## Goal
 
-- **Architecture:** Diffusion language model (Qwen3 LLM backbone + Higgs-Audio v2 tokenizer)
-- **RTF:** ~0.025 (40x faster than real-time) — 22 seconds of speech generates in <2 seconds on RTX 4090
-- **VRAM:** ~5-6 GB in FP16
-- **Sampling rate:** 24 kHz
-- **Output:** Returns list of numpy arrays (float32, range [-1, 1])
+Add opt-in text-to-speech output for top-level assistant text using OmniVoice.
+Begin synthesis while pi is still streaming the response, play chunks in order
+with minimal gaps, and let the user stop speech immediately.
 
-### Voice Design Mode (Used in pi-chat)
+This is output-only voice mode. Microphone capture and speech-to-text are not in
+scope.
 
-No reference audio needed. Voice controlled via `instruct` parameter with comma-separated attributes:
+### User-visible result
 
-```python
-audio = model.generate(
-    text="Hello, this is a test.",
-    instruct="female, moderate pitch, american accent",
-)
+1. The user clicks a speaker button.
+2. The server lazily loads OmniVoice and prepares the selected voice.
+3. The next top-level assistant response is converted into speech as
+   `text_delta` events arrive.
+4. The first eligible sentence or clause is synthesized without waiting for
+   `agent_settled`.
+5. The browser schedules PCM chunks for gap-minimized Web Audio playback.
+6. Disabling voice, stopping speech, starting a new response, loading a
+   session, reconnecting, or logging out cancels the current voice stream.
+7. Text chat continues to work if voice dependencies, model loading, or
+   synthesis fail.
+
+## Non-goals
+
+- No microphone or browser speech recognition
+- No speaking thinking blocks, tool calls, tool results, sub-agent timelines,
+  historic messages, or loaded sessions
+- No changes to saved pi message content
+- No hidden voice instruction prepended to a user prompt
+- No separate TTS microservice for the initial local implementation
+- No multiple Uvicorn workers; each worker would load a separate GPU model
+- No claim that OmniVoice emits waveform samples incrementally during one
+  `generate()` call; it currently returns a complete NumPy waveform
+
+## VRAM and verification assumptions
+
+The production pi LLM is expected to leave at least **10 GB of GPU VRAM free**
+before voice mode loads OmniVoice. The pinned upstream documentation indicates
+that this should be sufficient, but measured peak usage and post-warm headroom
+remain release gates.
+
+The local LLM implementing this plan may itself saturate the GPU, but real
+OmniVoice can run on CPU in a separate process. Therefore:
+
+- The implementing LLM must not load the real OmniVoice checkpoint onto CUDA
+  as part of its normal test loop.
+- All default unit, integration, WebSocket, and browser tests use deterministic
+  fakes and require no CUDA allocation.
+- After the fast fake suite passes, the implementing LLM runs an explicit,
+  slow, real CPU validation in a short-lived subprocess with CUDA hidden.
+- CPU validation checks the real checkpoint/API, voice preparation, waveform,
+  PCM, and pipeline integration. It does not establish CUDA latency, FlashInfer
+  compatibility, GPU VRAM use, or production real-time performance.
+- Real CUDA validation remains a separate human-gated phase. The implementing
+  LLM prepares one noninteractive command, hands control to the user, and stops.
+- The user unloads the implementing LLM, runs the real-GPU validation in a
+  short-lived process, then reloads the LLM to inspect saved artifacts.
+- Validator process exit releases CPU RAM or GPU VRAM deterministically.
+- A final production smoke test still runs the actual production pi LLM and
+  OmniVoice together, because isolated measurements cannot prove allocator
+  fragmentation or combined-runtime behavior.
+
+CPU inference may take many minutes and may consume substantial system RAM.
+Before loading, the CPU validator must record available RAM/disk, refuse to
+start below a configurable safety threshold, limit Torch CPU threads, and emit
+periodic progress/heartbeat artifacts. Run it serially, never concurrently with
+other memory-heavy validation.
+
+Do not add automatic self-termination, GPU process killing, or model swapping
+to pi-chat. CPU validation and the GPU handoff are development/test workflows,
+not product architecture.
+
+## Critical implementation constraints
+
+The implementation must account for all of these constraints.
+
+1. **The Git checkout is not the model checkpoint.**
+   `OmniVoice.from_pretrained()` accepts `k2-fsa/OmniVoice` or a downloaded
+   Hugging Face snapshot containing model config, weights, and tokenizer files.
+   The GitHub source checkout at `experiments/OmniVoice` does not contain those
+   weights and must not be used as `OMNIVOICE_MODEL_PATH`.
+
+2. **`websocket.py` does not receive pi output events.**
+   It receives browser commands. `PiProcess._read_stdout()` parses and forwards
+   `text_delta` events. Voice needs one small observer hook in `PiProcess`; code
+   placed only in the command loop will never see streamed pi events.
+
+3. **Raw PCM without metadata cannot be cancelled safely.**
+   A late binary frame from an old response is indistinguishable from the
+   current response. Every audio frame needs a versioned header containing a
+   stream ID and sequence number.
+
+4. **Cancelling `asyncio.to_thread()` does not stop GPU inference.**
+   If an async lock is released while the worker thread is still in
+   `model.generate()`, a second call can overlap it. All OmniVoice operations
+   must use one dedicated `ThreadPoolExecutor(max_workers=1)`.
+
+5. **Text cleanup must preserve streaming parser state.**
+   Preprocessing the whole accumulated buffer before checking whether Markdown
+   constructs are open can corrupt split fences/links, lose short chunks, and
+   delay lowercase or non-English sentences. Emotion tags normally prefix the
+   utterance they modify and are not standalone boundaries.
+
+6. **A 50-chunk queue is not useful backpressure.**
+   It can represent minutes of stale speech. Silently dropping old chunks makes
+   the spoken answer incoherent. Bound pending work tightly, coalesce when safe,
+   and cancel voice for the current response if it cannot remain near real time.
+
+7. **Sequential `source.onended` playback can introduce gaps.**
+   Schedule decoded buffers against `AudioContext.currentTime` as soon as each
+   arrives. Do not wait for an `ended` callback to create the next source.
+
+8. **Suspending AudioContext on interruption is unsafe on mobile.**
+   A later WebSocket event is not a user gesture and may be unable to resume
+   audio on iOS. Stop scheduled sources and clear state while leaving the
+   unlocked context alive.
+
+9. **Voice design on many short independent chunks can drift.**
+   OmniVoice itself warns that short 1–2 second clips can be unreliable without
+   a reference. Prepare and cache a reusable voice-clone prompt from a short,
+   hidden voice-design bootstrap sample.
+
+10. **The RTF and VRAM figures are hardware-dependent.**
+    Upstream reports best-case RTF and H100 FlashInfer benchmarks, not a
+    guaranteed RTX 4090 result. Benchmark the actual host and record measured
+    values; do not encode unverified numbers as tests.
+
+## Pinned OmniVoice API contract
+
+- Package name/import: `omnivoice` / `from omnivoice import OmniVoice`
+- Pinned package version: `0.2.1`
+- Python: 3.10 or newer; pi-chat already requires 3.12 or newer
+- `OmniVoice.from_pretrained(model_id, device_map=..., dtype=...)`
+- `model.generate(...)` returns `list[np.ndarray]`
+- The normal output sample rate is exposed as `model.sampling_rate` and is
+  normally 24,000 Hz
+- Voice design uses `instruct="female, young adult, ..."`
+- `model.create_voice_clone_prompt((waveform_tensor, sample_rate), ref_text)`
+  creates a reusable `VoiceClonePrompt`
+- `num_step=16` is the documented faster alternative to the default 32
+- `pad_duration` and `fade_duration` are configurable
+- The pinned batch-inference CLI selects `device_map="cpu"` when no accelerator
+  is available and warns that CPU inference may be slow
+- FlashInfer is optional; upstream recommends CUDA graphs for batch-one
+  low-latency use
+- Voice design is primarily trained on English and Chinese; voice cloning is
+  the more stable mode
+
+## Locked architecture
+
+```mermaid
+flowchart LR
+    PI["pi stdout reader"] --> OBS["small event observer"]
+    PI --> JSON["existing pi_event JSON"]
+    OBS --> SESSION["per-WebSocket VoiceSession"]
+    SESSION --> CHUNK["StreamingSpeechChunker"]
+    CHUNK --> QUEUE["bounded speech queue"]
+    QUEUE --> TTS["server-wide TTSService<br/>one model thread"]
+    TTS --> FRAME["versioned PCM frame"]
+    FRAME --> WS["existing WebSocket"]
+    WS --> PLAYER["voice.js Web Audio scheduler"]
 ```
 
-**Supported attributes (from `docs/voice-design.md`):**
+There are only three voice-specific runtime objects:
 
-| Category | Options |
-|----------|---------|
-| Gender | `male`, `female` |
-| Age | `child`, `teenager`, `young adult`, `middle-aged`, `elderly` |
-| Pitch | `very low pitch`, `low pitch`, `moderate pitch`, `high pitch`, `very high pitch` |
-| Style | `whisper` |
-| English Accent | `american accent`, `british accent`, `australian accent`, `canadian accent`, `indian accent`, `chinese accent`, `korean accent`, `japanese accent`, `portuguese accent`, `russian accent` |
+- One `TTSService` on `application.state`, shared by all connections
+- One `VoiceSession` per authenticated browser WebSocket
+- One `VoicePlayer` inside `static/voice.js`
 
-**Reference docs:**
-- `experiments/OmniVoice/README.md` — Full API reference
-- `experiments/OmniVoice/docs/voice-design.md` — Voice design attributes
-- `experiments/OmniVoice/docs/generation-parameters.md` — Generation parameters
-- `experiments/OmniVoice/docs/tips.md` — Usage tips
+The only core event-path change is an optional `PiProcess.event_observer`.
+Existing pi JSON events continue to flow unchanged to `static/chat.js`.
 
-**VRAM budget note:** OmniVoice needs ~5-6GB FP16. pi's llama.cpp model also uses VRAM. With a 24GB RTX 4090, combined usage must stay under ~22GB to avoid OOM. If loading fails with OOM, TTSService returns a clear error ("GPU out of memory. pi's model may be using too much VRAM for voice mode."). Consider testing with smaller pi models first.
-
-### Minimal Python API
-
-```python
-from omnivoice import OmniVoice
-import torch
-import numpy as np
-
-model = OmniVoice.from_pretrained(
-    "k2-fsa/OmniVoice",
-    device_map="cuda:0",
-    dtype=torch.float16
-)
-
-# Voice design (no reference audio needed)
-audio = model.generate(
-    text="Hello, this is a test.",
-    instruct="female, moderate pitch, american accent",
-)
-
-# audio[0] is numpy array (T,) of float32 samples at 24 kHz
-# Convert to int16 PCM bytes for WebSocket:
-pcm_bytes = (audio[0] * 32767).astype(np.int16).tobytes()
-```
-
-### Non-Verbal Emotion Tags
-
-OmniVoice supports inline emotion tags that modify speech delivery:
-
-```python
-audio = model.generate(
-    text="[laughter] You really got me. I didn't see that coming at all.",
-)
-```
-
-**Supported tags:** `[laughter]`, `[sigh]`, `[confirmation-en]`, `[question-en]`, `[question-ah]`, `[question-oh]`, `[question-ei]`, `[question-yi]`, `[surprise-ah]`, `[surprise-oh]`, `[surprise-wa]`, `[surprise-yo]`, `[dissatisfaction-hnn]`
-
-These tags should be preserved in TTS chunks and the voice mode prompt should instruct pi to use them.
-
----
-
-## Architecture
-
-### High-Level Flow
+## End-to-end lifecycle
 
 ```mermaid
 sequenceDiagram
-    participant U as User
-    participant FE as Frontend (chat.js/voice.js)
-    participant WS as WebSocket
-    participant BE as Backend (websocket.py)
-    participant PI as pi-rpc
-    participant TTS as OmniVoice Service
-    participant Audio as WebAudio API
+    participant User
+    participant Browser
+    participant WS as websocket.py
+    participant Pi as PiProcess
+    participant Voice as VoiceSession
+    participant TTS as TTSService
 
-    U->>FE: Click voice mode button
-    FE->>WS: voice_mode:enable
-    WS->>BE: voice_mode:enable command
-    BE->>TTS: Load OmniVoice model (lazy, once)
-    BE-->>WS: voice_mode:ready
-    WS-->>FE: voice_mode:ready
-    FE->>FE: Show active voice UI
+    User->>Browser: Click speaker toggle
+    Browser->>Browser: Create/resume AudioContext from user gesture
+    Browser->>WS: voice_enable(settings)
+    WS->>TTS: load() and prepare_voice()
+    TTS-->>WS: Voice handle ready
+    WS-->>Browser: voice_state ready
 
-    U->>FE: Type message, click send
-    FE->>FE: Prepend voice mode instruction (first message only)
-    FE->>WS: prompt (with hidden + user text)
-    WS->>PI: prompt RPC
+    User->>Browser: Submit prompt
+    Browser->>Browser: Stop old scheduled audio
+    Browser->>WS: existing prompt command
+    WS->>Pi: existing prompt RPC
+    Pi-->>Browser: existing pi_event agent_start
+    Pi->>Voice: observe agent_start
+    Voice-->>Browser: voice_stream_start(stream_id)
 
-    PI-->>WS: text_start
-    PI-->>WS: text_delta ("A closure is ")
-    PI-->>WS: text_delta ("a nested function that remembers variables.")
-    BE->>BE: Buffer complete, emit chunk
-    BE->>TTS: generate(chunk, instruct)
-    BE-->>WS: binary PCM chunk
-    WS-->>FE: binary PCM chunk
-    FE->>Audio: decode + enqueue + play
+    Pi->>Voice: observe text_delta
+    Voice->>Voice: sanitize and extract first sentence
+    Voice->>TTS: synthesize one speech chunk
+    TTS-->>Voice: PCM + actual sample rate
+    Voice-->>Browser: binary frame(stream_id, seq, PCM)
+    Browser->>Browser: schedule AudioBuffer immediately
 
-    PI-->>WS: text_delta (" Here, `inner` is the closure.")
-    BE->>BE: Buffer complete, emit chunk
-    BE->>TTS: generate(chunk, instruct)
-    BE-->>WS: binary PCM chunk
-    FE->>Audio: enqueue + play (after previous finishes)
+    Pi->>Voice: more text_delta events
+    Voice->>TTS: synthesize queued chunks sequentially
+    Voice-->>Browser: binary frames in order
 
-    PI-->>WS: tool_execution_start (naturally ignored for TTS)
-    PI-->>WS: tool_execution_end
-    PI-->>WS: text_delta (" Closures are useful.")
-    BE->>BE: Buffer complete, emit chunk
-    BE->>TTS: generate(chunk, instruct)
-    BE-->>WS: binary PCM chunk
-    FE->>Audio: enqueue + play
-
-    PI-->>WS: text_end
-    PI-->>WS: agent_settled
-    BE-->>WS: voice_mode:done
+    Pi->>Voice: observe agent_settled
+    Voice->>Voice: flush remaining speakable text
+    Voice-->>Browser: voice_stream_end after generation queue drains
+    Browser->>Browser: idle only after scheduled sources finish
 ```
 
-### Component Diagram
+## WebSocket contract
 
-```mermaid
-graph TB
-    subgraph Frontend
-        A[index.html] -->|voice toggle button| B[voice.js]
-        A -->|settings panel| B
-        B -->|WebSocket commands| C[socket.js]
-        C -->|binary frames| B
-        B -->|WebAudio API| D[AudioContext]
-    end
+Use the repository's existing snake_case command convention.
 
-    subgraph Backend
-        E[app.py] -->|HTTP routes| F[tts_service.py]
-        G[websocket.py] -->|TTS command| F
-        F -->|load/generate| H[OmniVoice model]
-    end
+### Browser commands
 
-    C <-->|WebSocket| G
-    C <-->|HTTP| E
-```
-
-### Streaming Chunking Design
-
-The core innovation: process `text_delta` events in real-time, accumulating text into a buffer and emitting complete chunks at natural boundaries.
-
-**Flow:**
-1. On `text_start`: Clear buffer, begin accumulating
-2. On each `text_delta`: Append delta to buffer
-3. Run chunking logic on buffer:
-   - If a complete chunk can be extracted (sentence boundary, emotion tag, em-dash), emit it immediately for TTS
-   - Keep remaining text in buffer
-4. On `text_end`: Emit any remaining buffer content as final chunk
-5. Tool execution events are naturally ignored (we only process `text_delta`)
-
-**Example:**
-```
-Buffer accumulates: "A closure is a nested function that remembers variables."
-→ Complete sentence detected → Emit chunk → TTS generates audio
-
-Buffer accumulates: " Here, `inner` is the closure."
-→ Complete sentence detected → Emit chunk → TTS generates audio
-
-tool_execution_start, tool_execution_end → Ignored
-
-Buffer accumulates: " Closures are useful for factory functions."
-→ Complete sentence detected → Emit chunk → TTS generates audio
-```
-
----
-
-## Files to Modify/Create
-
-### New Files
-
-| File | Purpose |
-|------|---------|
-| `pi_chat/tts_service.py` | OmniVoice model wrapper, lazy loading, chunk generation, voice design, generation lock |
-| `pi_chat/tts_chunking.py` | Text preprocessing and chunking for TTS consumption (markdown stripping, URL/code removal) |
-| `static/voice.js` | Voice mode state, WebSocket audio handling, WebAudio playback, settings panel, volume control |
-| `static/voice.css` | Voice mode UI styles (toggle button, settings panel, loading indicator, volume slider) |
-| `tests/test_voice_chunking.py` | Unit tests for text chunking logic |
-| `tests/test_tts_service.py` | Unit tests for TTSService (load, generate, locks, OOM) |
-| `tests/test_websocket_voice.py` | Unit tests for voice mode WebSocket commands and text_delta processing |
-| `tests/test_voice_end_to_end.py` | Integration tests for full voice pipeline |
-| `tests/test_voice_latency.py` | Performance tests for TTS latency and RTF |
-
-### Modified Files
-
-| File | Changes |
-|------|---------|
-| `static/index.html` | Add voice toggle button, voice settings panel markup (including volume slider) |
-| `static/app.js` | Import voice.js, route voice_mode WebSocket messages |
-| `static/chat.js` | Export state needed by voice.js; prepend voice instruction on first message; interrupt speech on new message |
-| `static/socket.js` | Set `binaryType = 'arraybuffer'`, handle binary frames |
-| `pi_chat/app.py` | Mount TTS service, add `/api/tts/status` endpoint |
-| `pi_chat/websocket.py` | Handle `voice_mode:enable`, `voice_mode:disable`, `voice_mode:settings` commands; process `text_delta` events for streaming TTS; queue cap at 50 |
-| `pi_chat/config.py` | Add `OMNIVOICE_MODEL_PATH` config option (default: `experiments/OmniVoice`) |
-| `pyproject.toml` | Add `omnivoice`, `torch`, `numpy` dependencies |
-
----
-
-## Implementation Steps (Ordered)
-
-### Phase 1: Backend Foundation
-
-#### Step 1.1: Create TTS Service Module
-
-**File:** `pi_chat/tts_service.py`
-
-**Description:** Wrap OmniVoice model loading and generation. Support lazy loading so the model is only loaded when voice mode is first enabled. Once loaded, the model stays in VRAM to reduce latency — it is never unloaded.
-
-**Key responsibilities:**
-- Singleton pattern: one model instance per server process
-- Lazy loading on first `enable()` call
-- Once loaded, stays resident in VRAM (no unload)
-- `generate_chunk(text, instruct)` method returning PCM bytes
-- Thread-safe generation (OmniVoice is CPU/GPU bound, run in executor)
-- Graceful error handling (model load failure, OOM, etc.)
-
-**API:**
-```python
-import asyncio
-import logging
-from typing import Optional
-
-import numpy as np
-import torch
-from omnivoice import OmniVoice
-
-log = logging.getLogger("pi-chat")
-
-
-class TTSService:
-    def __init__(self, model_path: str):
-        self.model_path = model_path
-        self.model: Optional[OmniVoice] = None
-        self.loading = False
-        self.loaded = False
-        self._lock = asyncio.Lock()          # Protects load()
-        self._gen_lock = asyncio.Lock()      # Protects generate_chunk() — OmniVoice is single-threaded on GPU
-
-    async def load(self) -> None:
-        """Load OmniVoice model. Idempotent. Once loaded, stays in VRAM."""
-        if self.loaded:
-            return
-        async with self._lock:
-            if self.loaded:
-                return
-            self.loading = True
-            try:
-                log.info("Loading OmniVoice model from %s ...", self.model_path)
-                self.model = await asyncio.to_thread(
-                    OmniVoice.from_pretrained,
-                    self.model_path,
-                    device_map="cuda:0",
-                    dtype=torch.float16,
-                )
-                self.loaded = True
-                log.info("OmniVoice model loaded successfully")
-            except RuntimeError as e:
-                if "out of memory" in str(e).lower():
-                    log.error("OmniVoice model load failed: GPU out of memory")
-                    raise RuntimeError("TTS model failed to load: GPU out of memory. Ensure at least 6GB VRAM is available.") from e
-                log.error("OmniVoice model load failed: %s", e)
-                raise
-            finally:
-                self.loading = False
-
-    async def generate_chunk(self, text: str, instruct: str) -> bytes:
-        """Generate audio for a single text chunk. Returns raw PCM bytes (int16, 24kHz, mono).
-        
-        Uses _gen_lock to serialize generation — OmniVoice is single-threaded on GPU.
-        Multiple WebSocket connections with voice mode enabled will queue their requests.
-        """
-        if not self.loaded or self.model is None:
-            raise RuntimeError("TTS model not loaded")
-
-        async with self._gen_lock:
-            audio = await asyncio.to_thread(
-                self.model.generate,
-                text=text,
-                instruct=instruct,
-            )
-
-        # audio[0] is numpy array (T,) of float32 in range [-1, 1]
-        # Convert to int16 PCM bytes for WebSocket transmission
-        pcm_bytes = (audio[0] * 32767).astype(np.int16).tobytes()
-        return pcm_bytes
-
-    def is_ready(self) -> bool:
-        """Check if model is loaded and ready."""
-        return self.loaded
-
-    def is_loading(self) -> bool:
-        """Check if model is currently loading."""
-        return self.loading
-```
-
-**Tests (TDD):**
-- `test_is_ready_false_on_init`
-- `test_load_sets_ready_true`
-- `test_load_is_idempotent`
-- `test_generate_chunk_returns_bytes`
-- `test_generate_chunk_with_voice_instruct`
-- `test_generate_chunk_raises_on_not_loaded`
-- `test_load_handles_oom_gracefully`
-
----
-
-#### Step 1.2: Add TTS Config
-
-**File:** `pi_chat/config.py`
-
-**Description:** Add configuration for OmniVoice model path.
-
-```python
-OMNIVOICE_MODEL_PATH = os.getenv(
-    "OMNIVOICE_MODEL_PATH",
-    str(PROJECT_ROOT / "experiments" / "OmniVoice"),
-)
-```
-
-**Tests:**
-- Verify default path resolves correctly
-
----
-
-#### Step 1.3: Mount TTS Service in App
-
-**File:** `pi_chat/app.py`
-
-**Description:** Create TTSService instance in `create_app()` and store on `application.state`. Add status endpoint.
-
-**Changes:**
-```python
-from .tts_service import TTSService
-from .config import OMNIVOICE_MODEL_PATH
-
-# In create_app():
-application.state.tts = TTSService(model_path=OMNIVOICE_MODEL_PATH)
-
-@app.get("/api/tts/status")
-async def tts_status(request: Request):
-    _require_account(request, auth)
-    tts = application.state.tts
-    return {
-        "ready": tts.is_ready(),
-        "loading": tts.is_loading(),
-    }
-```
-
-**Tests:**
-- `test_tts_status_returns_not_ready_before_load`
-- `test_tts_status_requires_auth`
-
----
-
-### Phase 2: Text Chunking Logic
-
-#### Step 2.1: Implement Chunking Strategy
-
-**File:** `pi_chat/tts_chunking.py`
-
-**Description:** Split assistant text into chunks for streaming TTS. Based on `data-samples/text_chunking.py` prototype.
-
-**Chunking Rules:**
-1. Split on sentence boundaries: `.`, `!`, `?` followed by space and uppercase letter
-2. Split on em-dashes: `—` or `--` (treat as natural pause points)
-3. Split on OmniVoice emotion tags: `[laughter]`, `[sigh]`, etc. (these are natural breakpoints, keep tag with chunk)
-4. Maximum chunk length: 200 characters (prevents awkwardly long TTS chunks)
-5. Minimum chunk length: 15 characters (prevents tiny fragments)
-6. Preserve emotion tags within chunks (they modify the preceding word)
-7. Skip code blocks entirely (never speak them)
-8. Speak inline code normally (usually short)
-9. Skip URL text (replace with nothing or "[link]")
-10. Strip markdown formatting: `**bold**` → `bold`, `*italic*` → `italic`, `# headers` → plain text, `- list items` → plain text
-11. Normalize special characters: `→` → "to", `≤` → "less than or equal to", `&&` → "and", `||` → "or" (or leave as-is if OmniVoice handles them)
-12. Consider: numbers in code contexts (`4090`, `24kHz`) — test how OmniVoice pronounces these; may need normalization
-
-**Regex patterns:**
-```python
-EMOTION_TAGS = r'\[(?:laughter|sigh|confirmation-en|question-en|question-ah|question-oh|question-ei|question-yi|surprise-ah|surprise-oh|surprise-wa|surprise-yo|dissatisfaction-hnn)\]'
-CODE_BLOCK = r'```[\s\S]*?```'
-INLINE_CODE = r'`[^`]+`'
-URLS = r'https?://\S+'
-SENTENCE_BOUNDARY = r'(?<=[.!?])\s+(?=[A-Z])'
-EMDASH_BOUNDARY = r'\s+[—–-]{2,}\s+'
-```
-
-**Core functions:**
-
-```python
-import re
-from typing import List, Tuple
-
-EMOTION_TAGS = r'\[(?:laughter|sigh|confirmation-en|question-en|question-ah|question-oh|question-ei|question-yi|surprise-ah|surprise-oh|surprise-wa|surprise-yo|dissatisfaction-hnn)\]'
-CODE_BLOCK = r'```[\s\S]*?```'
-INLINE_CODE = r'`[^`]+`'
-URLS = r'https?://\S+'
-SENTENCE_BOUNDARY = r'(?<=[.!?])\s+(?=[A-Z])'
-EMDASH_BOUNDARY = r'\s+[—–-]{2,}\s+'
-
-BREAK_PATTERN = re.compile(f'({EMOTION_TAGS})|({SENTENCE_BOUNDARY})|({EMDASH_BOUNDARY})')
-
-MAX_CHUNK_LEN = 200
-MIN_CHUNK_LEN = 15
-
-
-def preprocess_text(text: str) -> str:
-    """Clean text for TTS: remove code blocks, handle URLs, strip markdown."""
-    # Remove code blocks entirely
-    text = re.sub(CODE_BLOCK, '', text)
-    # Remove URLs (keep surrounding text)
-    text = re.sub(URLS, '', text)
-    # Strip markdown formatting
-    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)  # **bold**
-    text = re.sub(r'\*([^*]+)\*', r'\1', text)      # *italic*
-    text = re.sub(r'~~([^~]+)~~', r'\1', text)      # ~~strikethrough~~
-    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)  # headers
-    text = re.sub(r'^[-*+]\s+', '', text, flags=re.MULTILINE)   # list items
-    text = re.sub(r'^\d+\.\s+', '', text, flags=re.MULTILINE)   # numbered lists
-    # Normalize inline code backticks
-    text = re.sub(r'`([^`]+)`', r'\1', text)
-    return text
-
-
-def _is_open(text: str) -> bool:
-    """True if buffer currently ends mid-fence / mid-inline-code / mid-url."""
-    if len(re.findall(r'```', text)) % 2 == 1:
-        return True
-
-    text_wo_blocks = re.sub(CODE_BLOCK, '', text)
-    if text_wo_blocks.count('`') % 2 == 1:
-        return True
-
-    urls = list(re.finditer(URLS, text_wo_blocks))
-    if urls and urls[-1].end() == len(text_wo_blocks):
-        return True
-
-    return False
-
-
-def chunk_buffer(buffer: str) -> Tuple[List[str], str]:
-    """
-    Repeatedly strips completed code blocks and slices off completed chunks.
-    Returns (chunks_to_emit, remaining_buffer).
-
-    Designed for streaming: called repeatedly as text_delta events arrive.
-    Preserves state across open constructs (code blocks, inline code, URLs).
-    """
-    chunks = []
-    buffer = preprocess_text(buffer)
-
-    while True:
-        if _is_open(buffer):
-            break  # still mid-construct, wait for more tokens
-
-        # Drop any completed code block entirely -- never emitted
-        code_spans = [m.span() for m in re.finditer(CODE_BLOCK, buffer)]
-        if code_spans:
-            start, end = code_spans[0]
-            buffer = buffer[:start] + buffer[end:]
-            continue
-
-        # Inline code / urls are kept in the text, just not split inside
-        no_split_spans = (
-            [m.span() for m in re.finditer(INLINE_CODE, buffer)]
-            + [m.span() for m in re.finditer(URLS, buffer)]
-        )
-
-        match = next(
-            (m for m in BREAK_PATTERN.finditer(buffer)
-             if not any(s <= m.start() < e for s, e in no_split_spans)),
-            None
-        )
-        if not match:
-            break  # no valid break point yet
-
-        if match.group(1):  # emotion tag -> keep tag, split right after it
-            cut = match.end()
-            chunk, buffer = buffer[:cut], buffer[cut:]
-        else:  # sentence / em-dash boundary -> drop the whitespace
-            chunk, buffer = buffer[:match.start()], buffer[match.end():]
-
-        chunk = chunk.strip()
-        if chunk and len(chunk) >= MIN_CHUNK_LEN:
-            chunks.append(chunk)
-
-    # Enforce max chunk length: if buffer exceeds MAX_CHUNK_LEN without a break point,
-    # force-split on the last whitespace
-    if len(buffer) > MAX_CHUNK_LEN:
-        last_space = buffer.rfind(' ', 0, MAX_CHUNK_LEN)
-        if last_space > MIN_CHUNK_LEN:
-            chunks.append(buffer[:last_space].strip())
-            buffer = buffer[last_space:].strip()
-
-    return chunks, buffer
-
-
-def finalize_buffer(buffer: str) -> List[str]:
-    """Called on text_end: emit remaining buffer content as final chunk(s)."""
-    buffer = preprocess_text(buffer).strip()
-    if not buffer:
-        return []
-    # If buffer is very long, split on any whitespace
-    if len(buffer) > MAX_CHUNK_LEN:
-        words = buffer.split()
-        chunks = []
-        current = ""
-        for word in words:
-            if len(current) + len(word) + 1 > MAX_CHUNK_LEN and current:
-                chunks.append(current)
-                current = word
-            else:
-                current = (current + " " + word).strip()
-        if current:
-            chunks.append(current)
-        return chunks
-    return [buffer]
-```
-
-**Tests (TDD):**
-- `test_split_on_period`
-- `test_split_on_exclamation`
-- `test_split_on_question`
-- `test_split_on_emdash`
-- `test_split_on_emotion_tags`
-- `test_max_chunk_length_enforced`
-- `test_min_chunk_length_enforced`
-- `test_code_blocks_removed`
-- `test_inline_code_preserved`
-- `test_urls_removed`
-- `test_empty_input`
-- `test_single_short_sentence`
-- `test_long_paragraph`
-- `test_preserves_emotion_tags`
-- `test_mid_code_block_holds_buffer`
-- `test_mid_url_holds_buffer`
-- `test_finalize_buffer_emits_remaining`
-
----
-
-### Phase 3: WebSocket Integration
-
-#### Step 3.1: Add Voice Mode Commands
-
-**File:** `pi_chat/websocket.py`
-
-**Description:** Handle voice mode enable/disable/settings commands. Track voice mode state per WebSocket connection. Process `text_delta` events for streaming TTS.
-
-**New browser commands:**
-```python
-voice_mode:enable       # Enable voice mode, trigger model load
-voice_mode:disable      # Disable voice mode
-voice_mode:settings     # Update voice settings {gender, pitch, accent, age}
-```
-
-**New server messages:**
-```python
-voice_mode:ready              # Model loaded, voice mode active
-voice_mode:error              # Failed to load model or generation error
-voice_mode:stream_complete    # Backend has finished generating/sending all audio for this response
-```
-
-**Note on semantics:** `voice_mode:stream_complete` means the backend is done sending audio. It does NOT mean the frontend has finished playing. Playback completion is tracked locally in `voice.js` via `isSpeaking`. The frontend's speaking indicator hides when the audio queue drains, not on `stream_complete`.
-
-**State tracking (per WebSocket connection):**
-```python
-voice_mode_enabled = False
-voice_settings = {
+```json
+{
+  "type": "voice_enable",
+  "settings": {
     "gender": "female",
+    "age": "young adult",
     "pitch": "moderate pitch",
     "accent": "american accent",
-    "age": "middle-aged",
+    "style": null,
+    "speed": 1.0
+  }
 }
-tts_buffer = ""           # Accumulated text_delta buffer
-tts_task: Optional[asyncio.Task] = None  # Background TTS task
 ```
 
-**Command handlers:**
+```json
+{"type": "voice_disable"}
+```
+
+```json
+{
+  "type": "voice_settings",
+  "settings": {
+    "gender": "female",
+    "age": "young adult",
+    "pitch": "low pitch",
+    "accent": "british accent",
+    "style": null,
+    "speed": 1.05
+  }
+}
+```
+
+```json
+{"type": "voice_stop"}
+```
+
+`voice_stop` cancels the current response's server queue but leaves voice mode
+enabled for the next response.
+
+### Server JSON messages
+
+```json
+{
+  "type": "voice_state",
+  "state": "loading",
+  "available": true
+}
+```
+
+```json
+{
+  "type": "voice_state",
+  "state": "ready",
+  "available": true,
+  "settings": {
+    "gender": "female",
+    "age": "young adult",
+    "pitch": "moderate pitch",
+    "accent": "american accent",
+    "style": null,
+    "speed": 1.0
+  }
+}
+```
+
+```json
+{
+  "type": "voice_stream_start",
+  "streamId": 7,
+  "encoding": "pcm_s16le",
+  "channels": 1
+}
+```
+
+```json
+{
+  "type": "voice_stream_end",
+  "streamId": 7,
+  "reason": "complete"
+}
+```
+
+Valid end reasons are `complete`, `stopped`, `superseded`, `disabled`,
+`backlog`, and `error`.
+
+```json
+{
+  "type": "voice_error",
+  "code": "voice_oom",
+  "message": "Voice could not start because there is not enough free GPU memory.",
+  "recoverable": true
+}
+```
+
+Use stable error codes:
+
+- `voice_dependencies_missing`
+- `voice_model_load_failed`
+- `voice_oom`
+- `voice_invalid_settings`
+- `voice_generation_failed`
+- `voice_backlog`
+
+Do not send raw tracebacks, access tokens, or full local model paths to the
+browser.
+
+### Binary PCM frame
+
+Every binary WebSocket message is one complete synthesized speech chunk.
+
+Header layout, little-endian, 24 bytes:
+
+| Offset | Size | Field |
+|---:|---:|---|
+| 0 | 4 | ASCII magic `PIV1` |
+| 4 | 1 | protocol version, currently `1` |
+| 5 | 1 | flags, currently `0` |
+| 6 | 2 | header length, currently `24` |
+| 8 | 4 | unsigned `stream_id` |
+| 12 | 4 | unsigned `sequence` |
+| 16 | 4 | unsigned `sample_rate` |
+| 20 | 4 | unsigned `sample_count` |
+| 24 | N | mono signed 16-bit little-endian PCM |
+
+Python:
 
 ```python
-async def _handle_voice_mode_enable(websocket, application):
-    tts = application.state.tts
-    try:
-        await tts.load()
-        await websocket.send_json({"type": "voice_mode:ready"})
-    except Exception as error:
-        log.error("TTS load failed: %s", error)
-        await websocket.send_json({"type": "voice_mode:error", "message": str(error)})
-
-
-async def _handle_voice_mode_disable(websocket, voice_state):
-    """Disable voice mode and clear per-connection state.
-    
-    Model stays loaded in VRAM (no unload). Only connection-local state is cleared.
-    """
-    # Cancel any ongoing TTS task
-    if voice_state["tts_task"] is not None and not voice_state["tts_task"].done():
-        voice_state["tts_task"].cancel()
-        try:
-            await voice_state["tts_task"]
-        except asyncio.CancelledError:
-            pass
-        voice_state["tts_task"] = None
-
-    # Clear buffers and queues
-    voice_state["enabled"] = False
-    voice_state["buffer"] = ""
-    voice_state["pending_chunks"] = []
-
-
-async def _handle_voice_mode_settings(websocket, message):
-    # Update per-connection voice_settings
-    # Validate settings against OmniVoice supported values
-    pass
+PCM_HEADER = struct.Struct("<4sBBHIIII")
+payload = PCM_HEADER.pack(
+    b"PIV1",
+    1,
+    0,
+    PCM_HEADER.size,
+    stream_id,
+    sequence,
+    sample_rate,
+    sample_count,
+) + pcm_s16le
 ```
 
-**Text delta processing (streaming TTS trigger):**
+Browser validation:
+
+- Reject the frame if magic, version, or header length is wrong.
+- Reject it if `sample_count * 2 !== payload.byteLength`.
+- Drop it silently if `stream_id !== activeStreamId`.
+- Drop duplicate or out-of-order `sequence` values.
+- Use `DataView.getInt16(offset, true)` so little-endian decoding is explicit.
+
+JSON and binary writes must share the same per-connection async send lock. This
+preserves ordering and avoids concurrent Starlette/ASGI sends.
+
+## OmniVoice installation and model layout
+
+### Pinned source checkout
+
+The source can be cloned for audit or development:
+
+```bash
+mkdir -p experiments
+git clone https://github.com/k2-fsa/OmniVoice.git experiments/OmniVoice
+git -C experiments/OmniVoice checkout 28bc0889d92110491d726a9c79f26a895db5a074
+```
+
+Add `/experiments/OmniVoice/` to `.gitignore` before cloning there. Do not
+commit the nested checkout.
+
+### Application dependency
+
+Prefer a pinned optional dependency so normal text-only pi-chat installs do not
+require Torch:
+
+```toml
+[project.optional-dependencies]
+voice = [
+  "numpy",
+  "torch==2.8.0",
+  "torchaudio==2.8.0",
+  "omnivoice @ git+https://github.com/k2-fsa/OmniVoice.git@28bc0889d92110491d726a9c79f26a895db5a074",
+]
+```
+
+Mirror the pinned OmniVoice PyTorch index configuration for the target CUDA
+version. The pinned upstream lock targets CUDA 12.8. Confirm the installed
+driver supports that runtime before locking; do not assume every deployment
+does.
+
+Install with:
+
+```bash
+uv sync --extra voice
+```
+
+The main app must still import and start after plain `uv sync`. Imports of
+`torch` and `omnivoice` therefore happen lazily inside the model executor, not
+at module import time.
+
+### Model checkpoint
+
+Default model identifier:
+
+```text
+k2-fsa/OmniVoice
+```
+
+For offline operation, download the Hugging Face model snapshot ahead of time
+and set `PI_CHAT_TTS_MODEL` to that snapshot directory. The directory must
+contain the OmniVoice model files, not the GitHub Python source tree.
+
+The first online load may download model and audio-tokenizer artifacts. Model
+download time is not part of warm voice latency.
+
+### Optional FlashInfer acceleration
+
+FlashInfer is an opt-in deployment optimization, not a required dependency.
+When enabled and importable:
 
 ```python
-# In the main WebSocket event loop, when pi_event is message_update:
-async def _handle_text_delta_for_tts(websocket, application, event, voice_state):
-    """Process text_delta events and trigger TTS for complete chunks."""
-    if not voice_state["enabled"]:
-        return
+from omnivoice.models.omnivoice_flashinfer import apply_flashinfer
 
-    assistant_event = event.get("assistantMessageEvent", {})
-    event_type = assistant_event.get("type")
-
-    if event_type == "text_start":
-        # Clear buffer for new text block
-        voice_state["buffer"] = ""
-
-    elif event_type == "text_delta":
-        delta = assistant_event.get("delta", "")
-        voice_state["buffer"] += delta
-
-        # Try to extract complete chunks from buffer
-        chunks, remaining = chunk_buffer(voice_state["buffer"])
-        voice_state["buffer"] = remaining
-
-        # Cancel any existing TTS task and start new one with updated queue
-        if chunks:
-            voice_state["pending_chunks"].extend(chunks)
-            if voice_state["tts_task"] is None or voice_state["tts_task"].done():
-                voice_state["tts_task"] = asyncio.create_task(
-                    _stream_tts_chunks(websocket, application, voice_state)
-                )
-
-    elif event_type == "text_end":
-        # Emit any remaining buffer content
-        if voice_state["buffer"].strip():
-            remaining_chunks = finalize_buffer(voice_state["buffer"])
-            voice_state["pending_chunks"].extend(remaining_chunks)
-            voice_state["buffer"] = ""
-
-            if voice_state["tts_task"] is None or voice_state["tts_task"].done():
-                voice_state["tts_task"] = asyncio.create_task(
-                    _stream_tts_chunks(websocket, application, voice_state)
-                )
+apply_flashinfer(model, enable_cuda_graph=True)
 ```
 
-**TTS streaming task (pipelined):**
+Benchmark these modes on the target RTX 4090:
 
-OmniVoice generation is sequential (one request at a time on GPU), but we pipeline: while chunk N's audio is being sent/played, we start generating chunk N+1. Audio frames are sent immediately upon completion — never batched.
+1. Baseline, 16 steps
+2. FlashInfer, 16 steps
+3. FlashInfer plus CUDA graph, 16 steps
+4. Best of the above at 32 steps for a quality comparison
+
+Keep the fastest stable mode whose speech quality is acceptable. If FlashInfer
+fails to import or initialize, log the failure and continue with baseline
+unless strict acceleration was explicitly requested.
+
+## Configuration
+
+Add parsed, validated settings to `pi_chat/config.py`.
+
+| Environment variable | Default | Meaning |
+|---|---|---|
+| `PI_CHAT_TTS_MODEL` | `k2-fsa/OmniVoice` | HF model ID or local snapshot |
+| `PI_CHAT_TTS_DEVICE` | `cuda:0` | Torch device |
+| `PI_CHAT_TTS_DTYPE` | `float16` | Allow `float16`; allow explicit `float32` for CPU compatibility testing |
+| `PI_CHAT_TTS_NUM_STEPS` | `16` | Interactive diffusion steps |
+| `PI_CHAT_TTS_FLASHINFER` | `0` | Enable optional FlashInfer |
+| `PI_CHAT_TTS_CUDA_GRAPH` | `0` | Enable FlashInfer CUDA graph |
+| `PI_CHAT_TTS_CPU_THREADS` | `4` | Torch intra-op threads when device is CPU |
+| `PI_CHAT_TTS_MAX_QUEUE_CHUNKS` | `12` | Per-connection unsynthesized chunks |
+| `PI_CHAT_TTS_MAX_QUEUE_CHARS` | `1800` | Per-connection unsynthesized text |
+| `PI_CHAT_TTS_MAX_HOLD_MS` | `450` | Longest hold after enough text exists |
+
+Invalid values fail fast at app startup with a clear configuration error.
+Model loading remains lazy.
+
+Reject FlashInfer/CUDA-graph settings when the selected device is CPU. The CPU
+validator uses a separate process and overrides device, dtype, steps, and thread
+count explicitly without changing production defaults.
+
+Use one Uvicorn worker. Document that `--workers N` creates N independent model
+copies and is unsupported for this local GPU mode.
+
+## Backend implementation
+
+### 1. `pi_chat/tts_service.py`
+
+Create a server-wide service with no dependency on FastAPI or WebSocket.
+
+Public data types:
 
 ```python
-async def _stream_tts_chunks(websocket, application, voice_state):
-    """Consume pending chunks queue and stream audio.
-    
-    Pipelined: as soon as one chunk's audio is ready, it's sent immediately.
-    The next chunk starts generating without waiting for the previous to finish playing.
-    This keeps audio flowing while generation catches up.
-    """
-    tts = application.state.tts
-    instruct = build_voice_instruct(voice_state["settings"])
+@dataclass(frozen=True)
+class VoiceSettings:
+    gender: str = "female"
+    age: str = "young adult"
+    pitch: str = "moderate pitch"
+    accent: str = "american accent"
+    style: str | None = None
+    speed: float = 1.0
 
-    while voice_state["pending_chunks"]:
-        chunk = voice_state["pending_chunks"].pop(0)
-        try:
-            pcm_bytes = await tts.generate_chunk(chunk, instruct)
-            # Send immediately — don't wait for frontend to finish playing
-            await websocket.send_bytes(pcm_bytes)
-        except Exception as error:
-            log.error("TTS chunk generation failed: %s", error)
-            await websocket.send_json({
-                "type": "voice_mode:error",
-                "message": f"TTS generation failed: {error}",
-            })
-            break
 
-    # All chunks for this response have been generated and sent
-    await websocket.send_json({"type": "voice_mode:stream_complete"})
+@dataclass(frozen=True)
+class VoiceHandle:
+    key: str
+    settings: VoiceSettings
+
+
+@dataclass(frozen=True)
+class SynthesizedAudio:
+    sample_rate: int
+    pcm_s16le: bytes
+    sample_count: int
+    generation_seconds: float
 ```
 
-**Why this works:** With RTF ~0.025, generating audio for a 5-second chunk takes ~0.125 seconds. The frontend plays that chunk over 5 seconds. By the time playback finishes, the next several chunks are already queued. Audio stays ahead of playback as long as the LLM doesn't stream faster than ~40x real-time (unlikely).
-
-**Queue pressure:** If the LLM streams very fast and TTS generation falls behind, the `pending_chunks` queue grows. To prevent unbounded memory growth, cap the queue at 50 chunks (~10,000 characters). If exceeded, drop the oldest incomplete chunks and emit a warning. This is a safety valve, not expected behavior.
-
-**Voice instruct builder:**
+Public API:
 
 ```python
-def build_voice_instruct(settings):
-    """Build OmniVoice instruct string from user settings."""
-    parts = [
-        settings["gender"],
-        settings["pitch"],
-        settings["accent"],
-    ]
-    if settings["age"] != "middle-aged":
-        parts.append(settings["age"])
-    return ", ".join(parts)
+class TTSService:
+    async def load(self) -> None: ...
+    async def prepare_voice(self, settings: VoiceSettings) -> VoiceHandle: ...
+    async def synthesize(
+        self,
+        text: str,
+        voice: VoiceHandle,
+    ) -> SynthesizedAudio: ...
+    def status(self) -> dict: ...
+    async def close(self) -> None: ...
 ```
 
-**Tests (TDD):**
-- `test_voice_mode_enable_triggers_load`
-- `test_voice_mode_disable_clears_state`
-- `test_voice_mode_settings_updates_instruct`
-- `test_text_delta_accumulates_buffer`
-- `test_text_delta_emits_chunks_at_boundaries`
-- `test_text_end_emits_remaining_buffer`
-- `test_tool_events_ignored_for_tts`
-- `test_build_voice_instruct_default`
-- `test_build_voice_instruct_with_age`
+Keep the external service API above, but place model-specific calls behind an
+internal runtime seam:
 
----
-
-### Phase 4: Frontend — Voice Mode UI
-
-#### Step 4.1: Add Voice Toggle Button
-
-**File:** `static/index.html`
-
-**Description:** Add voice mode toggle button to the left of the input area.
-
-**Markup:**
-```html
-<div class="input-area">
-  <div class="input-row">
-    <!-- Voice toggle button (left of textarea) -->
-    <button class="input-btn voice-toggle-btn" id="voice-toggle-btn" type="button" aria-label="Enable voice mode" title="Voice mode">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
-        <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-        <line x1="12" y1="19" x2="12" y2="23"/>
-        <line x1="8" y1="23" x2="16" y2="23"/>
-      </svg>
-    </button>
-
-    <div class="input-wrapper">
-      <textarea id="user-input" placeholder="Message pi..." rows="1"></textarea>
-      <div class="input-actions">
-        <button class="input-btn" id="attach-btn" type="button" aria-label="Attach file">
-          <!-- existing attach icon -->
-        </button>
-        <!-- Voice settings button (appears when voice mode is active) -->
-        <button class="input-btn voice-settings-btn" id="voice-settings-btn" type="button" aria-label="Voice settings" title="Voice settings" style="display:none;">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="3"/>
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-          </svg>
-        </button>
-      </div>
-    </div>
-    <button class="send-btn" id="send-btn" type="button" aria-label="Send message" disabled>
-      <!-- existing send icon -->
-    </button>
-  </div>
-</div>
-
-<!-- Voice Settings Panel -->
-<div class="voice-settings-panel" id="voice-settings-panel">
-  <div class="voice-settings-header">
-    <h3>Voice Settings</h3>
-    <button class="voice-settings-close" id="voice-settings-close" type="button" aria-label="Close voice settings">&times;</button>
-  </div>
-  <div class="voice-settings-body">
-    <label>Gender
-      <select id="voice-gender">
-        <option value="female">Female</option>
-        <option value="male">Male</option>
-      </select>
-    </label>
-    <label>Pitch
-      <select id="voice-pitch">
-        <option value="very low pitch">Very Low</option>
-        <option value="low pitch">Low</option>
-        <option value="moderate pitch" selected>Moderate</option>
-        <option value="high pitch">High</option>
-        <option value="very high pitch">Very High</option>
-      </select>
-    </label>
-    <label>Accent
-      <select id="voice-accent">
-        <option value="american accent" selected>American</option>
-        <option value="british accent">British</option>
-        <option value="australian accent">Australian</option>
-        <option value="canadian accent">Canadian</option>
-        <option value="indian accent">Indian</option>
-      </select>
-    </label>
-    <label>Age
-      <select id="voice-age">
-        <option value="child">Child</option>
-        <option value="teenager">Teenager</option>
-        <option value="young adult">Young Adult</option>
-        <option value="middle-aged" selected>Middle-aged</option>
-        <option value="elderly">Elderly</option>
-      </select>
-    </label>
-    <label>Volume
-      <input type="range" id="voice-volume" min="0" max="100" value="80">
-    </label>
-  </div>
-</div>
+```python
+class TTSRuntime(Protocol):
+    def load(self) -> None: ...
+    def prepare_voice(
+        self,
+        settings: VoiceSettings,
+        bootstrap_text: str,
+    ) -> object: ...
+    def generate(
+        self,
+        text: str,
+        prepared_voice: object,
+        settings: VoiceSettings,
+    ) -> tuple[object, int]: ...
+    def close(self) -> None: ...
 ```
 
-**Tests:**
-- Manual: Verify buttons render in correct positions
-- Manual: Verify settings panel is hidden by default
+The production `_OmniVoiceRuntime` owns the real Torch/OmniVoice imports and
+model API calls. `TTSService` owns async state, executor serialization, caching,
+timing, validation, and PCM conversion. Tests inject `FakeOmniVoiceRuntime`, so
+the production orchestration is tested without importing Torch or touching
+CUDA.
 
----
+Requirements:
 
-#### Step 4.2: Create voice.js Module
+- Own exactly one `ThreadPoolExecutor(max_workers=1)`.
+- Submit model load, voice preparation, and synthesis to that executor.
+- Never access the model from the event-loop thread.
+- Accept a runtime factory for tests; default to `_OmniVoiceRuntime`.
+- `load()` is idempotent. Concurrent calls await the same load future.
+- Await shared load/preparation futures through `asyncio.shield()` so cancelling
+  one WebSocket's waiter does not cancel server-wide model work.
+- Keep the model resident until application shutdown.
+- `_OmniVoiceRuntime` imports `torch`, `numpy`, and `omnivoice` inside its
+  executor load path. Constructing `TTSService` with a fake runtime must not
+  import them.
+- Load with the configured model ID/path, device, and dtype.
+- Map validated `float16`/`float32` strings to Torch dtypes explicitly.
+- When device is CPU, set the configured Torch intra-op thread count before
+  model load and skip every CUDA/FlashInfer operation.
+- Do not load Whisper ASR; voice design and prepared prompts supply their own
+  reference text.
+- Read the sample rate from `model.sampling_rate`.
+- If configured, apply FlashInfer after model load.
+- Run one warm-up/voice-preparation operation before reporting ready.
+- Recognize `torch.cuda.OutOfMemoryError` and runtime messages containing
+  `out of memory`; clear partial references and return stable `voice_oom`.
+- Clip waveform values to `[-1.0, 1.0]` before conversion.
+- Convert with `(samples * 32767).astype("<i2", copy=False).tobytes()`.
+- Verify output is non-empty, finite, mono, and one-dimensional.
+- Log generation time, audio duration, RTF, text character count, and queue
+  wait time without logging full assistant text.
 
-**File:** `static/voice.js`
+#### Stable voice preparation
 
-**Description:** Manage voice mode state, WebSocket communication, audio playback, and settings.
+For each unique backend voice setting combination:
 
-**Key exports:**
+1. Build the validated OmniVoice `instruct` string.
+2. Generate a hidden 3–6 second bootstrap phrase with voice design:
+   `"Hello. I'm ready to help with what you're working on today."`
+3. Call `model.create_voice_clone_prompt(
+   (torch.from_numpy(audio), model.sampling_rate),
+   ref_text=bootstrap_text
+   )`.
+4. Cache the resulting `VoiceClonePrompt` by a stable hash of the instruct
+   fields. Keep at most eight entries with LRU eviction.
+   Deduplicate in-flight preparation for the same key so simultaneous tabs do
+   not generate identical bootstrap samples twice.
+5. For response chunks, call `model.generate()` with the cached
+   `voice_clone_prompt`, matching `instruct`, validated `speed`,
+   configured `num_step`, `postprocess_output=True`,
+   `pad_duration=0.02`, and `fade_duration=0.02`.
+
+This adds work when a new voice preset is first selected but produces more
+consistent short chunks and makes later response startup faster. A settings
+change becomes active only after `prepare_voice()` succeeds and only for the
+next response.
+
+Do not enable OmniVoice's optional `normalize_text=True` in the first
+implementation. It adds WeTextProcessing/Pynini deployment complexity. The
+speech sanitizer below handles a small explicit set of coding symbols; add
+full text normalization later only after it is benchmarked.
+
+#### Cancellation rule
+
+Cancelling a coroutine waiting for synthesis cannot stop an already-running
+diffusion call. The single-thread executor guarantees that a new call cannot
+overlap it. `VoiceSession` must compare stream IDs after `synthesize()` returns
+and discard stale PCM.
+
+### 2. `pi_chat/tts_chunking.py`
+
+Implement a stateful streaming parser. Keep raw lexical state across
+`text_delta` calls and sanitize only text ranges proven complete by the scanner.
+Do not repeatedly sanitize the entire accumulated buffer before determining
+whether a Markdown fence, inline-code span, link destination, URL, or control
+tag is still open; doing so loses delimiter context when a construct is split
+across deltas.
+
+Public API:
+
+```python
+class StreamingSpeechChunker:
+    def feed(self, delta: str, now: float | None = None) -> list[str]: ...
+    def flush_text_block(self, now: float | None = None) -> list[str]: ...
+    def finish(self) -> list[str]: ...
+    def reset(self) -> None: ...
+    @property
+    def pending_characters(self) -> int: ...
+```
+
+The chunker has two stages:
+
+1. A streaming Markdown/code scanner identifies speakable text and safe break
+   positions without splitting inside a construct.
+2. A chunk selector emits natural, bounded pieces.
+
+#### Scanner behavior
+
+- Omit fenced code blocks using both backtick and tilde fences.
+- Fence markers can be split across deltas.
+- Speak inline-code contents but omit backticks.
+- Convert Markdown links to their label and omit the destination.
+- Omit bare `http://`, `https://`, and `www.` URLs.
+- Omit image destinations; retain non-empty alt text as `"image: <alt>"`.
+- Strip emphasis, heading, quote, list, and table marker characters.
+- Strip HTML tags.
+- Convert line breaks and table pipes into pause whitespace.
+- Preserve supported OmniVoice bracket tags verbatim.
+- Treat unsupported bracketed text as ordinary text.
+- Normalize whitespace without joining words that arrived in separate deltas.
+- Normalize only these explicit symbols:
+
+| Input | Speech text |
+|---|---|
+| `->`, `→` | `to` |
+| `<=`, `≤` | `less than or equal to` |
+| `>=`, `≥` | `greater than or equal to` |
+| `==` | `equals` |
+| `!=`, `≠` | `does not equal` |
+| `&&` | `and` |
+| `||` | `or` |
+
+Do not speak an entire long code block, URL, base64 payload, or file attachment.
+
+#### Chunk-selection behavior
+
+Use speakable character counts after sanitization:
+
+- Strong boundary: `.`, `!`, `?`, `…`, `。`, `！`, or `？`, followed by
+  whitespace, a line break, a closing quote/bracket, or end-of-block.
+- Do not split common abbreviations, decimal numbers, version numbers, email
+  addresses, or initials.
+- Clause boundary: comma, semicolon, colon, em dash, or line break.
+- Preferred first chunk: first strong boundary at 24–120 characters.
+- Preferred later chunks: strongest boundary near 80–160 characters.
+- Hard maximum: 220 characters; split at the last safe whitespace.
+- Once at least 72 characters are buffered, emit at the best clause or
+  whitespace boundary after `PI_CHAT_TTS_MAX_HOLD_MS` even if there is no full
+  sentence. This prevents an unpunctuated response from delaying speech
+  indefinitely.
+- `flush_text_block()` emits a completed block only if it has at least 24
+  speakable characters. Hold shorter phrases across intervening tool calls so
+  OmniVoice does not receive unnecessary one-second fragments.
+- `finish()` emits all final speakable text, including a short final phrase.
+- Never discard a short chunk. Merge it forward or retain it until `finish()`.
+- A control tag such as `[laughter]` stays with the following spoken words; it
+  is not itself a chunk boundary.
+
+`VoiceSession` must arm a small timer when the chunker has at least 72 pending
+characters. The timer calls a `feed("", now=...)`/due-flush path so a paused LLM
+does not require another delta to trigger the maximum-hold rule.
+
+### 3. Minimal additions to `pi_chat/process.py`
+
+Add:
+
+```python
+self.event_observer: Callable[[dict], Awaitable[None]] | None = None
+self._browser_send_lock = asyncio.Lock()
+```
+
+Add methods:
+
+```python
+async def send_browser_json(self, payload: dict) -> None: ...
+async def send_browser_bytes(self, payload: bytes) -> None: ...
+```
+
+Both methods:
+
+- Return harmlessly if `self.ws` is `None`.
+- Use `_browser_send_lock`.
+- Perform the actual `WebSocket.send_json()` or `send_bytes()`.
+
+Update existing backend browser sends to use these helpers, including pi event
+forwarding and command responses. Do not hold the lock around TTS generation or
+any other slow work.
+
+In `_read_stdout()`:
+
+1. Resolve pending RPC responses exactly as today.
+2. Send the unchanged `{"type": "pi_event", "event": event}` to the browser.
+3. Await the optional observer.
+4. Catch and log observer errors without stopping stdout reading or chat event
+   forwarding.
+
+The observer must only update the chunker/queue and create lightweight tasks.
+It must never call `model.generate()` inline.
+
+### 4. `pi_chat/voice_session.py`
+
+This is per-WebSocket voice state and orchestration.
+
+Core fields:
+
+```python
+enabled: bool
+ready: bool
+settings: VoiceSettings
+voice_handle: VoiceHandle | None
+stream_id: int
+sequence: int
+active_run: bool
+suppress_current_run: bool
+chunker: StreamingSpeechChunker
+queue: asyncio.Queue[str | Sentinel]
+queued_characters: int
+worker_task: asyncio.Task | None
+hold_timer_task: asyncio.Task | None
+prepare_task: asyncio.Task | None
+activation_id: int
+closed: bool
+```
+
+Required methods:
+
+```python
+async def enable(self, raw_settings: dict) -> None: ...
+async def disable(self) -> None: ...
+async def update_settings(self, raw_settings: dict) -> None: ...
+async def stop_current(self, reason: str = "stopped") -> None: ...
+async def observe_pi_event(self, event: dict) -> None: ...
+async def close(self) -> None: ...
+```
+
+`enable()` and `update_settings()` must not hold up the WebSocket receive loop
+while a model downloads, loads, warms, or prepares a voice. They send the
+loading state, increment/capture `activation_id`, create `prepare_task`, and
+return. The preparation task installs its result only if its captured activation
+ID is still current and the session is still enabled. `disable()` and `close()`
+invalidate the ID and cancel only the async waiter; the single model executor
+may finish already-running work safely in the background.
+
+If a settings change is requested while a known-good handle exists, keep that
+handle for an already-active response. The new handle becomes active for the
+next `agent_start` only after preparation succeeds. If voice becomes ready in
+the middle of a response, it likewise starts with the next `agent_start`
+rather than speaking a partial answer.
+
+#### Settings validation
+
+Accept only these OmniVoice values:
+
+- Gender: `male`, `female`
+- Age: `child`, `teenager`, `young adult`, `middle-aged`, `elderly`
+- Pitch: `very low pitch`, `low pitch`, `moderate pitch`, `high pitch`,
+  `very high pitch`
+- Accent: `american accent`, `british accent`, `australian accent`,
+  `canadian accent`, `indian accent`, `chinese accent`, `korean accent`,
+  `japanese accent`, `portuguese accent`, `russian accent`
+- Style: `null` or `whisper`
+- Speed: floating point from `0.8` through `1.25`
+
+Reject unknown keys and values. Volume is browser-only and is never sent to
+OmniVoice.
+
+#### pi event mapping
+
+| pi event | Voice behavior |
+|---|---|
+| `agent_start` | Cancel old stream as `superseded`; if enabled and ready, allocate next stream ID, reset chunker/queue, start worker, send `voice_stream_start` |
+| `message_update.text_start` | Start/continue a top-level text block; do not reset the whole response |
+| `message_update.text_delta` | Feed delta, enqueue emitted speech chunks |
+| `message_update.text_end` | Call `flush_text_block()`; retain short fragments |
+| `response` with failed prompt | End current stream as `error` |
+| `agent_settled` | Call `finish()`, enqueue results then sentinel |
+| disconnect/new/load/abort/disable/stop | Cancel current stream with the matching reason |
+
+Multiple `agent_start` events before one `agent_settled` are retry cycles. Stop
+scheduled old audio by emitting a new `voice_stream_start` with a new ID; never
+deliberately replay the superseded stream.
+
+After `voice_stop`, set `suppress_current_run=True` and ignore later deltas from
+that run. Reset suppression on the next `agent_start`.
+
+#### Worker behavior
+
+One consumer task exists per active stream:
+
+```text
+await queue item
+  -> if sentinel: send voice_stream_end(complete), exit
+  -> await TTSService.synthesize(text, captured_voice_handle)
+  -> if captured stream ID is no longer active: discard PCM, exit
+  -> frame with stream ID and sequence
+  -> send bytes immediately
+  -> increment sequence
+```
+
+Capture the prepared `VoiceHandle` at `agent_start`; settings cannot change the
+voice halfway through a response.
+
+Reserve one queue slot for the end sentinel: create an asyncio queue sized to
+`max_data_chunks + 1`, enforce `max_data_chunks` manually for speech items, and
+insert the sentinel with `put_nowait()`. The pi stdout observer must never wait
+for queue capacity. Enqueue the sentinel at most once.
+
+#### Backpressure
+
+Before enqueueing, enforce both configured queue limits. The chunk currently in
+synthesis does not count against `asyncio.Queue.maxsize` but should be included
+in latency logs.
+
+If limits would be exceeded:
+
+1. Coalesce adjacent unsynthesized chunks while preserving order, up to the
+   chunker's 220-character hard maximum.
+2. If still over either limit, stop voice for only the current response with
+   reason `backlog`.
+3. Send `voice_error` with code `voice_backlog`.
+4. Keep `enabled=True` so the next response can try again.
+
+Never drop the oldest or middle speech chunks and continue.
+
+### 5. `pi_chat/websocket.py`
+
+Change `handle_websocket()` to accept the shared `TTSService`.
+
+At connection start:
+
+1. Set `pi.ws`.
+2. Construct one `VoiceSession(tts_service, pi.send_browser_json,
+   pi.send_browser_bytes, config)`.
+3. Set `pi.event_observer = voice_session.observe_pi_event`.
+
+Add command dispatch for `voice_enable`, `voice_disable`, `voice_settings`, and
+`voice_stop`.
+
+Before existing `new_session`, `load_session`, and `abort` actions, call
+`voice_session.stop_current()` with an appropriate reason.
+
+In `finally`:
+
+1. Clear `pi.event_observer`.
+2. `await voice_session.close()`.
+3. Clear `pi.ws`.
+4. Kill the pi subprocess as today.
+
+Do not put `text_delta` processing in `_receive_command()` or the browser
+command loop.
+
+### 6. `pi_chat/app.py`
+
+- Construct one `TTSService` in `create_app()` and store it on
+  `application.state.tts`.
+- Pass it into `handle_websocket()`.
+- Allow a fake service to be injected by `create_app()` for tests.
+- During lifespan shutdown, close WebSockets/processes as today, then
+  `await tts.close()`.
+- Do not load the model during app startup.
+- An extra HTTP status endpoint is not required; `voice_enable` returns the
+  authoritative per-connection state.
+
+## Frontend implementation
+
+### 1. `static/socket.js`
+
+Add `onBinary` to `createSocket()` options.
+
+Immediately after creating a WebSocket:
+
 ```javascript
-export function setupVoice(options) {
-  // options: { sendCommand, onVoiceReady, onVoiceError, onAudioChunk }
-}
-
-export function isVoiceModeEnabled() {
-  return voiceEnabled;
-}
-
-export function getVoiceInstruction() {
-  // Returns the voice mode instruction text (for first message only)
-}
-
-export function isFirstMessage() {
-  return !hasSentFirstMessage;
-}
-
-export function markFirstMessageSent() {
-  hasSentFirstMessage = true;
-}
-
-export function stopSpeaking() {
-  // Interrupt current speech (called when new message is sent)
-  clearAudioQueue();
-  if (audioContext) {
-    // Suspend instead of close — close() is permanent and requires recreation
-    if (audioContext.state !== 'suspended') {
-      audioContext.suspend();
-    }
-  }
-  isSpeaking = false;
-}
-
-export function resumeAudioContext() {
-  // Resume AudioContext on next audio chunk (user gesture already happened on voice toggle)
-  if (audioContext && audioContext.state === 'suspended') {
-    audioContext.resume();
-  }
-}
+socket.binaryType = 'arraybuffer';
 ```
 
-**State:**
+In `onmessage`:
+
 ```javascript
-let voiceEnabled = false;
-let voiceLoading = false;
-let voiceReady = false;
-let audioContext = null;
-let isSpeaking = false;
-let audioQueue = [];
-let isPlaying = false;
-let hasSentFirstMessage = false;
-let voiceSettings = {
-  gender: 'female',
-  pitch: 'moderate pitch',
-  accent: 'american accent',
-  age: 'middle-aged',
-  volume: 0.8,  // 0.0 to 1.0
-};
+if (typeof event.data !== 'string') {
+  onBinary(event.data);
+  return;
+}
+onMessage(JSON.parse(event.data));
 ```
 
-**Voice mode instruction (prepended to first message only):**
+On close, invoke the existing callback; `app.js` will tell voice playback to
+reset. Keep heartbeat and reconnect behavior unchanged.
 
-NOTE: This `<AUTOMATED MESSAGE>` injection is hacky. pi may not reliably follow it, and it adds ~300 chars of context on the first message. Better long-term: move this to a system prompt or extension-level instruction. For now, it's the fastest path to testing.
+### 2. `static/voice.js`
+
+Export one factory rather than module-level state:
 
 ```javascript
-const VOICE_INSTRUCTION = `<AUTOMATED MESSAGE> Voice mode is enabled. Your responses will be spoken via TTS. Use emotion tags when natural: [laughter], [sigh], [confirmation-en], [question-en], [surprise-ah], [dissatisfaction-hnn]. </AUTOMATED MESSAGE>`;
-```
-
-**Testing note:** Verify pi actually uses emotion tags with this instruction. If it ignores them or overuses them awkwardly, adjust the wording or move to system prompt.
-
-**WebSocket handlers:**
-- `voice_mode:ready` → Set `voiceReady = true`, update UI, enable send button
-- `voice_mode:error` → Show error, disable voice mode UI
-- `voice_mode:done` → Set `isSpeaking = false`, hide speaking indicator
-- Binary frames → Queue audio chunk, play via WebAudio
-
-**Audio queue and playback:**
-```javascript
-async function enqueueAudio(arrayBuffer) {
-  audioQueue.push(arrayBuffer);
-  if (!isPlaying) {
-    await playNext();
-  }
-}
-
-async function playNext() {
-  if (audioQueue.length === 0) {
-    isPlaying = false;
-    isSpeaking = false;
-    updateSpeakingIndicator();
-    return;
-  }
-  isPlaying = true;
-  isSpeaking = true;
-  updateSpeakingIndicator();
-
-  const buffer = audioQueue.shift();
-
-  if (!audioContext) {
-    audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
-  }
-
-  // Resume if suspended (e.g., after stopSpeaking)
-  if (audioContext.state === 'suspended') {
-    await audioContext.resume();
-  }
-
-  // Decode raw PCM bytes to AudioBuffer
-  const pcmData = new Int16Array(buffer);
-  const audioBuffer = audioContext.createBuffer(1, pcmData.length, 24000);
-  const channelData = audioBuffer.getChannelData(0);
-  for (let i = 0; i < pcmData.length; i++) {
-    channelData[i] = pcmData[i] / 32768;
-  }
-
-  const source = audioContext.createBufferSource();
-  source.buffer = audioBuffer;
-  
-  // Apply volume gain
-  const gainNode = audioContext.createGain();
-  gainNode.gain.value = voiceSettings.volume;
-  source.connect(gainNode);
-  gainNode.connect(audioContext.destination);
-  
-  source.start();
-  source.onended = () => playNext();
-}
-
-function clearAudioQueue() {
-  audioQueue = [];
-  isPlaying = false;
-  isSpeaking = false;
-  updateSpeakingIndicator();
-}
-```
-
-**Settings panel:**
-- Toggle visibility on settings button click
-- Update `voiceSettings` on any select change
-- Send `voice_mode:settings` command to backend
-- Persist settings to localStorage per profile: `voice_settings_<profile>`
-
-**Tests (TDD):**
-- `test_voice_instruction_contains_tags`
-- `test_voice_instruction_wrapped_in_tags`
-- Manual: Toggle voice mode, verify loading → ready → error states
-- Manual: Change settings, verify command sent
-- Manual: Verify audio plays sequentially from queue
-
----
-
-#### Step 4.3: Add Voice CSS
-
-**File:** `static/voice.css`
-
-**Description:** Styles for voice toggle button, loading indicator, settings panel.
-
-**Key styles:**
-- Voice toggle button: Same size/style as attach button
-- Loading spinner on voice toggle when model is loading
-- Active state: Green/blue accent when voice mode is enabled
-- Settings panel: Slide-in panel or dropdown near the settings button
-- Speaking indicator: Small pulsing icon or animated waveform near the toggle button
-
-**Tests:**
-- Manual: Verify styles match existing UI aesthetic
-
----
-
-#### Step 4.4: Integrate voice.js into app.js
-
-**File:** `static/app.js`
-
-**Changes:**
-```javascript
-import { setupVoice } from './voice.js';
-
-setupVoice({
+export function createVoiceController({
   sendCommand,
-  onVoiceReady: () => { /* update send button, show settings */ },
-  onVoiceError: () => { /* show error in chat */ },
-  onAudioChunk: (arrayBuffer) => { /* enqueue audio for playback */ },
-});
-```
-
-**Route voice_mode messages:**
-```javascript
-function routeServerMessage(message) {
-  // Existing routes...
-  if (message.type === 'voice_mode:ready') {
-    handleVoiceReady();
-  } else if (message.type === 'voice_mode:error') {
-    handleVoiceError(message.message);
-  } else if (message.type === 'voice_mode:done') {
-    handleVoiceDone();
-  }
+  onError,
+  audioContextFactory,
+}) {
+  return {
+    setAccount,
+    toggle,
+    openSettings,
+    handleServerMessage,
+    handleBinaryFrame,
+    beforePrompt,
+    resetConnection,
+    destroy,
+  };
 }
 ```
 
-**Tests:**
-- Manual: Verify message routing works end-to-end
+`audioContextFactory` defaults to the browser AudioContext and is injectable in
+Node tests.
 
----
+State:
 
-#### Step 4.5: Modify chat.js for Voice Mode
-
-**File:** `static/chat.js`
-
-**Changes:**
-
-1. **Prepend voice instruction to first message only when voice mode is enabled:**
 ```javascript
-function submitPrompt() {
-  const text = userInput.value.trim();
-  if (!text && pendingFiles.length === 0) return;
+enabled
+backendState // disabled | loading | ready | error
+settings
+account
+audioContext
+masterGain
+activeStreamId
+lastSequence
+scheduledEndTime
+activeSources // Set<AudioBufferSourceNode>
+backendStreamEnded
+```
 
-  // Interrupt any ongoing speech when user sends a new message
-  stopSpeaking();
+#### Audio unlock
 
-  let messageText = text;
-  if (isVoiceModeEnabled() && isFirstMessage()) {
-    messageText = getVoiceInstruction() + '\n\n' + text;
-    markFirstMessageSent();
-  }
+The actual speaker-toggle click must:
 
-  // Render user bubble with only the visible text (not the hidden instruction)
-  appendUserMessage(text); // Only the user's actual text
+1. Create `AudioContext` if needed.
+2. Call `resume()`.
+3. Play a one-sample silent buffer if necessary to satisfy iOS.
+4. Then send `voice_enable`.
 
-  // ... rest of prompt handling (send messageText with hidden instruction if applicable)
+If the context later reports `suspended`, show a visible “Tap to resume audio”
+control. Do not assume a WebSocket callback can resume it.
+
+#### Playback scheduling
+
+For each valid binary frame:
+
+1. Decode and validate the 24-byte header.
+2. Drop stale or out-of-order frames.
+3. Create a mono `AudioBuffer` with the frame's sample count and sample rate.
+4. Fill channel data from signed 16-bit little-endian PCM.
+5. Connect a new source through one persistent `masterGain`.
+6. Set:
+
+```javascript
+const startAt = Math.max(
+  audioContext.currentTime + 0.025,
+  scheduledEndTime,
+);
+source.start(startAt);
+scheduledEndTime = startAt + audioBuffer.duration;
+```
+
+7. Add the source to `activeSources`; remove it in `onended`.
+8. Show “speaking” from the first scheduled source until both:
+   - the backend sent `voice_stream_end`, and
+   - `activeSources` is empty and `scheduledEndTime <= currentTime`.
+
+On `voice_stream_start`:
+
+- Stop every old source with `source.stop()` inside `try/catch`.
+- Clear the set and scheduling state.
+- Set the new stream ID and reset sequence tracking.
+
+On stop/disable/new prompt/reconnect:
+
+- Stop sources and clear state.
+- Do not suspend or close the AudioContext.
+- Send `voice_stop` when stopping a server-active stream, except after the
+  WebSocket has already closed.
+
+Volume changes update the persistent gain node locally and do not require a
+server command.
+
+#### Settings persistence
+
+Use `pi_chat_voice_settings_v1_<account>`. To make the account available, change
+`setupAuth(onAuthenticated)` so it calls `onAuthenticated(account)`. Pass that
+value from `static/app.js` to `voice.setAccount(account)`.
+
+Store only the validated UI fields. Never store auth data.
+
+### 3. `static/app.js`
+
+Compose voice the same way it composes chat and sessions:
+
+- Create the controller with the existing `sendCommand` closure.
+- Pass `voice.beforePrompt` into `setupChat()`.
+- Route `voice_state`, `voice_stream_start`, `voice_stream_end`, and
+  `voice_error` to `voice.handleServerMessage()`.
+- Pass binary frames from `createSocket()` to `voice.handleBinaryFrame()`.
+- Call `voice.resetConnection()` on socket close.
+- Call the appropriate local stop/reset method before new-session and logout
+  flows.
+- Pass the authenticated account to `voice.setAccount(account)`.
+
+Do not move chat rendering into `voice.js`.
+
+### 4. `static/sessions.js`
+
+Add an optional `onBeforeSessionLoad` callback to `createSessionPanel()`. Call it
+immediately before the existing `sendCommand({type: "load_session", ...})`.
+Pass the voice controller's stop/reset callback from `static/app.js`. Do not
+change session fetching, ownership, overlays, or loaded-message rendering.
+
+### 5. `static/chat.js`
+
+Add one optional callback to `setupChat()`:
+
+```javascript
+let onPromptSubmitted = () => {};
+
+export function setupChat(options) {
+  sendCommand = options.sendCommand;
+  onPromptSubmitted = options.onPromptSubmitted || (() => {});
+  // existing listeners
 }
 ```
 
-2. **Disable send button while voice model is loading:**
-```javascript
-function updateSendButton() {
-  const hasContent = userInput.value.trim().length > 0 || pendingFiles.length > 0;
-  const voiceLoading = isVoiceLoading(); // New check
-  sendButton.disabled = isAgentRunning || !hasContent || voiceLoading;
-}
-```
+Call it immediately before sending a valid prompt. Do not alter the prompt text,
+user bubble, attachments, message history, or rendering state.
 
-3. **Export state for voice.js:**
-```javascript
-export function isAgentRunning() {
-  return isAgentRunning;
-}
-```
+### 6. `static/index.html` and `static/styles.css`
 
-**Tests:**
-- `test_voice_instruction_prepended_on_first_message`
-- `test_voice_instruction_not_prepended_on_subsequent_messages`
-- `test_user_bubble_shows_only_visible_text`
-- `test_speaking_interrupted_on_new_message`
-- Manual: Verify send button disabled during loading
+Use a speaker/output icon, not a microphone icon.
 
----
+Add:
 
-#### Step 4.6: Configure WebSocket for Binary Frames
+- Toggle button with `aria-pressed`
+- Loading/ready/error/speaking visual states
+- A stop-speech control visible while speaking
+- Settings disclosure/dialog for gender, age, pitch, accent, optional whisper,
+  speed, and volume
+- An `aria-live="polite"` status element
+- A “Tap to resume audio” button for blocked autoplay
 
-**File:** `static/socket.js`
+Use the existing theme tokens. Put component rules in `static/styles.css`; add
+new palette values only to `static/theme.css`. Keep responsive overrides after
+base component rules as required by `AGENTS.md`.
 
-**Changes:**
-```javascript
-function createSocket(options) {
-  let socket;
+The settings panel must:
 
-  function connect() {
-    socket = new WebSocket(url);
-    socket.binaryType = 'arraybuffer'; // Enable binary frames
+- Use real labels and form controls
+- Close on Escape
+- Restore focus to its opener
+- Be keyboard operable
+- Fit the existing mobile viewport without covering the send button
 
-    socket.onmessage = async (event) => {
-      if (event.data instanceof ArrayBuffer) {
-        // Binary audio chunk
-        options.onAudioChunk?.(event.data);
-        return;
-      }
-      // JSON message
-      const message = JSON.parse(event.data);
-      options.onMessage?.(message);
-    };
-  }
-}
-```
+## File plan
 
-**Tests:**
-- Manual: Verify binary frames are received and routed to voice.js
+### New files
 
----
+| File | Purpose |
+|---|---|
+| `pi_chat/tts_service.py` | Lazy OmniVoice model, voice cache, serialized inference |
+| `pi_chat/tts_chunking.py` | Streaming Markdown-aware speech chunker |
+| `pi_chat/voice_session.py` | Per-WebSocket voice state, queue, framing, cancellation |
+| `static/voice.js` | UI state and Web Audio scheduling |
+| `tests/fakes/voice.py` | Deterministic fake runtime/service and synchronization controls |
+| `tests/test_voice_fakes.py` | Fake controls, determinism, and no-Torch import guard |
+| `tests/test_tts_service.py` | Service tests with fake OmniVoice model |
+| `tests/test_tts_chunking.py` | Streaming chunker tests |
+| `tests/test_voice_session.py` | Event mapping, queue, protocol, cancellation |
+| `tests/test_voice_fake_e2e.py` | No-GPU pi-event-to-binary-frame integration |
+| `tests/test_voice_real_cpu.py` | Explicit slow real-checkpoint CPU smoke tests |
+| `tests/test_voice_real_gpu.py` | Human-gated CUDA/VRAM/performance smoke tests |
+| `tests/voice_playback_test.mjs` | Binary parsing and scheduler tests with fake audio |
+| `tools/run_fake_voice_server.py` | Development server with audible fake PCM |
+| `tools/run_voice_cpu_validation.py` | Agent-run real CPU validator and artifact writer |
+| `tools/benchmark_voice.py` | Opt-in real-model latency/RTF benchmark |
+| `tools/run_voice_gpu_validation.py` | Human-run real-model validator and artifact writer |
 
-### Phase 5: Backend TTS on text_delta (Streaming)
+### Modified files
 
-#### Step 5.1: Wire Up text_delta Processing
+| File | Change |
+|---|---|
+| `.gitignore` | Ignore local OmniVoice checkout and `voice-validation/` artifacts |
+| `pyproject.toml`, `uv.lock` | Optional pinned voice dependencies and test tools |
+| `pi_chat/config.py` | TTS configuration parsing |
+| `pi_chat/process.py` | Observer hook and serialized browser sends |
+| `pi_chat/websocket.py` | Voice commands and per-connection session lifecycle |
+| `pi_chat/app.py` | Shared service construction/injection/shutdown |
+| `static/auth.js` | Pass authenticated account to composition callback |
+| `static/socket.js` | Route binary frames |
+| `static/app.js` | Compose and route voice controller |
+| `static/sessions.js` | Stop local speech immediately before session load |
+| `static/chat.js` | Prompt-submitted callback only |
+| `static/index.html` | Accessible voice controls |
+| `static/styles.css` | Voice component and responsive styles |
+| `static/theme.css` | Only if an existing token cannot express a needed state |
+| `package.json` | Add voice JS test script |
+| `README.md`, `AGENTS.md` | Setup, protocol, files, tests, and runtime invariants |
 
-**File:** `pi_chat/websocket.py`
+## Serial subagent execution contract
 
-**Description:** Integrate text_delta processing into the existing WebSocket event loop. When a `message_update` event with `text_delta` is received and voice mode is enabled, accumulate text and trigger TTS for complete chunks.
+Use the loaded `orchestrate-subagent-stack` skill for implementation. The stack
+is serial because all frames share one model and filesystem. Never launch
+parallel workers, never reload the skill in descendants, and never leave a
+child frame active across the human GPU handoff.
 
-**Integration point:** In the main event loop where pi_events are processed:
+### Main-to-manager assignment
 
-```python
-# Existing code processes pi_events...
-# Add voice mode handling:
+After calling `agent_status`, the main agent should delegate one voice
+implementation manager with this contract:
 
-if event.get("type") == "message_update" and voice_mode_enabled:
-    await _handle_text_delta_for_tts(
-        websocket,
-        application,
-        event,
-        voice_state,
-    )
-```
+- **Task:** Implement phases 0–7 of this guide, including fake qualification
+  and real CPU validation, while preserving every `AGENTS.md` invariant.
+  Prepare, but do not run, the human-gated real-GPU validator.
+- **Scope:** The files in this guide's new/modified file tables, their focused
+  tests, `git diff`, and the pinned OmniVoice API contract in this guide.
+- **Non-goals:** Do not load the real checkpoint onto CUDA; do not run
+  `voice_gpu` tests; do not redesign pi process/session/rendering architecture;
+  do not modify unrelated upload, auth, session, or sub-agent behavior.
+- **Acceptance:** Phases 0–7 meet their exit criteria; normal tests import
+  neither Torch nor OmniVoice; real CPU artifacts pass; the GPU validator is
+  syntax/unit-tested with mocked commands; a read-only integration verifier has
+  checked the combined diff, CPU artifacts, and commands.
+- **Verification:** Use the exact normal-suite commands under “Existing
+  regression checks,” plus the focused commands assigned below.
+- **Budgets:** Choose bounded time/turn limits appropriate for a multi-slice
+  manager, leaving enough room to reconcile receipts and submit a truthful
+  manager result.
 
-**Key behaviors:**
-- Only processes `text_start`, `text_delta`, `text_end` event types
-- Accumulates deltas into buffer
-- Emits chunks at natural boundaries (sentence ends, emotion tags, em-dashes)
-- Tool execution events are naturally ignored
-- Each chunk triggers async TTS generation
-- Audio chunks streamed as binary WebSocket frames
+The manager retains dependency order, receipts, and unresolved risks. It should
+delegate noisy inspection, implementation, and verification rather than
+accumulating raw logs in its own context.
 
-**Tests (TDD):**
-- `test_text_start_clears_buffer`
-- `test_text_delta_accumulates_and_emits_chunks`
-- `test_text_end_emits_remaining_buffer`
-- `test_tool_events_ignored`
-- `test_multiple_text_blocks_in_one_response`
+### Suggested serial worker queue
 
----
+These are meaningful implementation slices, not mandatory one-worker-per-file
+rules. A manager may combine adjacent slices when the work is small, but must
+not merge everything into one broad worker.
 
-## Data Flow
+| Order | Worker outcome | Primary scope | Prerequisite to validate first | Focused verification |
+|---:|---|---|---|---|
+| 1 | No-GPU test seams and streaming chunker | `pi_chat/tts_chunking.py`, `tests/fakes/voice.py`, chunker/fake tests | Confirm pi event shapes and optional-dependency requirements in `AGENTS.md`/this guide | `uv run pytest -q -m "not voice_cpu and not voice_gpu" tests/test_voice_fakes.py tests/test_tts_chunking.py` |
+| 2 | Serialized TTS service and OmniVoice adapter | `pi_chat/tts_service.py`, `pi_chat/config.py`, dependency metadata, service tests | Import and exercise worker 1's fake runtime before editing | `uv run pytest -q -m "not voice_cpu and not voice_gpu" tests/test_tts_service.py` |
+| 3 | Per-connection voice session and transport hook | `pi_chat/voice_session.py`, `pi_chat/process.py`, `pi_chat/websocket.py`, `pi_chat/app.py`, backend tests | Run focused service tests and confirm its public API | `uv run pytest -q -m "not voice_cpu and not voice_gpu" tests/test_voice_session.py tests/test_voice_fake_e2e.py`; Python compile |
+| 4 | Browser protocol, playback, and accessible UI | `static/voice.js`, `static/socket.js`, `static/app.js`, `static/chat.js`, `static/sessions.js`, HTML/CSS/theme, JS tests | Confirm binary header and server message contract from worker 3 | Voice JS test; `node --check` for non-vendored JS; `npm test` |
+| 5 | Fake full-stack tooling, CPU/GPU validators, and docs | fake server, validator/benchmark tools, `.gitignore`, `README.md`, `AGENTS.md`, artifact/report checks | Run focused backend and frontend suites before consuming their interfaces | Tool `--help`/mocked tests, full normal suite, artifact-schema checks |
+| 6 | Independent no-GPU integration verification | All scoped files, tests, artifacts, and `git diff` | Confirm workers 1–5 receipts against the actual filesystem | Full normal-suite commands; diff/scope inspection; no edits |
+| 7 | Real CPU checkpoint and pipeline validation | CPU validator, `tests/test_voice_real_cpu.py`, CPU artifacts | Require worker 6's successful fake-verifier receipt and recheck available RAM/disk | Run Phase 7 command; inspect exit code, heartbeats, JSON/log/WAV artifacts |
+| 8 | Independent CPU-artifact verification | `voice-validation/cpu/latest/`, adapter/config, `git diff` | Confirm the CPU validator process exited and artifacts are complete | Tie every Phase 7 criterion to persisted evidence; no edits |
 
-### Voice Mode State
+Every worker contract must include concrete `task`, `scope`, `nonGoals`,
+`acceptance`, `verification`, `timeout`, and `maxTurns` fields. A dependent
+worker must begin by checking the prerequisite it consumes rather than trusting
+the prior receipt. Each worker reports exact commands, exit codes, changed
+files, artifacts, and unresolved issues through `submit_result`.
 
-**Frontend:**
-- `voiceEnabled`: User has clicked the toggle
-- `voiceLoading`: Model is loading on backend
-- `voiceReady`: Backend confirmed model is loaded
-- `isSpeaking`: Currently streaming audio
-- `hasSentFirstMessage`: Track whether voice instruction has been sent
+The integration verifier is read-only. If it fails, the manager launches a new,
+narrow recovery worker using the exact failure evidence, then runs a fresh
+read-only verifier after any cross-slice repair.
 
-**Backend:**
-- Per-WebSocket: `voice_mode_enabled`, `voice_settings`, `tts_buffer`, `pending_chunks`, `tts_task`
-- Server-wide: `TTSService` singleton with model state
+### Closing the stack before the GPU handoff
 
-### Settings Flow
+The phases 0–7 manager may report `completed` when fake and real CPU criteria
+pass and the GPU validator command is ready; real-GPU execution is outside that
+manager's scope, so it is not an unresolved implementation failure.
 
-```
-User changes dropdown → voice.js updates voiceSettings → send voice_mode:settings →
-websocket.py updates per-connection voice_settings → next TTS uses new instruct
-```
+The manager submits its final receipt and the main agent returns control to the
+user with the single Phase 8 command. No manager or worker remains active while
+the implementing LLM is unloaded.
 
-### Voice Instruction Injection
+After the user runs the validator and reloads the LLM, start a fresh read-only
+worker to inspect `voice-validation/gpu/latest/` and tie each Phase 8 criterion
+to artifact evidence. If it fails, use a new targeted recovery worker; do not
+repeat the broad implementation assignment. Finish with the manual
+Phase 9 production coexistence smoke test.
 
-```
-First message with voice mode:
-User types "Hello" → chat.js checks isFirstMessage() && isVoiceModeEnabled() →
-prepends VOICE_INSTRUCTION → sends "VOICE_INSTRUCTION\n\nHello" →
-pi-rpc receives full message → session stores full message →
-UI only renders "Hello" (the visible part)
+## Implementation order for one local LLM
 
-Subsequent messages:
-User types "How are you?" → No voice instruction prepended →
-sends "How are you?" directly
-```
+Implement in this order and keep every phase green before continuing.
 
-**Key insight:** The UI never shows the voice instruction because:
-1. The frontend creates the user message bubble with only the visible text
-2. The WebSocket sends the full message (instruction + visible) to pi-rpc
-3. pi-rpc stores the full message in session files
-4. On reload, the session loads with the full message (visible as-is; stripping can be added later)
+### Phase 0 — No-GPU test seams and fixtures
 
----
+1. Define the internal `TTSRuntime` protocol.
+2. Implement `FakeOmniVoiceRuntime` and `FakeTTSService` in
+   `tests/fakes/voice.py`.
+3. Add synthetic pi event fixtures covering one sentence, multiple text blocks,
+   a tool gap, retry, long unpunctuated text, Markdown, code, and cancellation.
+4. Make fake output deterministic and distinguishable by chunk.
+5. Prove the fake suite imports without importing Torch or initializing CUDA.
 
-## TDD Test Plan
+Exit criteria:
 
-### Backend Tests
+- The default test environment needs no voice extra and allocates no GPU memory.
+- Fakes can simulate delay, blocked work, OOM, arbitrary exceptions, invalid
+  output, alternate sample rates, and configured failure on the Nth call.
+- A barrier-controlled fake can prove maximum model-call concurrency.
 
-**tts_service.py:**
+### Phase 1 — Pure chunking
+
+1. Implement `StreamingSpeechChunker`.
+2. Feed synthetic `text_delta` sequences and deliberately split punctuation,
+   Markdown delimiters, URLs, and control tags across calls.
+3. Add exhaustive unit tests.
+4. Do not import OmniVoice.
+
+Exit criteria:
+
+- No text is lost across feed/flush/finish.
+- No fenced code or URL content is spoken.
+- Short fragments merge rather than disappear.
+- First eligible chunks obey the latency and size policy.
+
+### Phase 2 — TTS service
+
+1. Implement the executor-backed service and data classes.
+2. Implement `_OmniVoiceRuntime` but exercise it only through mocked imports in
+   the normal suite.
+3. Inject the fake runtime factory for tests.
+4. Implement stable-voice preparation and LRU cache.
+5. Implement PCM conversion and timing metrics.
+6. Test cancellation while fake generation is blocked; prove that model
+   calls never overlap.
+
+Exit criteria:
+
+- Text-only app imports without voice dependencies.
+- Concurrent load calls create one model.
+- Concurrent syntheses execute one at a time.
+- Cancelling one caller never permits overlapping model access.
+- PCM format and actual sample rate are correct.
+- No exit criterion requires loading the real checkpoint.
+
+### Phase 3 — Voice session and binary protocol
+
+1. Implement settings validation.
+2. Implement stream IDs, queue, sentinel, backpressure, framing, and cleanup.
+3. Drive it with synthetic pi event sequences.
+4. Test retry cycles, multi-block responses, tool gaps, errors, stop, disable,
+   reconnect, and slow synthesis.
+
+Exit criteria:
+
+- A `text_delta` can produce a binary frame before `agent_settled`.
+- Stale synthesis results are discarded.
+- Stream-end is emitted once with the correct ID and reason.
+- Queue overflow never produces a spoken answer with missing middle chunks.
+
+### Phase 4 — Minimal pi integration
+
+1. Add locked browser send helpers and observer hook to `PiProcess`.
+2. Route all backend sends through the helpers.
+3. Create/close `VoiceSession` in `handle_websocket()`.
+4. Mount/inject/close `TTSService` in `create_app()`.
+5. Run existing Python compile and renderer parity tests.
+
+Exit criteria:
+
+- Existing prompt/session/reconnect behavior remains unchanged with voice off.
+- Observer failure cannot stop text event forwarding.
+- One connection's voice state cannot leak into another connection.
+
+### Phase 5 — Browser playback and UI
+
+1. Implement/test binary parsing before adding UI.
+2. Implement scheduled playback with fake AudioContext tests.
+3. Add socket/app composition.
+4. Add accessible controls and settings.
+5. Verify both themes and mobile layout.
+
+Exit criteria:
+
+- Old stream frames never play after a new stream starts.
+- Contiguous received chunks are scheduled without callback-induced gaps.
+- Stop is immediate.
+- Voice settings persist per profile.
+- Existing live/historic assistant DOM parity is unchanged.
+
+### Phase 6 — Full fake qualification
+
+1. Run all Python, JS, renderer-parity, protocol, and fake end-to-end tests.
+2. Start `tools/run_fake_voice_server.py`.
+3. Replay synthetic pi events through the real process observer,
+   `VoiceSession`, WebSocket framing, browser parser, and Web Audio scheduler.
+4. Use audible tones with different frequencies per sequence to verify chunk
+   order and immediate stop behavior manually.
+5. Write the fake qualification result to
+   `voice-validation/fake/latest/report.json`.
+
+Exit criteria:
+
+- All normal automated tests pass without Torch import or CUDA initialization.
+- The fake end-to-end test produces binary frames before `agent_settled`.
+- Cancellation, retries, backlog, stale frames, and reconnect behavior pass.
+- The implementation is ready for slow real CPU validation.
+
+### Phase 7 — Agent-run real CPU validation
+
+The implementing LLM creates and syntax/unit-tests
+`tools/run_voice_cpu_validation.py`, then runs it in a separate process while
+the local LLM remains on GPU:
+
 ```bash
-uv run pytest tests/test_tts_service.py -v
+CUDA_VISIBLE_DEVICES="" \
+uv run --extra voice python tools/run_voice_cpu_validation.py \
+  --device cpu \
+  --dtype float16 \
+  --functional-steps 4 \
+  --production-steps 16 \
+  --cpu-threads 4 \
+  --min-available-ram-gb 24 \
+  --min-free-disk-gb 20 \
+  --max-runtime-minutes 180 \
+  --output voice-validation/cpu/latest
 ```
-- `test_is_ready_false_on_init`
-- `test_load_sets_ready_true`
-- `test_load_is_idempotent`
-- `test_generate_chunk_returns_bytes`
-- `test_generate_chunk_with_instruct`
-- `test_generate_chunk_raises_on_not_loaded`
-- `test_load_handles_oom_gracefully`
 
-**tts_chunking.py:**
+The script must set `CUDA_VISIBLE_DEVICES=""` before importing Torch even if the
+caller omitted it, pass `device_map="cpu"` through the real adapter, and assert
+that CUDA is not selected. FlashInfer and CUDA graphs are disabled.
+
+Implement the validator as a lightweight supervisor plus one model child
+process. The supervisor does not import Torch. It writes heartbeats, enforces
+the configurable maximum runtime, preserves child stdout/artifacts, and
+terminates the child on timeout; child exit releases model RAM.
+
+Before model load, the validator records available RAM, swap, disk, CPU, and
+GPU-process state. It refuses to start below `--min-available-ram-gb` or
+`--min-free-disk-gb` thresholds. Default to 24 GB available RAM and 20 GB free
+disk; allow explicit operator overrides and record the actual thresholds in
+`manifest.json`.
+
+The validator must be noninteractive after launch and must:
+
+1. Capture environment, package, CPU, RAM, disk, and GPU-isolation metadata.
+2. Load the real checkpoint outside FastAPI.
+3. Prepare the default voice.
+4. Generate two very short functional chunks at four steps.
+5. Generate at least one representative chunk at the production 16 steps.
+6. Replay synthetic pi text events through the real `TTSService` and
+   `VoiceSession`, without starting a pi LLM.
+7. Validate voice-prompt preparation, PCM framing, sample rate, non-empty finite
+   output, sequence order, and clean shutdown.
+8. Update `progress.json` with stage, elapsed time, and heartbeat timestamp at
+   least once per minute so the manager can poll without a long blocking sleep.
+9. Record peak process RSS and system available RAM before/after every stage.
+10. Record GPU process/memory state before and after and fail if this validator
+    allocates GPU VRAM.
+11. Write WAV samples, machine-readable JSON, and captured logs even on failure.
+12. Exit nonzero when a required check fails.
+13. Default `--max-runtime-minutes` to 180 and report timeout as a distinct
+    failed check, not as OOM or model incompatibility.
+
+Required artifact layout:
+
+```text
+voice-validation/cpu/latest/
+├── manifest.json
+├── environment.json
+├── system-memory.json
+├── gpu-isolation.json
+├── model-load.json
+├── timings.json
+├── checks.json
+├── progress.json
+├── stdout.log
+├── prepared-voice.wav
+├── production-step.wav
+└── chunked-response.wav
+```
+
+The CPU-validation worker polls `progress.json` at reasonable intervals,
+communicates progress without blocking the parent for more than the host
+allows, and reads `checks.json`, `timings.json`, memory measurements, and logs
+when the process exits. Do not treat slowness alone as failure.
+
+The pinned CLI uses float16 for CPU fallback. If float16 fails because a CPU
+kernel is unsupported, preserve the failure artifacts and rerun with
+`--dtype float32` only after confirming there is enough RAM for the larger
+weights/activations. Do not silently change dtype inside one result set.
+
+Exit criteria:
+
+- The real package/checkpoint API matches the adapter.
+- Voice preparation, real waveform generation, PCM conversion, and a synthetic
+  event-to-frame pipeline succeed on CPU.
+- At least one representative chunk succeeds at 16 steps.
+- CUDA remains hidden and the validator allocates no GPU VRAM.
+- Peak system RAM and wall-clock timings are recorded.
+- The validator process exits and releases its model RAM cleanly.
+- CPU WAVs pass machine checks for duration, finite samples, RMS/non-silence,
+  peak range, and gross corruption. Subjective voice consistency remains a
+  Phase 8 listening check. CPU timing is recorded but is not compared with
+  real-time targets.
+
+### Phase 8 — Human-gated CUDA performance and VRAM validation
+
+After CPU validation passes, the implementing LLM prepares and syntax/unit-tests
+`tools/run_voice_gpu_validation.py`, then stops and hands the user:
+
 ```bash
-uv run pytest tests/test_voice_chunking.py -v
+uv run --extra voice python tools/run_voice_gpu_validation.py \
+  --output voice-validation/gpu/latest
 ```
-- `test_split_on_period`
-- `test_split_on_exclamation`
-- `test_split_on_question`
-- `test_split_on_emdash`
-- `test_split_on_emotion_tags`
-- `test_max_chunk_length_enforced`
-- `test_min_chunk_length_enforced`
-- `test_code_blocks_removed`
-- `test_inline_code_preserved`
-- `test_urls_removed`
-- `test_empty_input`
-- `test_single_short_sentence`
-- `test_long_paragraph`
-- `test_preserves_emotion_tags`
-- `test_mid_code_block_holds_buffer`
-- `test_mid_url_holds_buffer`
-- `test_finalize_buffer_emits_remaining`
 
-**websocket.py voice mode:**
-```bash
-uv run pytest tests/test_websocket_voice.py -v
+The user unloads the implementing LLM, runs the command, waits for the
+short-lived process to exit, reloads the LLM, and points it at the artifact
+directory.
+
+Because Phase 7 already proves the real API and pipeline, this phase focuses on:
+
+1. CUDA model load and default voice preparation.
+2. At least five independent chunks plus one chunked response.
+3. Baseline 16-step latency and 32-step quality comparison.
+4. Available FlashInfer and CUDA-graph modes.
+5. Median/p95 generation time, audio duration, RTF, PCM conversion time, and
+   peak allocated/reserved/process-level GPU memory.
+6. Clean CUDA shutdown and process exit.
+
+Required artifact layout:
+
+```text
+voice-validation/gpu/latest/
+├── manifest.json
+├── environment.json
+├── gpu-memory.json
+├── model-load.json
+├── benchmark.json
+├── checks.json
+├── stdout.log
+├── direct-design.wav
+├── prepared-voice.wav
+└── chunked-response.wav
 ```
-- `test_voice_mode_enable_command`
-- `test_voice_mode_disable_clears_state`
-- `test_voice_mode_disable_cancels_tts_task`
-- `test_voice_mode_settings_command`
-- `test_voice_mode_ready_message`
-- `test_voice_mode_error_message`
-- `test_text_delta_accumulates_buffer`
-- `test_text_delta_emits_chunks_at_boundaries`
-- `test_text_end_emits_remaining_buffer`
-- `test_tool_events_ignored_for_tts`
-- `test_build_voice_instruct_default`
-- `test_build_voice_instruct_with_age`
-- `test_multiple_connections_serialize_generation`
-- `test_queue_cap_enforced_at_50_chunks`
 
-### Frontend Tests
+Exit criteria:
 
-**voice.js:**
-```bash
-node --check static/voice.js
-```
-- Manual tests via browser:
-  - Toggle voice mode on/off
-  - Verify loading state
-  - Verify ready state
-  - Verify settings panel opens/closes
-  - Verify settings changes send commands
-  - Verify audio plays sequentially from queue
-  - Verify volume slider affects playback
-  - Verify stopSpeaking() suspends AudioContext (doesn't close)
-  - Verify resumeAudioContext() resumes after stop
+- CUDA generation and voice preparation succeed.
+- The prepared voice is acceptably consistent by listening to the WAV files.
+- Both Torch's peak reserved memory and process-level GPU usage are recorded;
+  isolated peak process usage is no more than 8.5 GB against the known 10 GB
+  production allowance.
+- Real CUDA latency/RTF results are recorded rather than assumed.
+- The validator process exits and releases its VRAM cleanly.
 
-**Integration:**
+### Phase 9 — Production coexistence smoke test
+
+Run one manual test with the actual production pi LLM and OmniVoice loaded
+together. This is the only phase that proves combined-runtime behavior.
+
+Verify:
+
+1. At least 10 GB is free immediately before voice mode loads.
+2. Voice enable, warm-up, and ten representative chunks complete without OOM.
+3. At least 1.5 GB remains free after both models are warm and under
+   representative load.
+4. A normal response, tool-gap response, stop, retry, and reconnect work.
+5. Server logs contain measured peak VRAM and latency values.
+
+If combined VRAM does not meet this gate, use a smaller/more quantized pi model,
+fewer GPU-offloaded layers, a smaller KV cache/context, or another GPU. Do not
+add per-sentence model swapping or broad process orchestration.
+
+Tune only chunk size/hold, generation steps, padding/fade, and optional
+FlashInfer flags. Do not change core chat architecture to chase a benchmark.
+
+## Test plan
+
+Add `pytest`, `pytest-asyncio`, and lightweight `numpy` to the development
+dependency group if they are not already present. NumPy supports deterministic
+fake waveforms and PCM tests; Torch and OmniVoice remain in the optional
+production `voice` extra.
+
+### Three-lane verification strategy
+
+#### Lane A — Default fake suite
+
+Every default test uses fakes unless explicitly marked `voice_cpu` or
+`voice_gpu`. The normal suite must not import `torch`, call `torch.cuda.*`,
+download a checkpoint, or require the `voice` optional extra.
+
+`FakeOmniVoiceRuntime` must provide:
+
+- Configurable `sampling_rate`, defaulting to 24,000
+- Deterministic finite waveform output whose duration derives from input length
+- A distinct tone/frequency per generation call so ordering is audible and
+  machine-verifiable
+- Recorded calls and prepared-voice keys
+- `active_calls` and `max_active_calls` counters
+- Optional sleep/delay
+- A `threading.Event` gate that can block a generation call
+- Configurable failure on load, prepare, or the Nth generate call
+- Simulated OOM, empty output, NaNs, infinities, clipping, and alternate sample
+  rates
+
+The executor-cancellation test must:
+
+1. Block fake generation A inside the executor.
+2. Cancel the coroutine awaiting A.
+3. Request generation B.
+4. Assert B does not enter the fake runtime while A is blocked.
+5. Release A.
+6. Assert `max_active_calls == 1` and B then completes.
+
+`FakeTTSService` is used when testing `VoiceSession`/WebSocket behavior in
+isolation. It returns valid `SynthesizedAudio` immediately or under controlled
+delay, without retesting model adapter details.
+
+`tools/run_fake_voice_server.py` may be selected only by an explicit
+development command and injected through `create_app()`. Do not add a
+production environment switch that could silently serve fake speech.
+
+#### Lane B — Explicit slow real-CPU suite
+
+Real CPU tests are marked `voice_cpu`, excluded from the documented/default
+fake pytest command, and run through `tools/run_voice_cpu_validation.py`.
+The implementing LLM may run this lane because the validator hides CUDA before
+Torch import and forces `device_map="cpu"`.
+
+The CPU process must catch failures, flush artifacts in `finally`, close the TTS
+service, and exit. It validates real model compatibility and audio correctness,
+not interactive latency. System RAM exhaustion is a real risk; preflight and
+memory measurements are mandatory.
+
+#### Lane C — Human-gated real-GPU suite
+
+Real-model tests are marked `voice_gpu`, excluded from the documented/default
+fake pytest command, and run only through the human-gated validator after the
+implementing LLM is unloaded.
+
+The validator runs in one short-lived OS process. It must catch failures, flush
+artifacts in `finally`, close the TTS service, and then exit. Even if Python
+cleanup fails, process exit releases its CUDA context.
+
+### Chunker tests
+
+- punctuation split across deltas
+- Markdown fence marker split across deltas
+- long fenced code block omitted without unbounded buffer growth
+- inline code spoken without backticks
+- Markdown link label spoken and URL omitted
+- bare URL split across deltas omitted
+- abbreviation (`Dr.`), decimal (`3.14`), version (`v1.2.3`), initials
+- English, lowercase next sentence, quotes, and CJK punctuation
+- emotion tag remains with following text
+- short first sentence merges or flushes without loss
+- multiple text blocks separated by a tool call
+- hard maximum and maximum-hold timeout
+- final short phrase
+- empty/Markdown-only/code-only response
+- symbol normalization table
+
+### TTS service tests with fakes
+
+- lazy imports and missing-dependency error
+- idempotent concurrent load
+- load failure and retry behavior
+- OOM normalization
+- one dedicated executor thread
+- non-overlapping syntheses after coroutine cancellation
+- voice handle cache hit and LRU eviction
+- settings produce valid instruct
+- prepared clone prompt reused for chunks
+- NaN/out-of-range waveform handling
+- little-endian clipped PCM conversion
+- sample rate comes from model
+- `close()` prevents new work and shuts down cleanly
+
+### Voice session tests
+
+- enable loading/ready/error states
+- invalid/unknown settings rejected
+- volume rejected as a backend setting
+- observer sees `text_delta` through the process hook
+- first binary frame emitted before settled
+- text block fragments retained across tools
+- sentinel drains then emits one complete end
+- retry creates a new stream ID
+- stop/disable/new/load/abort/disconnect cleanup
+- settings update applies to next stream only
+- stale generated PCM discarded after cancel
+- binary header fields and payload length
+- JSON/binary writes serialized
+- backlog coalesces, then cancels without silent drops
+- two WebSockets share service but not session state
+
+### Browser tests
+
+- valid header decoding
+- bad magic/version/length rejection
+- stale and out-of-order frame rejection
+- PCM conversion
+- scheduled start time uses `scheduledEndTime`
+- new stream stops old sources
+- completed backend stream remains “speaking” until sources drain
+- stop keeps AudioContext open/running
+- autoplay-blocked state exposes resume control
+- volume changes master gain only
+- settings use account-specific storage key
+- socket routes strings to JSON and ArrayBuffers to binary callback
+
+### Existing regression checks
+
 ```bash
 npm test
-```
-- Existing parity tests should still pass (voice mode is additive)
-
-### Manual Verification
-
-1. **Voice mode enable flow:**
-   - Click voice toggle → spinner appears → green when ready
-   - Send button disabled during loading
-   - Settings button appears when ready
-
-2. **Voice mode message flow:**
-   - Send message with voice mode on
-   - Text renders normally
-   - Audio starts playing within ~1s of first sentence completing
-   - Audio continues streaming as more text is generated
-   - Speaking indicator visible during playback
-   - Audio continues through tool calls (tool text is ignored)
-
-3. **Settings flow:**
-   - Open settings panel
-   - Change gender/pitch/accent/age/volume
-   - Send new message
-   - Verify different voice characteristics
-
-4. **Voice mode disable flow:**
-   - Click voice toggle → disabled state
-   - Settings button hidden
-   - New messages not spoken
-
-5. **Interrupt flow:**
-   - Send message while audio is playing
-   - Audio stops immediately
-   - New response audio begins
-
-6. **Reconnect flow:**
-   - Enable voice mode, send message
-   - Reload page
-   - Verify voice mode is disabled, settings preserved
-   - Re-enable voice mode (model should already be loaded)
-
-7. **Mobile autoplay:**
-   - On iOS Safari, enable voice mode
-   - Send message
-   - Verify audio plays without additional gesture
-
-### Integration Tests
-
-**test_voice_end_to_end.py:**
-```bash
-uv run pytest tests/test_voice_end_to_end.py -v
-```
-- `test_text_delta_to_audio_pipeline` — Simulate text_delta events, verify chunks generated and sent as binary frames
-- `test_multiple_connections_queued` — Two voice_mode:enable commands, verify TTS requests serialized
-- `test_reconnect_clears_state` — Simulate disconnect, verify voice_state cleared
-- `test_retry_cycle_respeaks_text` — Simulate agent retry, verify TTS speaks retry text
-
-### Performance Tests
-
-**test_voice_latency.py:**
-```bash
-uv run pytest tests/test_voice_latency.py -v
-```
-- `test_first_chunk_latency_under_1s` — Measure time from first complete sentence to first audio byte
-- `test_tts_rtf_under_0.1` — Verify RTF stays under 0.1 (10x faster than real-time)
-- `test_queue_does_not_explode` — Stream 5000 chars rapidly, verify queue stays bounded
-
----
-
-## Decisions
-
-1. **Audio format for WebSocket:** Raw PCM bytes (int16, 24kHz, mono). No WAV headers per chunk. Frontend converts to AudioBuffer directly.
-
-2. **Voice mode persistence:** Voice mode does NOT persist across page reloads. However, once the OmniVoice model is loaded into VRAM, it stays resident to reduce latency on the next voice mode activation. Settings (gender, pitch, etc.) DO persist in localStorage per profile.
-
-3. **Audio interrupt behavior:** When the user sends a new message while speech is playing, immediately clear the audio queue and suspend the AudioContext, then resume and start speaking the new response.
-
-4. **Voice instruction injection:** Voice mode instruction is prepended to the first message only when voice mode is enabled. Subsequent messages do not include the instruction. This avoids wasting context window on every turn. NOTE: This is hacky — better to move to system prompt long-term.
-
-5. **Error handling:** Log errors to server stdout. On TTS failure mid-stream, send `voice_mode:error` to frontend and stop playback.
-
-6. **Mobile considerations:** Autoplay policies may block WebAudio on mobile until user gesture. Voice mode enable (user click) should satisfy this, but test thoroughly on iOS Safari. If autoplay is blocked after navigation, require another user gesture to resume.
-
-7. **Voice consistency:** Use fixed voice design instruct for all chunks. Accept minor voice drift across chunks as a known limitation. Future enhancement: use voice clone prompt from first chunk for subsequent chunks.
-
-8. **Sub-agent text:** Fully ignored for TTS. Only top-level assistant text is spoken.
-
-9. **Multiple WebSocket connections:** TTSService is a singleton with a generation lock (`_gen_lock`). Multiple tabs with voice mode enabled queue their TTS requests. Each connection has its own `voice_state` (buffer, pending_chunks, tts_task). Generation is serialized; audio streaming is per-connection.
-
-10. **WebSocket reconnect during TTS:** On reconnect, the backend `voice_state` is lost (per-connection). The frontend should clear its audio queue and reset voice state on reconnection. If voice mode was enabled, the user must re-enable it. The OmniVoice model stays loaded.
-
-11. **Agent retry cycles:** pi can emit multiple `agent_start`/`agent_end` cycles before `agent_settled`. TTS buffer is cleared on each `text_start`. If a retry re-emits the same text, TTS will speak it again. This is acceptable for now — retry cycles are rare and short.
-
-12. **Tool call silence:** During tool execution, text streaming pauses, so no new audio chunks are generated. The user hears silence until text resumes. This is expected behavior. If a tool call takes >5 seconds, consider adding a short "thinking" sound or status message (future enhancement).
-
-13. **Queue pressure:** If the LLM streams faster than TTS can generate, `pending_chunks` grows. Cap at 50 chunks (~10K chars). If exceeded, drop oldest chunks and log a warning. With RTF ~0.025, this should rarely happen.
-
----
-
-## Performance Targets
-
-| Metric | Target |
-|--------|--------|
-| First audio chunk latency | < 1 second after first complete sentence from LLM |
-| TTS RTF | < 0.1 (10x faster than real-time; model claims ~0.025) |
-| Audio queue depth | < 50 chunks under normal streaming |
-| VRAM usage | < 8GB for OmniVoice model (plus pi's model must fit in remaining 16GB) |
-| Model load time | < 30 seconds (one-time) |
-
-**Measurement:** Use `test_voice_latency.py` to verify first chunk latency and RTF. Log `pending_chunks` length periodically to detect queue pressure.
-
----
-
-## Estimated Complexity
-
-| Phase | Complexity | Risk |
-|-------|-----------|------|
-| 1: Backend Foundation | Medium | Model loading, VRAM management, OOM handling, generation lock |
-| 2: Text Chunking | Low-Medium | Pure logic, well-testable, based on prototype, markdown stripping |
-| 3: WebSocket Integration | Medium | Binary frames, async TTS triggering, state management, queue cap |
-| 4: Frontend UI | Medium | State management, WebAudio integration, audio queue, volume, suspend/resume |
-| 5: Streaming TTS on text_delta | Medium | Event processing, buffer management, chunk timing, pipelined generation |
-
-**Total estimated effort:** 2-3 focused implementation sessions
-
-**Pre-requisites:**
-- OmniVoice model cloned at `experiments/OmniVoice/` ✓
-- `omnivoice`, `torch`, `numpy` added to `pyproject.toml`
-- VRAM budget verified with pi's current model
-
----
-
-## Where to Make Common Changes
-
-**Voice mode specific:**
-- Voice toggle button and settings panel: `static/index.html`, `static/voice.css`
-- Voice mode state, audio queue, playback: `static/voice.js`
-- Voice WebSocket message routing: `static/app.js`
-- Voice instruction injection (first message): `static/chat.js`
-- Binary frame handling: `static/socket.js`
-- TTSService (model loading, generation): `pi_chat/tts_service.py`
-- Text chunking for streaming TTS: `pi_chat/tts_chunking.py`
-- Voice mode commands and text_delta processing: `pi_chat/websocket.py`
-- TTS config and status endpoint: `pi_chat/config.py`, `pi_chat/app.py`
-- Voice latency tests: `tests/test_voice_latency.py`
-- Voice end-to-end tests: `tests/test_voice_end_to_end.py`
-- Voice instruction injection (first message): `static/chat.js`
-- Binary frame handling: `static/socket.js`
-- TTSService (model loading, generation): `pi_chat/tts_service.py`
-- Text chunking for streaming TTS: `pi_chat/tts_chunking.py`
-- Voice mode commands and text_delta processing: `pi_chat/websocket.py`
-- TTS config and status endpoint: `pi_chat/config.py`, `pi_chat/app.py`
-
-**General pi-chat (from AGENTS.md):**
-- Browser/server commands: `pi_chat/websocket.py` and `static/app.js`
-- Process lifetime or pi CLI flags: `pi_chat/process.py`
-- Live event rendering: `static/chat.js`
-- Saved-message grouping: `static/history.js`
-- Shared timeline markup/connectors: `static/timeline.js`
-- Shared sub-agent normalization/cards: `static/subagent.js`
-- Session discovery and raw parsing: `pi_chat/sessions.py`
-- Login/session behavior: `pi_chat/auth.py`, `pi_chat/app.py`, `static/auth.js`
-- Colors: `static/theme.css`
-
----
-
-## File Structure Reference
-
-```
-pi-chat/
-├── pi_chat/
-│   ├── app.py          # FastAPI app, routes, debug endpoint
-│   ├── auth.py         # Password verification, browser sessions
-│   ├── config.py       # Paths and environment settings (+ OMNIVOICE_MODEL_PATH)
-│   ├── process.py      # pi subprocess lifecycle and RPC responses
-│   ├── sessions.py     # Session discovery and JSONL message extraction
-│   ├── tts_service.py  # OmniVoice model wrapper, lazy loading, generation
-│   ├── tts_chunking.py # Text preprocessing and streaming chunking for TTS
-│   └── websocket.py    # Browser WebSocket command handling (+ voice mode)
-├── static/
-│   ├── index.html      # Page structure (+ voice toggle, settings panel)
-│   ├── theme.css       # Color palette and design tokens
-│   ├── styles.css      # Component and responsive styles
-│   ├── app.js          # Frontend composition and message routing
-│   ├── auth.js         # Local profile selection
-│   ├── socket.js       # WebSocket, heartbeat, reconnect (+ binary frames)
-│   ├── chat.js         # Composer and live event rendering
-│   ├── history.js      # Historical message rendering
-│   ├── timeline.js     # Shared timeline DOM primitives
-│   ├── subagent.js     # Shared sub-agent cards and result adapters
-│   ├── sessions.js     # Session drawer and load workflow
-│   ├── theme.js        # Persistent palette-role toggle
-│   ├── voice.js        # Voice mode state, audio queue, WebAudio playback
-│   ├── voice.css       # Voice mode UI styles
-│   ├── utils.js        # Browser-side formatting helpers
-│   └── marked.min.js   # Vendored Markdown renderer
-├── tests/
-│   ├── compare_render.py        # Live vs historical rendering parity tests
-│   ├── mobile_viewport_test.py  # Mobile viewport screenshot tests
-│   ├── test_tts_service.py      # TTSService unit tests
-│   ├── test_voice_chunking.py   # Text chunking unit tests
-│   └── test_websocket_voice.py  # WebSocket voice mode tests
-├── tools/
-│   ├── capture.py       # Unified RPC event capture CLI
-│   └── render_message.js # jsdom harness for production JS rendering
-├── data-samples/        # RPC capture fixtures and native sessions
-│   └── text_chunking.py # Streaming chunking prototype (reference)
-├── experiments/
-│   └── OmniVoice/       # OmniVoice TTS model (local clone)
-├── server.py            # Backward-compatible launch entry point
-├── roxy.md              # Extra system prompt for the Roxy profile
-├── pyproject.toml       # Python project configuration
-└── package.json         # Node devDependencies (jsdom)
+python3 -m compileall -q pi_chat server.py tools
+for file in static/*.js; do
+  if [ "$(basename "$file")" != "marked.min.js" ]; then
+    node --check "$file"
+  fi
+done
+uv run pytest -q -m "not voice_cpu and not voice_gpu"
 ```
 
----
+Add the JS voice test to `npm test` or a script that `npm test` invokes so it is
+not accidentally skipped. Add a test that asserts `torch` and `omnivoice` are
+absent from `sys.modules` after importing the text-only app and fake suite.
 
-## Next Steps
+### Real CPU tests
 
-1. Implement Phase 1 (backend foundation) and verify model loads
-2. Implement Phase 2 (chunking) with full test coverage
-3. Implement Phase 3 (WebSocket commands)
-4. Implement Phase 4 (frontend UI)
-5. Implement Phase 5 (streaming TTS on text_delta)
-6. End-to-end testing and performance validation
+Mark slow real-checkpoint CPU tests with `@pytest.mark.voice_cpu` and exclude
+them from the default suite. Register the marker in `pyproject.toml`.
+`tools/run_voice_cpu_validation.py` is the supported entrypoint and may invoke
+those tests internally with the same model/device/dtype configuration used for
+its direct checks.
 
----
+Mocked validator tests must cover preflight refusal, CUDA hiding before Torch
+import, progress heartbeats, partial artifact preservation, nonzero failure
+exit, supervisor timeout/child termination, float16 failure reporting, and
+explicit float32 retry.
 
-## Subagent Execution Plan
+### Real GPU tests
 
-This implementation is well-suited for the orchestrate-subagent-stack pattern. The work decomposes into 5 dependent phases plus verification, each with clear acceptance criteria and file boundaries.
+Mark real-model tests separately, for example `@pytest.mark.voice_gpu`, and do
+not run them in the default unit suite. Register the marker in `pyproject.toml`.
+The human-gated validator is the only supported entrypoint for this suite.
 
-### Orchestration Topology
+`tools/benchmark_voice.py` should accept:
 
-```
-Main (you + me)
-├── Worker 1: Backend Foundation (Phase 1)
-├── Worker 2: Text Chunking (Phase 2) — independent of W1
-├── Worker 3: WebSocket Integration (Phase 3) — depends on W1, W2
-├── Worker 4: Frontend UI (Phase 4)
-├── Worker 5: Streaming TTS on text_delta (Phase 5) — depends on W3, W4
-└── Worker 6: Integration Verifier — depends on all
-```
-
-**Rationale:** Phases 1 and 2 have no dependencies on each other and can run sequentially without blocking. Phases 3-5 build on prior work. A final read-only verifier validates the full stack.
-
-### Worker Contracts
-
-#### Worker 1: Backend Foundation
-
-```typescript
-subagent({
-  name: "voice-backend-foundation",
-  taskId: "voice-mode-backend-foundation",
-  task: "Implement Phase 1 of voice mode: TTSService module, config, and status endpoint. The OmniVoice model should load lazily on first load() call and stay resident in VRAM (no unload). Reference VOICE_MODE_IMPLEMENTATION_PLAN_V2.md for exact API and error handling requirements.",
-  scope: [
-    "pi_chat/tts_service.py",
-    "pi_chat/config.py",
-    "pi_chat/app.py",
-    "tests/test_tts_service.py"
-  ],
-  nonGoals: [
-    "Do not implement WebSocket commands yet (Phase 3).",
-    "Do not implement text chunking yet (Phase 2).",
-    "Do not modify frontend files."
-  ],
-  acceptance: [
-    "TTSService class exists with load(), generate_chunk(), is_ready(), is_loading().",
-    "load() is idempotent and thread-safe using asyncio.Lock.",
-    "generate_chunk() uses separate _gen_lock to serialize generation across connections.",
-    "Model stays loaded after voice mode is disabled (no unload method).",
-    "generate_chunk() returns raw PCM bytes (int16, 24kHz, mono).",
-    "OMNIVOICE_MODEL_PATH config added to config.py (default: experiments/OmniVoice).",
-    "/api/tts/status endpoint returns {ready: bool, loading: bool} and requires auth.",
-    "TTSService mounted on application.state in create_app().",
-    "OOM errors handled gracefully with clear error message mentioning pi's VRAM usage."
-  ],
-  verification: [
-    "uv run python -c 'from pi_chat.tts_service import TTSService; print(TTSService)'",
-    "uv run python -m compileall -q pi_chat/",
-    "uv run pytest tests/test_tts_service.py -v"
-  ],
-  timeout: 2400,
-  maxTurns: 200
-})
+```text
+--model
+--device
+--num-steps
+--flashinfer
+--cuda-graph
+--iterations
+--json-output
 ```
 
-#### Worker 2: Text Chunking
+It should report median and p95:
 
-```typescript
-subagent({
-  name: "voice-text-chunking",
-  taskId: "voice-mode-text-chunking",
-  task: "Implement Phase 2 of voice mode: text chunking logic for splitting streaming assistant text into TTS-friendly segments. Based on data-samples/text_chunking.py prototype. Reference VOICE_MODE_IMPLEMENTATION_PLAN_V2.md for exact rules and API.",
-  scope: [
-    "pi_chat/tts_chunking.py",
-    "tests/test_voice_chunking.py",
-    "data-samples/text_chunking.py"
-  ],
-  nonGoals: [
-    "Do not implement TTSService or WebSocket commands.",
-    "Do not modify frontend files."
-  ],
-  acceptance: [
-    "chunk_buffer(text) function exists and returns (chunks_list, remaining_buffer).",
-    "finalize_buffer(text) function exists for text_end handling.",
-    "Splits on sentence boundaries (.!?), emdashes (— --), and emotion tags.",
-    "Enforces max chunk length (200 chars) and min chunk length (15 chars).",
-    "Removes code blocks before chunking.",
-    "Preserves inline code within chunks (strips backticks).",
-    "Removes URLs before chunking.",
-    "Preserves emotion tags within their chunks.",
-    "Strips markdown formatting: bold, italic, headers, list markers.",
-    "Returns empty list for empty/whitespace-only input.",
-    "Holds buffer when mid-code-block or mid-url (streaming-safe)."
-  ],
-  verification: [
-    "uv run python -m compileall -q pi_chat/",
-    "uv run pytest tests/test_voice_chunking.py -v"
-  ],
-  timeout: 2400,
-  maxTurns: 200
-})
-```
+- load/prepare time
+- generation time
+- audio duration
+- RTF
+- peak allocated/reserved GPU memory
+- PCM conversion time
 
-#### Worker 3: WebSocket Integration (Dependent on W1, W2)
+`tools/run_voice_gpu_validation.py` may call this benchmark internally, but it
+must collect the results into the required artifact directory and preserve
+partial evidence if a later check fails.
 
-```typescript
-subagent({
-  name: "voice-websocket-integration",
-  taskId: "voice-mode-websocket-integration",
-  task: "Implement Phase 3 of voice mode: WebSocket commands for voice mode enable/disable/settings. Begin by verifying TTSService and tts_chunking modules exist from prior workers. Reference VOICE_MODE_IMPLEMENTATION_PLAN_V2.md for exact command format and state tracking.",
-  scope: [
-    "pi_chat/websocket.py",
-    "pi_chat/tts_service.py",
-    "pi_chat/tts_chunking.py",
-    "tests/test_websocket_voice.py"
-  ],
-  nonGoals: [
-    "Do not implement text_delta streaming yet (Phase 5).",
-    "Do not modify frontend files."
-  ],
-  acceptance: [
-    "Begin by confirming TTSService and chunk_buffer are importable.",
-    "voice_mode:enable command triggers TTSService.load() and sends voice_mode:ready or voice_mode:error.",
-    "voice_mode:disable command cancels tts_task, clears buffer and pending_chunks, sets enabled=False.",
-    "voice_mode:settings command updates per-connection voice_settings (including volume).",
-    "build_voice_instruct(settings) constructs instruct string from gender/pitch/accent/age.",
-    "Per-connection state tracks voice_mode_enabled, voice_settings, tts_buffer, pending_chunks, tts_task.",
-    "pending_chunks queue capped at 50 chunks — excess chunks dropped with warning log."
-  ],
-  verification: [
-    "uv run python -m compileall -q pi_chat/",
-    "uv run pytest tests/test_websocket_voice.py -v"
-  ],
-  timeout: 2400,
-  maxTurns: 200
-})
-```
+## Performance targets and measurement
 
-#### Worker 4: Frontend UI
+These targets apply to the warm CUDA production path. CPU validation has no
+real-time target; record its timings only for diagnostics and timeout planning.
 
-```typescript
-subagent({
-  name: "voice-frontend-ui",
-  taskId: "voice-mode-frontend-ui",
-  task: "Implement Phase 4 of voice mode: voice toggle button, settings panel, voice.js module, voice.css, WebSocket binary frame handling, audio queue, and voice instruction injection. Reference VOICE_MODE_IMPLEMENTATION_PLAN_V2.md for exact markup, state, and logic.",
-  scope: [
-    "static/index.html",
-    "static/voice.js",
-    "static/voice.css",
-    "static/app.js",
-    "static/chat.js",
-    "static/socket.js"
-  ],
-  nonGoals: [
-    "Do not implement backend TTS generation on text_delta (Phase 5).",
-    "Do not modify backend Python files."
-  ],
-  acceptance: [
-    "Voice toggle button added left of input area.",
-    "Voice settings panel with gender/pitch/accent/age dropdowns and volume slider.",
-    "voice.js exports: setupVoice(), isVoiceModeEnabled(), getVoiceInstruction(), isFirstMessage(), markFirstMessageSent(), stopSpeaking(), resumeAudioContext().",
-    "Voice instruction prepended to first message only when voice mode enabled.",
-    "User message bubbles render only visible text (no hidden instruction).",
-    "WebSocket configured for binaryType='arraybuffer'.",
-    "Audio queue buffers PCM chunks and plays sequentially.",
-    "Volume gain applied via GainNode on each audio chunk.",
-    "send button disabled while voice model is loading.",
-    "stopSpeaking() clears queue and suspends AudioContext (does not close).",
-    "resumeAudioContext() resumes suspended AudioContext on next playback.",
-    "Settings persisted to localStorage per profile (voice_settings_<profile>)."
-  ],
-  verification: [
-    "node --check static/voice.js",
-    "node --check static/app.js",
-    "node --check static/chat.js",
-    "node --check static/socket.js",
-    "npm test"
-  ],
-  timeout: 2400,
-  maxTurns: 200
-})
-```
+| Metric | Required | Stretch |
+|---|---:|---:|
+| Eligible chunk to first binary byte | under 1.5 s | under 1.0 s |
+| Browser receive to scheduled source | under 25 ms | under 10 ms |
+| Gap when the next chunk was already received | under 75 ms | under 30 ms |
+| Normal unsynthesized queue | at most 3 chunks | at most 1 chunk |
+| Production free VRAM before TTS load | at least 10 GB | at least 12 GB |
+| Combined free VRAM after warm representative load | at least 1.5 GB | at least 2 GB |
 
-#### Worker 5: Streaming TTS on text_delta (Dependent on W3, W4)
+Do not make hardware latency a normal unit-test assertion.
 
-```typescript
-subagent({
-  name: "voice-streaming-tts",
-  taskId: "voice-mode-streaming-tts",
-  task: "Implement Phase 5 of voice mode: wire up text_delta processing in websocket.py to stream TTS audio as text is generated. Accumulate deltas into buffer, emit chunks at natural boundaries, generate audio per chunk, stream as binary WebSocket frames. Reference VOICE_MODE_IMPLEMENTATION_PLAN_V2.md for exact event handling and buffer logic.",
-  scope: [
-    "pi_chat/websocket.py",
-    "pi_chat/tts_service.py",
-    "pi_chat/tts_chunking.py"
-  ],
-  nonGoals: [
-    "Do not modify frontend files.",
-    "Do not change TTSService or chunking logic unless verified broken."
-  ],
-  acceptance: [
-    "Begin by confirming voice_mode commands are handled in websocket.py.",
-    "On message_update with text_start, clear tts_buffer.",
-    "On message_update with text_delta, accumulate into buffer and emit complete chunks.",
-    "On message_update with text_end, emit remaining buffer via finalize_buffer().",
-    "Each emitted chunk triggers async TTS generation via _stream_tts_chunks.",
-    "Audio chunks sent immediately as binary WebSocket frames (PCM bytes) — not batched.",
-    "Tool execution events are naturally ignored (only text_delta processed).",
-    "voice_mode:stream_complete sent after all chunks for a response are generated and sent.",
-    "pending_chunks queue capped at 50 — excess dropped with warning.",
-    "Errors logged to stdout and voice_mode:error sent to frontend."
-  ],
-  verification: [
-    "uv run python -m compileall -q pi_chat/",
-    "uv run pytest tests/test_websocket_voice.py -v"
-  ],
-  timeout: 2400,
-  maxTurns: 200
-})
-```
+Log monotonic timestamps for:
 
-#### Worker 6: Integration Verifier (Read-Only)
+- first speakable character
+- chunk eligible
+- service queued
+- synthesis start/end
+- binary send complete
+- stream complete
 
-```typescript
-subagent({
-  name: "voice-integration-verifier",
-  taskId: "voice-mode-integration-verify",
-  task: "Independently verify the completed voice mode implementation against all acceptance criteria. Report failures with exact reproduction evidence; do not repair them.",
-  scope: [
-    "pi_chat/",
-    "static/",
-    "tests/",
-    "VOICE_MODE_IMPLEMENTATION_PLAN_V2.md",
-    "git diff"
-  ],
-  nonGoals: ["Do not edit files or weaken tests."],
-  acceptance: [
-    "Inspect combined diff for scope violations (no unexpected files changed).",
-    "All Python files compile without errors.",
-    "All JS files pass node --check.",
-    "Existing npm test parity tests still pass.",
-    "New unit tests pass for tts_service, chunking, websocket voice commands.",
-    "TTSService has no unload() method (stays in VRAM).",
-    "TTSService.generate_chunk() uses _gen_lock for serialization.",
-    "Voice instruction only prepended to first message.",
-    "Voice toggle button and settings panel markup exist in index.html (including volume slider).",
-    "WebSocket handles voice_mode:enable/disable/settings commands.",
-    "voice_mode:disable cancels tts_task and clears state.",
-    "text_delta events trigger streaming TTS when voice_mode_enabled.",
-    "voice_mode:stream_complete sent (not voice_mode:done).",
-    "pending_chunks capped at 50.",
-    "Audio queue in voice.js plays chunks sequentially with volume gain.",
-    "stopSpeaking() suspends AudioContext (does not close)."
-  ],
-  verification: [
-    "uv run python -m compileall -q pi_chat/",
-    "for file in static/*.js; do [ \"$(basename \"$file\")\" != \"marked.min.js\" ] && node --check \"$file\"; done",
-    "npm test",
-    "uv run pytest tests/test_tts_service.py tests/test_voice_chunking.py tests/test_websocket_voice.py -v"
-  ],
-  timeout: 2400,
-  maxTurns: 200
-})
-```
+In browser development logs, record:
 
-### Execution Order
+- binary received
+- buffer decoded
+- scheduled start
+- source ended
 
-1. **Worker 1** (Backend Foundation) — 2400s, 200 turns
-2. **Worker 2** (Text Chunking) — 2400s, 200 turns
-3. **Worker 3** (WebSocket Integration) — 2400s, 200 turns — validates W1+W2
-4. **Worker 4** (Frontend UI) — 2400s, 200 turns
-5. **Worker 5** (Streaming TTS on text_delta) — 2400s, 200 turns — validates W3
-6. **Worker 6** (Integration Verifier) — 2400s, 200 turns — read-only
+The key user metric is first audible speech from first speakable response text.
+Also report the narrower eligible-chunk-to-audio metric so LLM punctuation delay
+is visible rather than blamed on TTS.
 
-**Total estimated time:** 24 hours of worker execution (generous budget) (serial).
+### Latency tuning order
 
-### Recovery Strategy
+Tune in this order:
 
-If a worker fails:
-1. Classify the failure from its receipt (implementation, test environment, missing prerequisite, timeout).
-2. Inspect persisted files — the worker may have made partial changes.
-3. Launch a targeted recovery worker with the exact failing command and evidence.
-4. After recovery that crosses worker boundaries, run Worker 6 again.
+1. Keep model and prepared voice resident.
+2. Use 16 diffusion steps if quality is acceptable.
+3. Benchmark FlashInfer and CUDA graphs on the actual GPU.
+4. Warm the exact synthesis path during voice enable.
+5. Emit the first natural sentence early.
+6. Use maximum-hold clause splitting for unpunctuated text.
+7. Keep chunk padding/fades short and schedule browser buffers ahead.
+8. Only then adjust chunk size.
 
-### Notes
+Splitting a completed waveform into smaller WebSocket packets does not reduce
+model latency, so do not add 20 ms packetization unless transport measurements
+show a real need.
 
-- Each worker inherits the full session context including VOICE_MODE_IMPLEMENTATION_PLAN_V3.md.
-- Workers 3 and 5 validate their prerequisites before editing (dependent worker pattern).
-- Worker 6 is read-only to ensure independent verification.
-- All workers use the same verification commands defined in the TDD test plan.
+## Error and recovery behavior
 
+| Failure | Behavior |
+|---|---|
+| Optional dependency missing | Voice toggle reports unavailable; text chat works |
+| Model download/load fails | Send stable error; keep app and pi process alive |
+| CPU validator RAM/disk preflight fails | Do not load; preserve measurements and report an environment blocker |
+| CPU float16 kernel is unsupported | Preserve failure artifacts; explicitly retry float32 only with sufficient RAM |
+| GPU OOM on load | Clear partial model, report VRAM guidance, allow explicit retry |
+| GPU OOM mid-generation | End current voice stream; keep text response flowing |
+| Invalid settings | Keep last known-good settings |
+| Slow/backlogged synthesis | End only current speech stream; retry next response |
+| Browser rejects autoplay | Show resume button; keep received frames associated with current stream |
+| WebSocket reconnects | Stop local sources; new connection begins voice disabled |
+| Old GPU job finishes after stop | Discard by stream ID |
+| Voice observer raises | Log; continue forwarding all pi events |
 
----
+Do not automatically retry generation chunks within the same response. A retry
+can create repeated or late speech. Let the next response try normally.
 
-## Changelog: V2 → V3
+## Definition of done
 
-### Changes from adversarial review
+- Voice is opt-in and text-only behavior is unchanged when it is off.
+- The app starts without voice dependencies installed.
+- OmniVoice source and model checkpoint are not confused.
+- The first eligible chunk is synthesized before the full response completes.
+- All model operations are serialized even across task cancellation.
+- Every binary frame is versioned and tied to a stream ID.
+- Old/cancelled audio cannot play in a new response.
+- Markdown/code/URL sanitization is streaming-safe and loses no normal prose.
+- Short chunks use a prepared stable voice prompt.
+- Browser playback is scheduled ahead rather than chained only by `onended`.
+- Voice failure cannot terminate the pi process, WebSocket, or text stream.
+- Existing renderer parity, Python compile, JS syntax, unit, and fake voice
+  tests pass without Torch import or CUDA initialization.
+- The real CPU validator passes with CUDA hidden; its checks, timings, RAM,
+  GPU-isolation, heartbeat, log, and WAV artifacts are complete.
+- Both themes and supported mobile viewports are manually checked.
+- The human-gated validator has exited and its JSON/log/WAV artifacts have been
+  inspected after reloading the implementing LLM.
+- Actual RTX 4090 latency, RTF, isolated peak VRAM, and production coexistence
+  results are recorded in the implementation handoff.
+- The production pi LLM leaves at least 10 GB before TTS load and the combined
+  warm smoke test retains at least 1.5 GB without OOM.
+- `README.md` and `AGENTS.md` document setup, configuration, protocol, testing,
+  and the new process observer invariant.
 
-1. **TTS pipelining:** `_stream_tts_chunks` now sends audio immediately upon completion instead of batching. While chunk N plays, chunk N+1 generates. Audio stays ahead of playback as long as LLM doesn't stream >40x real-time.
+## Explicit guardrails for the implementing LLM
 
-2. **VRAM budget:** Added explicit note about combined VRAM usage (OmniVoice 5-6GB + pi's model must fit in 24GB). OOM error message now mentions pi's model usage.
-
-3. **Generation lock:** TTSService now has `_gen_lock` to serialize `generate_chunk()` across multiple WebSocket connections.
-
-4. **voice_mode:disable cleanup:** Now properly cancels `tts_task`, clears `buffer` and `pending_chunks`, sets `enabled=False`.
-
-5. **AudioContext lifecycle:** `stopSpeaking()` now suspends instead of closing AudioContext. `resumeAudioContext()` resumes on next playback.
-
-6. **Volume control:** Added volume slider to settings panel. Volume applied via GainNode on each audio chunk.
-
-7. **Markdown stripping:** `preprocess_text()` now strips markdown formatting (bold, italic, headers, lists) before TTS.
-
-8. **Message semantics:** Renamed `voice_mode:done` to `voice_mode:stream_complete` to clarify it means backend is done sending, not frontend done playing.
-
-9. **Queue cap:** `pending_chunks` capped at 50 chunks (~10K chars). Excess dropped with warning.
-
-10. **Edge cases documented:** Reconnect behavior, agent retry cycles, tool call silence, multiple connections, mobile autoplay all now have explicit decisions.
-
-11. **Voice instruction shortened:** Reduced from ~300 chars to ~200 chars. Added note that this is hacky and should move to system prompt long-term.
-
-12. **Tests expanded:** Added integration tests (`test_voice_end_to_end.py`) and performance tests (`test_voice_latency.py`).
-
-13. **Dependencies:** Added `pyproject.toml` modification to add `omnivoice`, `torch`, `numpy`.
+- Read `AGENTS.md` before editing.
+- Preserve the one-WebSocket/one-`PiProcess` invariant.
+- Do not change historical rendering or session storage for voice.
+- Do not inject hidden instructions into user messages.
+- Do not make Torch/OmniVoice mandatory for normal app startup.
+- While the implementing LLM occupies the GPU, load the real checkpoint only
+  in the isolated CPU validator with CUDA hidden.
+- Do not claim real-GPU validation from fake results.
+- Stop and hand the user one noninteractive validation command at the
+  human-gated phase; resume only after its artifacts exist.
+- Do not call OmniVoice on the asyncio event-loop thread.
+- Do not add a second WebSocket or HTTP audio polling path.
+- Do not silently drop queued speech and continue.
+- Do not hardcode 24 kHz when the model exposes its sample rate.
+- Do not use a GitHub source checkout as the model checkpoint.
+- Do not claim a latency/VRAM result that was not measured on the target host.
