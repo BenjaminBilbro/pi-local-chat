@@ -6,8 +6,32 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi",
+    "matplotlib>=3.11.1",
     "pdfplumber>=0.11.10",
     "python-multipart>=0.0.32",
     "uvicorn[standard]",
     "websockets",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "voice_cpu: slow real-checkpoint CPU tests (deselect with '-m \"not voice_cpu\"')",
+    "voice_gpu: slow real-model GPU tests (deselect with '-m \"not voice_gpu\"')",
+]
+
+[project.optional-dependencies]
+voice = [
+    "numpy",
+    "torch==2.8.0",
+    "torchaudio==2.8.0",
+    "omnivoice @ git+https://github.com/k2-fsa/OmniVoice.git@28bc0889d92110491d726a9c79f26a895db5a074",
+]
+
+[dependency-groups]
+dev = [
+    "numpy>=2.5.1",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
 ]

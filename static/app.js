@@ -11,6 +11,7 @@ import {
 import { createSessionPanel } from './sessions.js';
 import { createSocket } from './socket.js';
 import { setupTheme } from './theme.js';
+import { createVoiceController } from './voice.js';
 
 marked.setOptions({
   breaks: true,
@@ -19,24 +20,32 @@ marked.setOptions({
 setupTheme();
 
 let socket;
+let voice;
+let authenticatedAccount = null;
 const sendCommand = (message) => socket?.send(message) ?? false;
 
-setupChat({ sendCommand });
+setupChat({ sendCommand, onPromptSubmitted: () => voice?.beforePrompt() });
 
 const sessions = createSessionPanel({
   sendCommand,
   onMessagesLoaded: loadHistoricalMessages,
   onError: showChatError,
+  onBeforeSessionLoad: () => voice?.resetConnection(),
 });
 
 socket = createSocket({
   onOpen: () => setConnectionStatus(true),
-  onClose: () => setConnectionStatus(false),
+  onClose: () => {
+    setConnectionStatus(false);
+    voice?.resetConnection();
+  },
   onUnauthorized: () => location.reload(),
   onMessage: routeServerMessage,
+  onBinary: (data) => voice?.handleBinaryFrame(data),
 });
 
 document.getElementById('new-session-btn').addEventListener('click', () => {
+  voice?.resetConnection();
   if (sendCommand({ type: 'new_session' })) {
     resetConversation();
   }
@@ -51,7 +60,13 @@ document.getElementById('logout-btn').addEventListener('click', async () => {
   }
 });
 
-setupAuth(() => {
+setupAuth((account) => {
+  authenticatedAccount = account;
+  voice = createVoiceController({
+    sendCommand,
+    onError: showChatError,
+  });
+  voice.setAccount(account);
   socket.connect();
   focusComposer();
 });
@@ -69,5 +84,12 @@ function routeServerMessage(message) {
     }
   } else if (message.type === 'pi_event') {
     handlePiEvent(message.event);
+  } else if (
+    message.type === 'voice_state'
+    || message.type === 'voice_stream_start'
+    || message.type === 'voice_stream_end'
+    || message.type === 'voice_error'
+  ) {
+    voice?.handleServerMessage(message);
   }
 }

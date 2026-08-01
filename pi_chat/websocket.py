@@ -10,31 +10,56 @@ from fastapi import WebSocket, WebSocketDisconnect
 from .config import DEV_MODE
 from .process import PiProcess
 from .sessions import parse_jsonl_messages, session_belongs_to_account
+from .voice_session import VoiceSession
 
 log = logging.getLogger("pi-chat")
+
+
+def _make_voice_session(tts_service, pi, config_):
+    """Factory for VoiceSession to allow test injection."""
+    return VoiceSession(
+        tts_service=tts_service,
+        send_json=pi.send_browser_json,
+        send_bytes=pi.send_browser_bytes,
+        config_=config_,
+    )
 
 
 async def handle_websocket(
     websocket: WebSocket,
     pi: PiProcess,
     account: str,
+    tts_service=None,
+    config_=None,
+    voice_session_factory=None,
 ) -> None:
     """Run one browser connection until it disconnects."""
     await websocket.accept()
     pi.ws = websocket
     pi.account = account
+
+    # Create voice session if TTS service is available
+    voice = None
+    if tts_service is not None:
+        factory = voice_session_factory or _make_voice_session
+        voice = factory(tts_service, pi, config_)
+        pi.event_observer = voice.observe_pi_event
+
     await _load_dev_session(websocket)
 
     try:
         while True:
             message = await _receive_command(websocket)
             if message is not None:
-                await _dispatch_command(websocket, pi, account, message)
+                await _dispatch_command(websocket, pi, account, message, voice)
     except WebSocketDisconnect:
         log.info("Client disconnected — killing pi subprocess")
     except Exception as error:
         log.error("WebSocket error: %s", error)
     finally:
+        pi.event_observer = None
+        if voice is not None:
+            await voice.close()
         pi.ws = None
         await pi.kill()
 
@@ -80,18 +105,25 @@ async def _dispatch_command(
     pi: PiProcess,
     account: str,
     message: dict,
+    voice=None,
 ) -> None:
     command_type = message.get("type")
 
     if command_type == "prompt":
         await _handle_prompt(websocket, pi, message)
     elif command_type == "new_session":
+        if voice is not None:
+            await voice.stop_current(reason="superseded")
         await _start_new_session(websocket, pi)
     elif command_type == "abort":
+        if voice is not None:
+            await voice.stop_current(reason="stopped")
         await pi.send({"type": "abort"})
     elif command_type == "ping":
-        await websocket.send_json({"type": "pong"})
+        await pi.send_browser_json({"type": "pong"})
     elif command_type == "load_session":
+        if voice is not None:
+            await voice.stop_current(reason="superseded")
         await _load_session(
             websocket,
             pi,
@@ -100,6 +132,19 @@ async def _dispatch_command(
         )
     elif command_type == "get_messages":
         await _get_messages(websocket, pi)
+    # Voice commands
+    elif command_type == "voice_enable":
+        if voice is not None:
+            await voice.enable(message.get("settings", {}))
+    elif command_type == "voice_disable":
+        if voice is not None:
+            await voice.disable()
+    elif command_type == "voice_settings":
+        if voice is not None:
+            await voice.update_settings(message.get("settings", {}))
+    elif command_type == "voice_stop":
+        if voice is not None:
+            await voice.stop_current(reason="stopped")
 
 
 async def _handle_prompt(
@@ -128,7 +173,7 @@ async def _handle_prompt(
 
 async def _start_session(websocket: WebSocket, pi: PiProcess) -> None:
     await pi.spawn()
-    await websocket.send_json(
+    await pi.send_browser_json(
         {
             "type": "session_started",
             "sessionId": pi.session_id,
@@ -159,7 +204,7 @@ async def _start_new_session(
             return
 
         pi.session_id = _request_id()
-        await websocket.send_json(
+        await pi.send_browser_json(
             {
                 "type": "session_started",
                 "sessionId": pi.session_id,
@@ -233,7 +278,7 @@ async def _load_session(
             # Fallback to raw messages from pi if parsing fails
             messages = messages_result.get("data", {}).get("messages", [])
 
-        await websocket.send_json(
+        await pi.send_browser_json(
             {
                 "type": "session_loaded",
                 "messages": messages,
@@ -260,7 +305,7 @@ async def _get_messages(websocket: WebSocket, pi: PiProcess) -> None:
             timeout=15.0,
         )
         success = result.get("success")
-        await websocket.send_json(
+        await pi.send_browser_json(
             {
                 "type": "messages_retrieved" if success else "error",
                 "messages": (

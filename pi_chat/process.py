@@ -5,6 +5,7 @@ import json
 import logging
 import uuid
 from pathlib import Path
+from typing import Awaitable, Callable
 
 from fastapi import WebSocket
 
@@ -25,6 +26,10 @@ class PiProcess:
         self.work_dir: Path | None = None
         self.project_root = project_root
         self._pending_requests: dict[str, asyncio.Future] = {}
+
+        # Voice observer hook
+        self.event_observer: Callable[[dict], Awaitable[None]] | None = None
+        self._browser_send_lock = asyncio.Lock()
 
     @staticmethod
     def _new_session_id() -> str:
@@ -125,6 +130,26 @@ class PiProcess:
             self._pending_requests.pop(request_id, None)
             raise
 
+    async def send_browser_json(self, payload: dict) -> None:
+        """Send a JSON message to the browser using the shared send lock."""
+        if not self.ws:
+            return
+        async with self._browser_send_lock:
+            try:
+                await self.ws.send_json(payload)
+            except Exception:
+                pass
+
+    async def send_browser_bytes(self, payload: bytes) -> None:
+        """Send a binary message to the browser using the shared send lock."""
+        if not self.ws:
+            return
+        async with self._browser_send_lock:
+            try:
+                await self.ws.send_bytes(payload)
+            except Exception:
+                pass
+
     async def _read_stdout(self) -> None:
         """Forward parsed pi events to the connected browser."""
         try:
@@ -153,11 +178,16 @@ class PiProcess:
                                 RuntimeError(event.get("error", "RPC command failed"))
                             )
 
-                if self.ws:
+                # Send pi_event to browser using locked send
+                await self.send_browser_json({"type": "pi_event", "event": event})
+
+                # Call voice observer (if registered)
+                if self.event_observer is not None:
                     try:
-                        await self.ws.send_json({"type": "pi_event", "event": event})
-                    except Exception:
-                        break
+                        await self.event_observer(event)
+                    except Exception as obs_err:
+                        log.debug("Voice observer error (non-fatal): %s", obs_err)
+
         except asyncio.CancelledError:
             return
         except Exception as error:

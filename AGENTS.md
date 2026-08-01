@@ -56,6 +56,14 @@ These are non-negotiable. Violating any of these will break the application:
 | `pi_chat/websocket.py` | Browser command dispatch and higher-level pi RPC workflows |
 | `pi_chat/sessions.py` | Session discovery, account filtering, previews, JSONL parsing |
 
+### Voice Mode Components
+
+| File | Responsibility |
+|------|----------------|
+| `pi_chat/tts_service.py` | Lazy OmniVoice model, voice cache, serialized inference |
+| `pi_chat/tts_chunking.py` | Streaming Markdown-aware speech chunker |
+| `pi_chat/voice_session.py` | Per-WebSocket voice state, queue, framing, cancellation |
+
 `pi_chat/app.py` is the composition root. It creates an authenticated `PiProcess` for each WebSocket and tracks active processes for shutdown.
 
 ## Frontend Components
@@ -74,6 +82,14 @@ Browser-native ES modules. No bundler or framework.
 | `static/sessions.js` | Session drawer, `/api/sessions`, load progress |
 | `static/theme.js` | Theme selection and local persistence |
 | `static/utils.js` | Formatting and escaping helpers |
+
+### Voice Mode Frontend
+
+| File | Responsibility |
+|------|----------------|
+| `static/voice.js` | UI state, Web Audio scheduling, binary frame parsing |
+
+`static/app.js` composes voice the same way it composes chat and sessions.
 
 `static/app.js` is the only module that knows how the frontend components fit together. Transport code calls callbacks; it does not directly modify chat or session UI.
 
@@ -674,34 +690,52 @@ pi-chat/
 ├── pi_chat/
 │   ├── app.py          # FastAPI app, routes, debug endpoint
 │   ├── auth.py         # Password verification, browser sessions
-│   ├── config.py       # Paths and environment settings
-│   ├── process.py      # pi subprocess lifecycle and RPC responses
+│   ├── config.py       # Paths and environment settings (incl. TTS config)
+│   ├── process.py      # pi subprocess lifecycle, RPC responses, event observer
 │   ├── sessions.py     # Session discovery and JSONL message extraction
-│   └── websocket.py    # Browser WebSocket command handling
+│   ├── websocket.py    # Browser WebSocket command handling (incl. voice cmds)
+│   ├── tts_service.py  # Lazy OmniVoice model, voice cache, serialized inference
+│   ├── tts_chunking.py # Streaming Markdown-aware speech chunker
+│   └── voice_session.py # Per-WebSocket voice state, queue, framing
 ├── static/
-│   ├── index.html      # Page structure
+│   ├── index.html      # Page structure (incl. voice controls)
 │   ├── theme.css       # Color palette and design tokens
-│   ├── styles.css      # Component and responsive styles
+│   ├── styles.css      # Component and responsive styles (incl. voice UI)
 │   ├── app.js          # Frontend composition and message routing
 │   ├── auth.js         # Local profile selection
-│   ├── socket.js       # WebSocket, heartbeat, reconnect
+│   ├── socket.js       # WebSocket, heartbeat, reconnect, binary frames
 │   ├── chat.js         # Composer and live event rendering
 │   ├── history.js      # Historical message rendering
 │   ├── timeline.js     # Shared timeline DOM primitives
 │   ├── subagent.js     # Shared sub-agent cards and result adapters
 │   ├── sessions.js     # Session drawer and load workflow
 │   ├── theme.js        # Persistent palette-role toggle
+│   ├── voice.js        # Voice UI state, Web Audio scheduling, binary parsing
 │   ├── utils.js        # Browser-side formatting helpers
 │   └── marked.min.js   # Vendored Markdown renderer
 ├── tests/
 │   ├── compare_render.py        # Live vs historical rendering parity tests
-│   └── mobile_viewport_test.py  # Mobile viewport screenshot tests
+│   ├── mobile_viewport_test.py  # Mobile viewport screenshot tests
+│   ├── fakes/                   # Deterministic test doubles
+│   │   └── voice.py             # FakeOmniVoiceRuntime, FakeTTSService
+│   ├── test_voice_fakes.py      # Fake runtime tests (no torch)
+│   ├── test_tts_chunking.py     # Streaming chunker tests
+│   ├── test_tts_service.py      # TTSService tests with fake runtime
+│   ├── test_voice_session.py    # VoiceSession tests
+│   └── test_voice_fake_e2e.py   # No-GPU pi-event-to-frame integration
 ├── tools/
-│   ├── capture.py       # Unified RPC event capture CLI
-│   └── render_message.js # jsdom harness for production JS rendering
-├── data-samples/        # RPC capture fixtures and native sessions
-├── server.py            # Backward-compatible launch entry point
-├── roxy.md              # Extra system prompt for the Roxy profile
-├── pyproject.toml       # Python project configuration
-└── package.json         # Node devDependencies (jsdom)
+│   ├── capture.py                # Unified RPC event capture CLI
+│   ├── render_message.js         # jsdom harness for production JS rendering
+│   ├── run_fake_voice_server.py  # Dev server with audible fake PCM
+│   ├── run_voice_cpu_validation.py # Real checkpoint CPU validator
+│   ├── run_voice_gpu_validation.py # Human-gated GPU validator
+│   └── benchmark_voice.py        # Latency/RTF benchmark
+├── experiments/                 # Cloned sources (ignored by git)
+│   └── OmniVoice/               # OmniVoice source (not the model checkpoint)
+├── data-samples/                # RPC capture fixtures and native sessions
+├── voice-validation/            # Validation artifacts (ignored by git)
+├── server.py                    # Backward-compatible launch entry point
+├── roxy.md                      # Extra system prompt for the Roxy profile
+├── pyproject.toml               # Python project configuration
+└── package.json                 # Node devDependencies (jsdom)
 ```

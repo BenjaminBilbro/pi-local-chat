@@ -36,6 +36,7 @@ const fileAttachments = document.getElementById('file-attachments');
 const waitingIndicator = document.getElementById('waiting-indicator');
 
 let sendCommand = () => false;
+let onPromptSubmitted = () => {};
 let pendingFiles = [];
 let timeline = null;
 let currentThinking = null;
@@ -51,6 +52,7 @@ const subagentTools = new Map();
 
 export function setupChat(options) {
   sendCommand = options.sendCommand;
+  onPromptSubmitted = options.onPromptSubmitted || (() => {});
 
   attachButton.addEventListener('click', () => fileInput.click());
   fileInput.addEventListener('change', handleFileSelection);
@@ -476,6 +478,7 @@ function submitPrompt() {
     command.images = images;
   }
   if (!sendCommand(command)) return;
+  onPromptSubmitted();
 
   createUserMessage(text, pendingFiles);
   userInput.value = '';

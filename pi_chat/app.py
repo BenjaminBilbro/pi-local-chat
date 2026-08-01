@@ -25,6 +25,7 @@ from .sessions import (
 )
 import pdfplumber
 
+from .tts_service import TTSService
 from .websocket import handle_websocket
 
 logging.basicConfig(
@@ -42,11 +43,21 @@ class LoginCredentials(BaseModel):
 def create_app(
     process_factory: Callable[[], PiProcess] | None = None,
     auth_manager: AuthManager | None = None,
+    tts_service=None,
 ) -> FastAPI:
-    """Create the web app with isolated pi processes per browser connection."""
+    """Create the web app with isolated pi processes per browser connection.
+
+    Args:
+        process_factory: Factory for PiProcess (for tests).
+        auth_manager: AuthManager instance (for tests).
+        tts_service: TTSService instance (for tests; production creates one).
+    """
     make_process = process_factory or PiProcess
     auth = auth_manager or AuthManager()
     active_processes: set[PiProcess] = set()
+
+    # Create or use injected TTS service
+    _tts = tts_service or TTSService()
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -59,10 +70,16 @@ def create_app(
             *(pi.kill() for pi in active_processes),
             return_exceptions=True,
         )
+        # Close TTS service last (after all processes are killed)
+        try:
+            await _tts.close()
+        except Exception as error:
+            log.warning("TTS close error during shutdown: %s", error)
 
     application = FastAPI(title="pi-chat", lifespan=lifespan)
     application.state.auth = auth
     application.state.active_processes = active_processes
+    application.state.tts = _tts
 
     @application.get("/")
     async def index():
@@ -236,7 +253,7 @@ def create_app(
         pi.account = account
         active_processes.add(pi)
         try:
-            await handle_websocket(websocket, pi, account)
+            await handle_websocket(websocket, pi, account, tts_service=_tts)
         finally:
             active_processes.discard(pi)
 

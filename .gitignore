@@ -6,3 +6,9 @@ __pycache__/
 sessions/
 node_modules/
 tests/output_*.html
+
+# OmniVoice source checkout (not the model checkpoint)
+experiments/OmniVoice/
+
+# Voice validation artifacts
+voice-validation/

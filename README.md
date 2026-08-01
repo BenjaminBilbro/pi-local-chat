@@ -69,12 +69,72 @@ uv run uvicorn server:app --host 127.0.0.1 --port 9000
 Point the tunnel at `http://127.0.0.1:9000` and use Cloudflare Access to
 control who can reach the login page.
 
+## Voice Mode (TTS)
+
+Opt-in text-to-speech output for assistant responses using OmniVoice.
+Voice mode begins synthesis while pi is still streaming, so speech starts
+before the full response completes.
+
+### Install voice dependencies
+
+Voice is optional. Install only when needed:
+
+```bash
+uv sync --extra voice
+```
+
+### Configuration
+
+| Environment variable | Default | Meaning |
+|---|---|---|
+| `PI_CHAT_TTS_MODEL` | `k2-fsa/OmniVoice` | HF model ID or local snapshot |
+| `PI_CHAT_TTS_DEVICE` | `cuda:0` | Torch device |
+| `PI_CHAT_TTS_DTYPE` | `float16` | Precision (`float16` or `float32`) |
+| `PI_CHAT_TTS_NUM_STEPS` | `16` | Diffusion steps (fewer = faster) |
+| `PI_CHAT_TTS_FLASHINFER` | `0` | Enable FlashInfer acceleration |
+| `PI_CHAT_TTS_CUDA_GRAPH` | `0` | Enable CUDA graph |
+| `PI_CHAT_TTS_CPU_THREADS` | `4` | Torch CPU threads for CPU mode |
+
+### Development with fake PCM
+
+Test the full voice stack without GPU or real model:
+
+```bash
+uv run python tools/run_fake_voice_server.py
+```
+
+### Validation
+
+Real CPU validation (CUDA hidden, slow):
+
+```bash
+CUDA_VISIBLE_DEVICES="" uv run --extra voice python tools/run_voice_cpu_validation.py
+```
+
+Real GPU validation (run after unloading implementing LLM):
+
+```bash
+uv run --extra voice python tools/run_voice_gpu_validation.py
+```
+
+Benchmark:
+
+```bash
+uv run --extra voice python tools/benchmark_voice.py --iterations 10
+```
+
 ## Development
 
 ### Parity tests
 
 ```bash
 npm test
+```
+
+### Python tests
+
+```bash
+uv run pytest -q -m "not voice_cpu and not voice_gpu"
 ```
 
 ### RPC capture
@@ -93,4 +153,4 @@ PI_CHAT_DEV=1 uv run python server.py
 ```
 
 For full technical details (architecture, RPC events, testing, rendering
-contract), see `AGENTS.md`.
+contract, voice protocol), see `AGENTS.md`.

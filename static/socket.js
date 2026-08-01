@@ -5,6 +5,7 @@ export function createSocket({
   onOpen,
   onClose,
   onMessage,
+  onBinary,
   onUnauthorized,
 }) {
   let connection = null;
@@ -32,6 +33,7 @@ export function createSocket({
 
     const socket = new WebSocket(url);
     connection = socket;
+    socket.binaryType = 'arraybuffer';
 
     socket.onopen = () => {
       clearInterval(heartbeatTimer);
@@ -42,6 +44,10 @@ export function createSocket({
     };
 
     socket.onmessage = (event) => {
+      if (typeof event.data !== 'string') {
+        onBinary?.(event.data);
+        return;
+      }
       try {
         onMessage(JSON.parse(event.data));
       } catch (error) {

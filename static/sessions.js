@@ -4,6 +4,7 @@ export function createSessionPanel({
   sendCommand,
   onMessagesLoaded,
   onError,
+  onBeforeSessionLoad,
 }) {
   const menuButton = document.getElementById('session-menu-btn');
   const panel = document.getElementById('session-panel');
@@ -92,6 +93,7 @@ export function createSessionPanel({
   }
 
   function loadSession(sessionPath) {
+    onBeforeSessionLoad?.();
     if (!sendCommand({ type: 'load_session', sessionPath })) return;
 
     body.querySelectorAll('.session-item').forEach((item) => {

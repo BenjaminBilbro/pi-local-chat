@@ -70,7 +70,7 @@ export function setupAuth(onAuthenticated) {
       const response = await fetch('/api/me');
       if (!response.ok) return;
       const session = await response.json();
-      completeLogin(session.account);
+      onAuthenticated(session.account);
     } catch {
       // The regular login screen remains available if the server is offline.
     }
