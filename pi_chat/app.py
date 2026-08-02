@@ -4,6 +4,7 @@ import asyncio
 import io
 import json
 import logging
+import os
 import subprocess
 from collections.abc import Callable
 from contextlib import asynccontextmanager
@@ -29,7 +30,7 @@ from .tts_service import TTSService
 from .websocket import handle_websocket
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=os.environ.get("PI_CHAT_LOG_LEVEL", "INFO").upper(),
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 log = logging.getLogger("pi-chat")

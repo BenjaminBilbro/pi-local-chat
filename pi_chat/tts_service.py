@@ -14,6 +14,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
+import struct
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -27,8 +29,20 @@ from tests.fakes.voice import SynthesizedAudio, TTSRuntime, VoiceHandle, VoiceSe
 
 logger = logging.getLogger(__name__)
 
-# Bootstrap phrase used for voice clone prompt preparation
-BOOTSTRAP_TEXT = "Hello. I'm ready to help with what you're working on today."
+# Bootstrap phrases used for voice clone prompt preparation (language-specific)
+BOOTSTRAP_TEXTS: dict[str, str] = {
+    "English": "Hello. I'm ready to help with what you're working on today.",
+    "Spanish": "Hola. Estoy lista para ayudarte con lo que estás trabajando hoy.",
+    "French": "Bonjour. Je suis prête à vous aider avec ce sur quoi vous travaillez aujourd'hui.",
+    "German": "Hallo. Ich bin bereit, Ihnen bei Ihrer Arbeit heute zu helfen.",
+}
+# Default bootstrap text for backward compatibility
+BOOTSTRAP_TEXT = BOOTSTRAP_TEXTS["English"]
+
+
+def get_bootstrap_text(language: str) -> str:
+    """Get the bootstrap text for the given language."""
+    return BOOTSTRAP_TEXTS.get(language, BOOTSTRAP_TEXTS["English"])
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +96,10 @@ class _OmniVoiceRuntime:
             torch.set_num_threads(cpu_threads)
             logger.info("TTS: setting torch threads to %d for CPU", cpu_threads)
 
+        # Pre-load VRAM check for GPU devices
+        if not is_cpu:
+            self._check_vram_available(torch)
+
         # Map dtype string to torch dtype
         if dtype_str == "float16" and not is_cpu:
             torch_dtype = torch.float16
@@ -114,7 +132,7 @@ class _OmniVoiceRuntime:
             ) from e
 
         logger.info(
-            "TTS: loading model %s on %s with dtype %s, steps=%d",
+            "TTS: [DEBUG] loading model %s on %s with dtype %s, steps=%d",
             self._config.TTS_MODEL,
             device,
             torch_dtype,
@@ -155,11 +173,60 @@ class _OmniVoiceRuntime:
         self._sampling_rate = getattr(self._model, "sampling_rate", 24000)
         self._loaded = True
 
-        logger.info("TTS: model loaded, sample_rate=%d", self._sampling_rate)
+        logger.info("TTS: [DEBUG] model loaded, sample_rate=%d", self._sampling_rate)
+        logger.info("TTS: [DEBUG] model type: %s", type(self._model).__name__)
+        logger.info("TTS: [DEBUG] model device: %s", getattr(self._model, "device", "unknown"))
 
         # Optional FlashInfer acceleration
         if self._config.TTS_FLASHINFER and not device.lower().startswith("cpu"):
             self._try_apply_flashinfer(torch)
+
+    def _check_vram_available(self, torch: Any) -> None:
+        """Check that sufficient VRAM is available before loading.
+
+        Uses nvidia-smi for accurate system-wide free VRAM (torch's caching
+        allocator lies about what's actually free).
+
+        Raises RuntimeError if VRAM is below the configured threshold.
+        """
+        vram_required_gb = self._config.TTS_VRAM_REQUIRED_GB
+
+        try:
+            if not torch.cuda.is_available():
+                raise RuntimeError(
+                    "Voice could not start because CUDA is not available. "
+                    "Set PI_CHAT_TTS_DEVICE=cpu to use CPU (slow)."
+                )
+
+            device_idx = 0
+            # Parse device index from "cuda:N"
+            if ":" in self._config.TTS_DEVICE:
+                try:
+                    device_idx = int(self._config.TTS_DEVICE.split(":")[1])
+                except ValueError:
+                    pass
+
+            # Use nvidia-smi for real system-wide free VRAM
+            out = subprocess.check_output(
+                ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,nounits,noheader"]
+            ).decode().strip()
+            free_mib = float(out.split("\n")[device_idx].strip())
+            free_gb = free_mib / 1024
+
+            if free_gb < vram_required_gb:
+                raise RuntimeError(
+                    f"Voice could not start because there is not enough free GPU memory. "
+                    f"Available: {free_gb:.1f}GB, Required: {vram_required_gb}GB. "
+                    f"Close other GPU workloads or set PI_CHAT_TTS_DEVICE=cpu."
+                )
+
+            logger.info("TTS: VRAM check passed (%.1fGB free)", free_gb)
+
+        except RuntimeError:
+            raise  # Re-raise our own errors
+        except Exception as e:
+            # VRAM check failure is non-fatal — proceed with load attempt
+            logger.warning("TTS: VRAM check failed, proceeding anyway: %s", e)
 
     def _try_apply_flashinfer(self, torch: Any) -> None:
         """Try to apply FlashInfer acceleration. Non-fatal if unavailable."""
@@ -189,7 +256,10 @@ class _OmniVoiceRuntime:
             raise RuntimeError("TTSRuntime: not loaded")
 
         instruct = self._build_instruct(settings)
-        logger.info("TTS: preparing voice with instruct=%s", instruct)
+        logger.info("TTS: [DEBUG] prepare_voice START")
+        logger.info("TTS: [DEBUG]   settings: gender=%s, age=%s, pitch=%s, accent=%s, style=%s, speed=%s", settings.gender, settings.age, settings.pitch, settings.accent, settings.style, settings.speed)
+        logger.info("TTS: [DEBUG]   instruct: %s", instruct)
+        logger.info("TTS: [DEBUG]   bootstrap_text: %s", bootstrap_text)
 
         # Generate bootstrap audio with voice design
         try:
@@ -197,6 +267,7 @@ class _OmniVoiceRuntime:
         except ImportError:
             raise RuntimeError("torch not available") from None
 
+        logger.info("TTS: [DEBUG] calling model.generate() for bootstrap audio...")
         audio_list = self._model.generate(
             text=bootstrap_text,
             instruct=instruct,
@@ -210,8 +281,18 @@ class _OmniVoiceRuntime:
             raise RuntimeError("TTS: model.generate returned empty audio for bootstrap")
 
         waveform = audio_list[0]
+        logger.info("TTS: [DEBUG] bootstrap audio generated: len=%d, dtype=%s, shape=%s, min=%.4f, max=%.4f", len(waveform), waveform.dtype, waveform.shape, float(waveform.min()), float(waveform.max()))
+        duration = len(waveform) / self._sampling_rate
+        logger.info("TTS: [DEBUG] bootstrap audio duration: %.2fs at %dHz", duration, self._sampling_rate)
+
+        # Save bootstrap audio for debugging
+        settings_key = hashlib.sha256(
+            f"{settings.gender}|{settings.age}|{settings.pitch}|{settings.accent}|{settings.style}|{settings.speed}".encode()
+        ).hexdigest()[:12]
+        self._save_wav_debug(waveform, self._sampling_rate, f"bootstrap_{settings_key}.wav")
 
         # Create voice clone prompt
+        logger.info("TTS: [DEBUG] calling create_voice_clone_prompt()...")
         try:
             voice_clone_prompt = self._model.create_voice_clone_prompt(
                 (torch.from_numpy(waveform), self._sampling_rate),
@@ -219,6 +300,9 @@ class _OmniVoiceRuntime:
             )
         except Exception as e:
             raise RuntimeError(f"TTS: failed to create voice clone prompt: {e}") from e
+
+        logger.info("TTS: [DEBUG] voice clone prompt created: type=%s", type(voice_clone_prompt).__name__)
+        logger.info("TTS: [DEBUG] prepare_voice COMPLETE")
 
         return {
             "voice_clone_prompt": voice_clone_prompt,
@@ -242,12 +326,20 @@ class _OmniVoiceRuntime:
         voice_clone_prompt = prepared_voice.get("voice_clone_prompt")
         instruct = prepared_voice.get("instruct", self._build_instruct(settings))
 
+        logger.info("TTS: [DEBUG] generate() START")
+        logger.info("TTS: [DEBUG]   text: %s", repr(text[:100]) + ("..." if len(text) > 100 else ""))
+        logger.info("TTS: [DEBUG]   language: %s", settings.language)
+        logger.info("TTS: [DEBUG]   instruct: %s", instruct)
+        logger.info("TTS: [DEBUG]   speed: %s", settings.speed)
+        logger.info("TTS: [DEBUG]   voice_clone_prompt type: %s", type(voice_clone_prompt).__name__)
+
         try:
             import numpy as np
         except ImportError:
             raise RuntimeError("numpy not available") from None
 
         # Generate audio
+        logger.info("TTS: [DEBUG] calling model.generate() for text...")
         audio_list = self._model.generate(
             text=text,
             language=settings.language,
@@ -264,6 +356,9 @@ class _OmniVoiceRuntime:
             raise RuntimeError("TTS: model.generate returned empty audio")
 
         waveform = audio_list[0]
+        duration = len(waveform) / self._sampling_rate
+        logger.info("TTS: [DEBUG] audio generated: len=%d, dtype=%s, shape=%s, min=%.4f, max=%.4f", len(waveform), waveform.dtype, waveform.shape, float(waveform.min()), float(waveform.max()))
+        logger.info("TTS: [DEBUG] audio duration: %.2fs at %dHz", duration, self._sampling_rate)
 
         # Validate output
         if waveform.ndim != 1:
@@ -274,6 +369,8 @@ class _OmniVoiceRuntime:
 
         # Store for PCM conversion
         self._last_waveform = waveform
+
+        logger.info("TTS: [DEBUG] generate() COMPLETE")
 
         return prepared_voice, len(waveform)
 
@@ -300,6 +397,53 @@ class _OmniVoiceRuntime:
     @property
     def sampling_rate(self) -> int | None:
         return self._sampling_rate
+
+    def _save_wav_debug(self, waveform: Any, sample_rate: int, filename: str) -> None:
+        """Save a waveform as a WAV file for debugging (gated by TTS_DEBUG_AUDIO_ENABLED)."""
+        if not self._config.TTS_DEBUG_AUDIO_ENABLED:
+            return
+        debug_dir = self._config.TTS_DEBUG_AUDIO_DIR
+        os.makedirs(debug_dir, exist_ok=True)
+        filepath = os.path.join(debug_dir, filename)
+
+        try:
+            import numpy as np
+            # Ensure float32 in [-1, 1]
+            if isinstance(waveform, list):
+                waveform = np.array(waveform, dtype=np.float32)
+            else:
+                waveform = waveform.astype(np.float32)
+            waveform = np.clip(waveform, -1.0, 1.0)
+            samples = (waveform * 32767).astype(np.int16)
+
+            with open(filepath, "wb") as f:
+                # WAV header
+                num_frames = len(samples)
+                num_channels = 1
+                bytes_per_sample = 2
+                block_align = num_channels * bytes_per_sample
+                byte_rate = sample_rate * block_align
+                data_size = num_frames * block_align
+                file_size = 36 + data_size
+
+                f.write(b"RIFF")
+                f.write(struct.pack("<I", file_size))
+                f.write(b"WAVE")
+                f.write(b"fmt ")
+                f.write(struct.pack("<I", 16))  # fmt chunk size
+                f.write(struct.pack("<H", 1))   # PCM
+                f.write(struct.pack("<H", num_channels))
+                f.write(struct.pack("<I", sample_rate))
+                f.write(struct.pack("<I", byte_rate))
+                f.write(struct.pack("<H", block_align))
+                f.write(struct.pack("<H", bytes_per_sample * 8))
+                f.write(b"data")
+                f.write(struct.pack("<I", data_size))
+                f.write(samples.tobytes())
+
+            logger.debug("TTS: saved debug WAV to %s (%d samples, %.2fs)", filepath, len(samples), len(samples) / sample_rate)
+        except Exception as e:
+            logger.warning("TTS: failed to save debug WAV %s: %s", filepath, e)
 
 
 # ---------------------------------------------------------------------------
@@ -365,11 +509,14 @@ class TTSService:
 
         Concurrent calls await the same load operation via asyncio.shield().
         """
+        logger.info("TTS: [DEBUG] load() called, currently loaded=%s", self._loaded)
         async with self._load_lock:
             if self._loaded:
+                logger.info("TTS: [DEBUG] load() returning early, already loaded")
                 return
             if self._load_future is not None:
                 # Another caller is loading; wait for it (shielded)
+                logger.info("TTS: [DEBUG] load() waiting for existing load future")
                 await asyncio.shield(self._load_future)
                 return
 
@@ -378,9 +525,11 @@ class TTSService:
         try:
             # Create runtime if needed
             if self._runtime is None:
+                logger.info("TTS: [DEBUG] load() creating new runtime")
                 self._runtime = self._runtime_factory()
 
             # Load in executor thread
+            logger.info("TTS: [DEBUG] load() calling runtime.load() in executor...")
             await asyncio.get_event_loop().run_in_executor(
                 self._executor,
                 self._runtime.load,
@@ -391,7 +540,7 @@ class TTSService:
                 self._sampling_rate = self._runtime.sampling_rate
 
             self._loaded = True
-            logger.info("TTS: service loaded, sample_rate=%s", self._sampling_rate)
+            logger.info("TTS: [DEBUG] service loaded, sample_rate=%s", self._sampling_rate)
 
             # Complete the shared future
             if self._load_future and not self._load_future.done():
@@ -411,17 +560,21 @@ class TTSService:
         Deduplicates in-flight preparation for the same settings key.
         Uses asyncio.shield() so cancellation doesn't abort shared work.
         """
+        logger.info("TTS: [DEBUG] prepare_voice() called")
         if not self._loaded:
             await self.load()
 
         key = self._voice_key(settings)
+        logger.info("TTS: [DEBUG] prepare_voice() key=%s", key)
 
         # Check cache
         if key in self._voice_cache:
+            logger.info("TTS: [DEBUG] prepare_voice() HIT cache for key=%s", key)
             return self._voice_cache[key]
 
         # Check in-flight
         if key in self._prepare_futures:
+            logger.info("TTS: [DEBUG] prepare_voice() waiting for in-flight prep for key=%s", key)
             await asyncio.shield(self._prepare_futures[key])
             return self._voice_cache.get(key)
 
@@ -432,9 +585,11 @@ class TTSService:
 
         try:
             # Prepare in executor thread
+            logger.info("TTS: [DEBUG] prepare_voice() calling runtime.prepare_voice() for key=%s", key)
+            bootstrap_text = get_bootstrap_text(settings.language)
             prepared = await loop.run_in_executor(
                 self._executor,
-                lambda: self._runtime.prepare_voice(settings, self.BOOTSTRAP_TEXT),
+                lambda: self._runtime.prepare_voice(settings, bootstrap_text),
             )
 
             handle = VoiceHandle(key=key, settings=settings)
@@ -448,6 +603,7 @@ class TTSService:
 
             self._voice_cache[key] = handle
             self._prepared_objects[key] = prepared
+            logger.info("TTS: [DEBUG] prepare_voice() cached new voice key=%s, cache_size=%d", key, len(self._voice_cache))
 
             if not future.done():
                 future.set_result(handle)
@@ -472,6 +628,7 @@ class TTSService:
         Runs in the single-thread executor. Caller must check stream ID
         after return to handle cancellation.
         """
+        logger.info("TTS: [DEBUG] synthesize() called, voice_key=%s, text=%s", voice.key, repr(text[:80]) + ("..." if len(text) > 80 else ""))
         if not self._loaded:
             raise RuntimeError("TTSService: not loaded")
 
@@ -488,6 +645,7 @@ class TTSService:
 
         # Generate in executor
         loop = asyncio.get_event_loop()
+        logger.info("TTS: [DEBUG] synthesize() calling runtime.generate()...")
         await loop.run_in_executor(
             self._executor,
             lambda: self._runtime.generate(text, prepared_obj, voice.settings),
@@ -501,6 +659,7 @@ class TTSService:
         sr = self._sampling_rate or 24000
 
         # Convert to PCM
+        logger.info("TTS: [DEBUG] synthesize() converting waveform to PCM...")
         pcm_bytes, sample_count = self._waveform_to_pcm(waveform, sr)
 
         gen_time = time.monotonic() - start_time
@@ -512,8 +671,8 @@ class TTSService:
         # Log metrics (not full text)
         audio_duration = sample_count / sr
         rtf = gen_time / audio_duration if audio_duration > 0 else float("inf")
-        logger.debug(
-            "TTS: synthesized chars=%d samples=%d duration=%.2fs gen=%.2fs rtf=%.2f",
+        logger.info(
+            "TTS: [DEBUG] synthesize() COMPLETE chars=%d samples=%d duration=%.2fs gen=%.2fs rtf=%.2f",
             len(text),
             sample_count,
             audio_duration,
@@ -571,7 +730,7 @@ class TTSService:
 
     def _voice_key(self, settings: VoiceSettings) -> str:
         """Generate a stable hash key for voice settings."""
-        raw = f"{settings.gender}|{settings.age}|{settings.pitch}|{settings.accent}|{settings.style}|{settings.speed}"
+        raw = f"{settings.gender}|{settings.age}|{settings.pitch}|{settings.accent}|{settings.style}|{settings.speed}|{settings.language}"
         return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
     def status(self) -> dict:

@@ -276,7 +276,7 @@ class FakeOmniVoiceRuntime:
         return self._call_counter
 
     def _voice_key(self, settings: VoiceSettings) -> str:
-        raw = f"{settings.gender}|{settings.age}|{settings.pitch}|{settings.accent}|{settings.style}|{settings.speed}"
+        raw = f"{settings.gender}|{settings.age}|{settings.pitch}|{settings.accent}|{settings.style}|{settings.speed}|{settings.language}"
         return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
@@ -373,7 +373,7 @@ class FakeTTSService:
         self._voice_handles.clear()
 
     def _voice_key(self, settings: VoiceSettings) -> str:
-        raw = f"{settings.gender}|{settings.age}|{settings.pitch}|{settings.accent}|{settings.style}|{settings.speed}"
+        raw = f"{settings.gender}|{settings.age}|{settings.pitch}|{settings.accent}|{settings.style}|{settings.speed}|{settings.language}"
         return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 

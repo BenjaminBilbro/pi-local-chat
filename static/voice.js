@@ -46,6 +46,8 @@ export function createVoiceController({
   let activeSources = new Set();
   let backendStreamEnded = false;
   let speaking = false;
+  let pendingPrepareResolve = null;
+  let pendingPrepareReject = null;
 
   // UI references (lazy-init)
   let toggleButton = null;
@@ -161,9 +163,30 @@ export function createVoiceController({
       });
 
       if (applyButton) {
-        applyButton.addEventListener('click', () => {
-          applyBackendSettings();
-          closeSettings();
+        applyButton.addEventListener('click', async () => {
+          applyButton.disabled = true;
+          applyButton.textContent = 'Preparing...';
+
+          const backendSettings = {
+            gender: settings.gender,
+            age: settings.age,
+            pitch: settings.pitch,
+            accent: settings.accent,
+            style: settings.style,
+            speed: settings.speed,
+            language: settings.language,
+          };
+
+          try {
+            await sendVoicePrepare(backendSettings);
+            saveSettings();
+            closeSettings();
+          } catch (err) {
+            onError?.(err.message || 'Failed to prepare voice');
+          } finally {
+            applyButton.disabled = false;
+            applyButton.textContent = 'Apply';
+          }
         });
       }
     }
@@ -311,9 +334,25 @@ export function createVoiceController({
       accent: settings.accent,
       style: settings.style,
       speed: settings.speed,
+      language: settings.language,
     };
     sendCommand({ type: 'voice_enable', settings: backendSettings });
     saveSettings();
+  }
+
+  function sendVoicePrepare(backendSettings) {
+    return new Promise((resolve, reject) => {
+      pendingPrepareResolve = resolve;
+      pendingPrepareReject = reject;
+      sendCommand({ type: 'voice_prepare', settings: backendSettings });
+      setTimeout(() => {
+        if (pendingPrepareResolve === resolve) {
+          pendingPrepareResolve = null;
+          pendingPrepareReject = null;
+          reject(new Error('Voice preparation timed out'));
+        }
+      }, 30000);
+    });
   }
 
   function stopLocalPlayback() {
@@ -412,6 +451,13 @@ export function createVoiceController({
       case 'voice_stream_end':
         handleVoiceStreamEnd(message);
         break;
+      case 'voice_prepared':
+        if (pendingPrepareResolve) {
+          pendingPrepareResolve(message);
+          pendingPrepareResolve = null;
+          pendingPrepareReject = null;
+        }
+        break;
       case 'voice_error':
         handleVoiceError(message);
         break;
@@ -445,6 +491,11 @@ export function createVoiceController({
   }
 
   function handleVoiceError(message) {
+    if (pendingPrepareReject) {
+      pendingPrepareReject(new Error(message.message));
+      pendingPrepareResolve = null;
+      pendingPrepareReject = null;
+    }
     backendState = 'error';
     onError?.(message.message || 'Voice error');
     updateUI();

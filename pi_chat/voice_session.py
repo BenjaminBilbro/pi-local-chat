@@ -177,8 +177,10 @@ class VoiceSession:
 
     async def enable(self, raw_settings: dict) -> None:
         """Enable voice mode with the given settings."""
+        logger.info("Voice: [DEBUG] enable() called with settings=%s", raw_settings)
         settings = validate_settings(raw_settings)
         if settings is None:
+            logger.info("Voice: [DEBUG] enable() FAILED - invalid settings")
             await self._send_error(
                 "voice_invalid_settings",
                 "Invalid voice settings provided.",
@@ -189,6 +191,7 @@ class VoiceSession:
         self.enabled = True
         self._current_activation_id = self._activation_id = self._activation_id + 1
         self.settings = settings
+        logger.info("Voice: [DEBUG] enable() activation_id=%d", self._activation_id)
 
         await self._send_json({"type": "voice_state", "state": "loading", "available": True})
 
@@ -197,6 +200,7 @@ class VoiceSession:
 
     async def disable(self) -> None:
         """Disable voice mode."""
+        logger.info("Voice: [DEBUG] disable() called")
         self.enabled = False
         self.ready = False
         self._invalidate_activation()
@@ -206,8 +210,10 @@ class VoiceSession:
 
     async def update_settings(self, raw_settings: dict) -> None:
         """Update voice settings for the next response."""
+        logger.info("Voice: [DEBUG] update_settings() called with settings=%s", raw_settings)
         settings = validate_settings(raw_settings)
         if settings is None:
+            logger.info("Voice: [DEBUG] update_settings() FAILED - invalid settings")
             await self._send_error(
                 "voice_invalid_settings",
                 "Invalid voice settings provided.",
@@ -217,6 +223,7 @@ class VoiceSession:
 
         self._current_activation_id = self._activation_id = self._activation_id + 1
         self.settings = settings
+        logger.info("Voice: [DEBUG] update_settings() activation_id=%d", self._activation_id)
 
         # Start preparation in background
         self._prepare_task = asyncio.create_task(self._prepare_voice())
@@ -225,12 +232,70 @@ class VoiceSession:
         """Stop the current response's voice but keep voice mode enabled."""
         await self._stop_current_internal(reason=reason)
 
+    async def prepare(self, raw_settings: dict) -> None:
+        """Prepare voice for given settings without changing enabled state.
+
+        Sends voice_prepared or voice_error response.
+        Used by frontend when user applies settings changes.
+        """
+        logger.info("Voice: [DEBUG] prepare() called with settings=%s", raw_settings)
+        settings = validate_settings(raw_settings)
+        if settings is None:
+            logger.info("Voice: [DEBUG] prepare() FAILED - invalid settings")
+            await self._send_error(
+                "voice_invalid_settings",
+                "Invalid voice settings provided.",
+                recoverable=True,
+            )
+            return
+
+        try:
+            # Update settings and activation (so any pending prep is invalidated)
+            self._activation_id += 1
+            self.settings = settings
+            logger.info("Voice: [DEBUG] prepare() activation_id=%d", self._activation_id)
+
+            # Load TTS and prepare voice
+            logger.info("Voice: [DEBUG] prepare() calling tts.load()...")
+            await self._tts.load()
+            logger.info("Voice: [DEBUG] prepare() calling tts.prepare_voice()...")
+            handle = await self._tts.prepare_voice(settings)
+            logger.info("Voice: [DEBUG] prepare() tts.prepare_voice() returned handle=%s", handle.key)
+
+            # Cache the handle if voice is enabled
+            if self.enabled:
+                self.voice_handle = handle
+                self.ready = True
+                logger.info("Voice: [DEBUG] prepare() cached handle (voice enabled)")
+
+            await self._send_json({
+                "type": "voice_prepared",
+                "settings": {
+                    "gender": settings.gender,
+                    "age": settings.age,
+                    "pitch": settings.pitch,
+                    "accent": settings.accent,
+                    "style": settings.style,
+                    "speed": settings.speed,
+                    "language": settings.language,
+                },
+            })
+            logger.info("Voice: [DEBUG] prepare() COMPLETE")
+
+        except MemoryError as e:
+            logger.error("Voice prepare OOM: %s", e)
+            await self._send_error("voice_oom", str(e), recoverable=True)
+        except Exception as e:
+            logger.error("Voice prepare failed: %s", e)
+            await self._send_error("voice_prepare_failed", str(e), recoverable=True)
+
     async def observe_pi_event(self, event: dict) -> None:
         """Handle a pi RPC event for voice processing."""
         if not self.enabled or self.closed:
             return
 
         event_type = event.get("type")
+        logger.info("Voice: [DEBUG] observe_pi_event() event_type=%s", event_type)
 
         if event_type == "agent_start":
             await self._on_agent_start()
@@ -256,9 +321,13 @@ class VoiceSession:
     async def _prepare_voice(self) -> None:
         """Prepare voice in background. Safe to cancel."""
         activation_id = self._activation_id
+        logger.info("Voice: [DEBUG] _prepare_voice() START activation_id=%d", activation_id)
         try:
+            logger.info("Voice: [DEBUG] _prepare_voice() calling tts.load()...")
             await self._tts.load()
+            logger.info("Voice: [DEBUG] _prepare_voice() calling tts.prepare_voice()...")
             handle = await self._tts.prepare_voice(self.settings)
+            logger.info("Voice: [DEBUG] _prepare_voice() tts.prepare_voice() returned handle=%s", handle.key)
 
             # Install only if this activation is still current
             if (
@@ -268,6 +337,7 @@ class VoiceSession:
             ):
                 self.voice_handle = handle
                 self.ready = True
+                logger.info("Voice: [DEBUG] _prepare_voice() installed handle, ready=True")
                 await self._send_json({
                     "type": "voice_state",
                     "state": "ready",
@@ -282,10 +352,10 @@ class VoiceSession:
                     },
                 })
             else:
-                logger.debug("Voice preparation completed for stale activation %d", activation_id)
+                logger.info("Voice: [DEBUG] _prepare_voice() completed for STALE activation %d (current=%d)", activation_id, self._activation_id)
 
         except asyncio.CancelledError:
-            logger.debug("Voice preparation cancelled for activation %d", activation_id)
+            logger.info("Voice: [DEBUG] _prepare_voice() CANCELLED activation_id=%d", activation_id)
             raise
         except MemoryError as e:
             logger.error("Voice preparation OOM: %s", e)
@@ -304,11 +374,14 @@ class VoiceSession:
 
     async def _on_agent_start(self) -> None:
         """Handle agent_start: start a new voice stream if enabled and ready."""
+        logger.info("Voice: [DEBUG] _on_agent_start() ready=%s, has_handle=%s", self.ready, self.voice_handle is not None)
         # Cancel old stream if active
         if self.active_run:
+            logger.info("Voice: [DEBUG] _on_agent_start() cancelling old active_run")
             await self._stop_current_internal(reason="superseded")
 
         if not self.ready or not self.voice_handle:
+            logger.info("Voice: [DEBUG] _on_agent_start() returning early - not ready or no handle")
             return
 
         self.active_run = True
@@ -332,6 +405,7 @@ class VoiceSession:
         # Start worker
         self._worker_task = asyncio.create_task(self._worker())
 
+        logger.info("Voice: [DEBUG] _on_agent_start() stream_id=%d, voice_handle=%s", self._stream_id, self.voice_handle.key)
         # Send stream start
         await self._send_json({
             "type": "voice_stream_start",
@@ -350,12 +424,14 @@ class VoiceSession:
 
         if sub_type == "text_start":
             # Start/continue text block — don't reset whole response
-            pass
+            logger.info("Voice: [DEBUG] _on_message_update() text_start")
         elif sub_type == "text_delta":
             delta = am_event.get("delta", "")
             if delta:
+                logger.info("Voice: [DEBUG] _on_message_update() text_delta len=%d text=%s", len(delta), repr(delta[:60]) + ("..." if len(delta) > 60 else ""))
                 await self._feed_delta(delta)
         elif sub_type == "text_end":
+            logger.info("Voice: [DEBUG] _on_message_update() text_end")
             # Flush current text block
             await self._flush_text_block()
 
@@ -363,6 +439,7 @@ class VoiceSession:
         """Feed a text delta through the chunker and enqueue speech chunks."""
         now = time.monotonic()
         chunks = self.chunker.feed(delta, now=now)
+        logger.info("Voice: [DEBUG] _feed_delta() produced %d chunks: %s", len(chunks), [repr(c[:30]) + "..." if len(c) > 30 else repr(c) for c in chunks])
 
         for chunk in chunks:
             await self._enqueue_chunk(chunk)
@@ -401,6 +478,7 @@ class VoiceSession:
 
         now = time.monotonic()
         chunks = self.chunker.flush_text_block(now=now)
+        logger.info("Voice: [DEBUG] _flush_text_block() produced %d chunks: %s", len(chunks), [repr(c[:30]) + "..." if len(c) > 30 else repr(c) for c in chunks])
         for chunk in chunks:
             await self._enqueue_chunk(chunk)
 
@@ -411,6 +489,7 @@ class VoiceSession:
 
     async def _on_agent_settled(self) -> None:
         """Handle agent_settled: finish the response."""
+        logger.info("Voice: [DEBUG] _on_agent_settled() active_run=%s", self.active_run)
         if not self.active_run:
             return
 
@@ -419,6 +498,7 @@ class VoiceSession:
         # Finish chunker and enqueue remaining
         now = time.monotonic()
         chunks = self.chunker.finish()
+        logger.info("Voice: [DEBUG] _on_agent_settled() chunker.finish() produced %d chunks: %s", len(chunks), [repr(c[:30]) + "..." if len(c) > 30 else repr(c) for c in chunks])
         for chunk in chunks:
             await self._enqueue_chunk(chunk)
 
@@ -475,6 +555,7 @@ class VoiceSession:
 
     async def _stop_current_internal(self, reason: str) -> None:
         """Stop the current voice stream internally."""
+        logger.info("Voice: [DEBUG] _stop_current_internal() reason=%s stream_id=%d", reason, self._stream_id)
         stream_id = self._stream_id
         self.active_run = False
 
@@ -510,7 +591,10 @@ class VoiceSession:
         handle = self.voice_handle
 
         if handle is None or self._queue is None:
+            logger.info("Voice: [DEBUG] _worker() exiting early - no handle or queue")
             return
+
+        logger.info("Voice: [DEBUG] _worker() START stream_id=%d handle=%s", stream_id, handle.key)
 
         try:
             while True:
@@ -518,6 +602,7 @@ class VoiceSession:
 
                 # Sentinel — end of stream
                 if item is None:
+                    logger.info("Voice: [DEBUG] _worker() received sentinel, stream_id=%d", stream_id)
                     # Send stream end if this stream is still active
                     if self._stream_id == stream_id:
                         await self._send_json({
@@ -532,11 +617,14 @@ class VoiceSession:
                 # Check if this stream is still active
                 if self._stream_id != stream_id:
                     # Stream was superseded — discard and exit
+                    logger.info("Voice: [DEBUG] _worker() stream superseded (was %d, now %d), exiting", stream_id, self._stream_id)
                     return
 
                 self._synthesizing = True
                 self._queued_characters -= len(text)
                 # pending_characters stays until synthesis completes
+
+                logger.info("Voice: [DEBUG] _worker() synthesizing chunk len=%d text=%s", len(text), repr(text[:60]) + ("..." if len(text) > 60 else ""))
 
                 try:
                     audio = await self._tts.synthesize(text, handle)
@@ -553,6 +641,7 @@ class VoiceSession:
                         sample_rate=audio.sample_rate,
                         pcm_s16le=audio.pcm_s16le,
                     )
+                    logger.info("Voice: [DEBUG] _worker() sending frame seq=%d stream=%d samples=%d bytes=%d", self._sequence, stream_id, audio.sample_count, len(frame))
                     await self._send_bytes(frame)
 
                 except MemoryError as e:
@@ -570,6 +659,7 @@ class VoiceSession:
                     self._pending_characters -= len(text)
 
         except asyncio.CancelledError:
+            logger.info("Voice: [DEBUG] _worker() CANCELLED")
             return
         except Exception as e:
             logger.error("Voice worker error: %s", e)

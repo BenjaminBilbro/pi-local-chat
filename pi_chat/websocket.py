@@ -145,6 +145,9 @@ async def _dispatch_command(
     elif command_type == "voice_stop":
         if voice is not None:
             await voice.stop_current(reason="stopped")
+    elif command_type == "voice_prepare":
+        if voice is not None:
+            await voice.prepare(message.get("settings", {}))
 
 
 async def _handle_prompt(

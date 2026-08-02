@@ -35,6 +35,13 @@ TTS_FLASHINFER = os.environ.get("PI_CHAT_TTS_FLASHINFER", "0").lower() in {"1", 
 TTS_CUDA_GRAPH = os.environ.get("PI_CHAT_TTS_CUDA_GRAPH", "0").lower() in {"1", "true", "yes"}
 TTS_CPU_THREADS = int(os.environ.get("PI_CHAT_TTS_CPU_THREADS", "4"))
 
+# VRAM check threshold (GB free required before loading on GPU)
+TTS_VRAM_REQUIRED_GB = int(os.environ.get("PI_CHAT_TTS_VRAM_REQUIRED_GB", "6"))
+
+# Debug audio output: write WAV files for troubleshooting voice quality
+TTS_DEBUG_AUDIO_ENABLED = os.environ.get("PI_CHAT_TTS_DEBUG_AUDIO", "0").lower() in {"1", "true", "yes"}
+TTS_DEBUG_AUDIO_DIR = os.environ.get("PI_CHAT_TTS_DEBUG_AUDIO_DIR", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "voice-debug-audio"))
+
 # Per-connection queue limits
 TTS_MAX_QUEUE_CHUNKS = int(os.environ.get("PI_CHAT_TTS_MAX_QUEUE_CHUNKS", "12"))
 TTS_MAX_QUEUE_CHARS = int(os.environ.get("PI_CHAT_TTS_MAX_QUEUE_CHARS", "1800"))

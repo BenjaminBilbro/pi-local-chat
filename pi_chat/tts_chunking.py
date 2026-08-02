@@ -16,6 +16,8 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass, field
+import logging
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Symbol normalization table (from plan)
@@ -166,6 +168,10 @@ class StreamingSpeechChunker:
                 chunks.append(normalized)
 
         self._scanner.reset()
+
+        for chunk in chunks:
+            logger.info(f"Final chunk: {chunk}")
+
         return chunks
 
     def reset(self) -> None:

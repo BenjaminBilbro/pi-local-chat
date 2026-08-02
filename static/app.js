@@ -89,6 +89,7 @@ function routeServerMessage(message) {
     || message.type === 'voice_stream_start'
     || message.type === 'voice_stream_end'
     || message.type === 'voice_error'
+    || message.type === 'voice_prepared'
   ) {
     voice?.handleServerMessage(message);
   }
