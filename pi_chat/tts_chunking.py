@@ -61,6 +61,31 @@ _URL_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# ---------------------------------------------------------------------------
+# OmniVoice expressive tags (must be preserved literally, including brackets)
+# ---------------------------------------------------------------------------
+
+_OMNIVOICE_TAGS = frozenset({
+    "laughter",
+    "sigh",
+    "confirmation-en",
+    "question-en",
+    "question-ah",
+    "question-oh",
+    "question-ei",
+    "question-yi",
+    "surprise-ah",
+    "surprise-oh",
+    "surprise-wa",
+    "surprise-yo",
+    "dissatisfaction-hnn",
+})
+
+# Pattern: [tagname] where tagname is a known OmniVoice tag
+_OMNIVOICE_TAG_PATTERN = re.compile(
+    r"\[(" + "|".join(re.escape(t) for t in _OMNIVOICE_TAGS) + r")\]"
+)
+
 
 # ---------------------------------------------------------------------------
 # Streaming scanner state
@@ -82,6 +107,9 @@ class _ScannerState:
     pending_image_alt: str = ""
     in_image_alt: bool = False
     image_depth: int = 0
+    # OmniVoice tag collection across deltas
+    in_omni_tag: bool = False
+    pending_omni_tag: str = ""
     speakable_buffer: str = ""
 
     def reset(self) -> None:
@@ -98,6 +126,8 @@ class _ScannerState:
         self.pending_image_alt = ""
         self.in_image_alt = False
         self.image_depth = 0
+        self.in_omni_tag = False
+        self.pending_omni_tag = ""
         self.speakable_buffer = ""
 
 
@@ -328,6 +358,96 @@ class StreamingSpeechChunker:
                     s.pending_image_alt += ch
                 i += 1
                 continue
+
+            # [ — could be a link [label](url) or an OmniVoice tag [tagname]
+            if ch == "[" and s.link_depth == 0:
+                # Look ahead in current delta for ]( to detect links
+                j = i + 1
+                depth = 1
+                while j < n and depth > 0:
+                    if text[j] == "[":
+                        depth += 1
+                    elif text[j] == "]":
+                        depth -= 1
+                    j += 1
+                is_link = (j < n and text[j] == "(")
+
+                if is_link:
+                    # Link detected in current delta — use link handling
+                    s.pending_link_label = ""
+                    s.link_depth = 1
+                    i += 1
+                    continue
+                else:
+                    # Not confirmed as link — collect chars, may become link later
+                    s.in_omni_tag = True
+                    s.pending_omni_tag = ""
+                    i += 1
+                    continue
+
+            # Collecting chars after [ (could become link or OmniVoice tag)
+            if s.in_omni_tag:
+                if ch == "]":
+                    tag_name = s.pending_omni_tag
+                    # Check if next char is '(' — if so, it's a link
+                    if i + 1 < n and text[i + 1] == "(":
+                        # Convert to link: skip ]( and URL
+                        s.in_omni_tag = False
+                        s.pending_omni_tag = ""
+                        label = tag_name
+                        i += 2
+                        pd = 1
+                        while i < n and pd > 0:
+                            if text[i] == "(":
+                                pd += 1
+                            elif text[i] == ")":
+                                pd -= 1
+                            i += 1
+                        if label.strip():
+                            result.append(label)
+                        continue
+                    # Not a link — check if OmniVoice tag
+                    s.in_omni_tag = False
+                    s.pending_omni_tag = ""
+                    if tag_name in _OMNIVOICE_TAGS:
+                        result.append(f"[{tag_name}]")
+                    else:
+                        # Plain brackets
+                        result.append("[")
+                        result.append(tag_name)
+                        result.append("]")
+                    i += 1
+                    continue
+                elif ch == "(":
+                    # [label( — treat as link with URL starting here
+                    s.in_omni_tag = False
+                    label = s.pending_omni_tag
+                    s.pending_omni_tag = ""
+                    i += 1
+                    pd = 1
+                    while i < n and pd > 0:
+                        if text[i] == "(":
+                            pd += 1
+                        elif text[i] == ")":
+                            pd -= 1
+                        i += 1
+                    if label.strip():
+                        result.append(label)
+                    continue
+                elif ch == "[":
+                    # Nested [ — not a simple tag, emit and start link handling
+                    s.in_omni_tag = False
+                    result.append("[")
+                    result.append(s.pending_omni_tag)
+                    s.pending_omni_tag = ""
+                    s.pending_link_label = ""
+                    s.link_depth = 1
+                    i += 1
+                    continue
+                else:
+                    s.pending_omni_tag += ch
+                    i += 1
+                    continue
 
             # Link: [label](url)
             if ch == "[" and s.link_depth == 0:

@@ -126,7 +126,7 @@ def replay_rpc_capture(path: str) -> None:
             if chunks:
                 for c in chunks:
                     all_chunks.append(c)
-                    print(f"[hold_timer {fire_time:.3f}s] -> chunk [{len(all_chunks):2d}] ({len(c):3d} chars): {c[:70]}")
+                    print(f"[hold_timer {fire_time:.3f}s] -> chunk [{len(all_chunks):2d}] ({len(c):3d} chars): {c}")
 
     def _arm_hold_timer(now: float, hold_ms: float = 450.0) -> None:
         """Arm the hold timer (matches _arm_hold_timer)."""
@@ -171,7 +171,7 @@ def replay_rpc_capture(path: str) -> None:
                         if chunks:
                             for c in chunks:
                                 all_chunks.append(c)
-                                print(f"[delta {event_count:4d}] -> chunk [{len(all_chunks):2d}] ({len(c):3d} chars): {c[:70]}")
+                                print(f"[delta {event_count:4d}] -> chunk [{len(all_chunks):2d}] ({len(c):3d} chars): {c}")
 
                         # Arm hold timer if enough pending text (matches _feed_delta)
                         if chunker.pending_characters >= 72:
@@ -184,7 +184,7 @@ def replay_rpc_capture(path: str) -> None:
                     if chunks:
                         for c in chunks:
                             all_chunks.append(c)
-                            print(f"[text_end] -> chunk [{len(all_chunks):2d}] ({len(c):3d} chars): {c[:70]}")
+                            print(f"[text_end] -> chunk [{len(all_chunks):2d}] ({len(c):3d} chars): {c}")
 
             elif event_type == "agent_settled":
                 # Cancel hold timer, then finish (matches _on_agent_settled)
@@ -193,7 +193,7 @@ def replay_rpc_capture(path: str) -> None:
                 if chunks:
                     for c in chunks:
                         all_chunks.append(c)
-                        print(f"[agent_settled] -> chunk [{len(all_chunks):2d}] ({len(c):3d} chars): {c[:70]}")
+                        print(f"[agent_settled] -> chunk [{len(all_chunks):2d}] ({len(c):3d} chars): {c}")
 
     print("-" * 60)
     print(f"Total: {len(all_chunks)} chunks from {event_count} text_delta events")
