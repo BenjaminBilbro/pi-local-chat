@@ -221,9 +221,10 @@ class StreamingSpeechChunker:
             # Inside fenced code block
             if s.in_fence:
                 if text[i:i + len(s.fence_marker)] == s.fence_marker:
+                    marker_len = len(s.fence_marker)
                     s.in_fence = False
                     s.fence_marker = ""
-                    i += len(s.fence_marker)
+                    i += marker_len
                     if i < n and text[i] == "\n":
                         i += 1
                 else:

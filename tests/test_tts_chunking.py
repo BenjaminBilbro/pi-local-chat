@@ -63,8 +63,8 @@ class TestFencedCodeBlocks:
     def test_backtick_fence_omitted(self):
         """Fenced code block should be omitted from speech."""
         chunker = StreamingSpeechChunker()
-        chunker.feed("Here is some code:\n\n```python\ndef hello():\n    print('world')\n```\n\nThat should work.")
-        chunks = chunker.feed("")
+        chunks = chunker.feed("Here is some code:\n\n```python\ndef hello():\n    print('world')\n```\n\nThat should work.")
+        chunks.extend(chunker.feed("") )
         chunks.extend(chunker.finish())
         joined = " ".join(chunks)
         assert "def hello" not in joined
@@ -73,8 +73,8 @@ class TestFencedCodeBlocks:
 
     def test_tilde_fence_omitted(self):
         chunker = StreamingSpeechChunker()
-        chunker.feed("Code:\n\n~~~\nfor i in range(10): pass\n~~~\n\nDone.")
-        chunks = chunker.feed("")
+        chunks = chunker.feed("Code:\n\n~~~\nfor i in range(10): pass\n~~~\n\nDone.")
+        chunks.extend(chunker.feed("") )
         chunks.extend(chunker.finish())
         joined = " ".join(chunks)
         assert "for i in range" not in joined
