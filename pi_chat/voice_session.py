@@ -64,6 +64,7 @@ ALLOWED_ACCENTS = {
     "korean accent", "japanese accent", "portuguese accent", "russian accent",
 }
 ALLOWED_STYLES = {None, "whisper"}
+ALLOWED_LANGUAGES = {"English", "Spanish", "French", "German"}
 MIN_SPEED = 0.8
 MAX_SPEED = 1.25
 
@@ -82,7 +83,7 @@ def validate_settings(raw: dict) -> VoiceSettings | None:
         speed = float(raw.get("speed", 1.0))
 
         # Reject unknown keys
-        allowed_keys = {"gender", "age", "pitch", "accent", "style", "speed"}
+        allowed_keys = {"gender", "age", "pitch", "accent", "style", "speed", "language"}
         if not set(raw.keys()).issubset(allowed_keys):
             return None
 
@@ -99,6 +100,10 @@ def validate_settings(raw: dict) -> VoiceSettings | None:
         if speed < MIN_SPEED or speed > MAX_SPEED:
             return None
 
+        language = raw.get("language", "English")
+        if language not in ALLOWED_LANGUAGES:
+            return None
+
         return VoiceSettings(
             gender=gender,
             age=age,
@@ -106,6 +111,7 @@ def validate_settings(raw: dict) -> VoiceSettings | None:
             accent=accent,
             style=style,
             speed=speed,
+            language=language,
         )
     except (TypeError, ValueError):
         return None

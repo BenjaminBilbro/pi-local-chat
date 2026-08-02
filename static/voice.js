@@ -24,6 +24,7 @@ const ALLOWED_ACCENTS = [
   'portuguese accent', 'russian accent',
 ];
 const ALLOWED_STYLES = [null, 'whisper'];
+const ALLOWED_LANGUAGES = ['English', 'Spanish', 'French', 'German'];
 const SPEED_MIN = 0.8;
 const SPEED_MAX = 1.25;
 
@@ -65,6 +66,7 @@ export function createVoiceController({
       accent: 'american accent',
       style: null,
       speed: 1.0,
+      language: 'English',
       volume: 1.0,
     };
   }
@@ -101,6 +103,7 @@ export function createVoiceController({
     if (!ALLOWED_PITCHES.includes(s.pitch)) return null;
     if (!ALLOWED_ACCENTS.includes(s.accent)) return null;
     if (!ALLOWED_STYLES.includes(s.style)) return null;
+    if (!ALLOWED_LANGUAGES.includes(s.language)) return null;
     if (typeof s.speed !== 'number' || s.speed < SPEED_MIN || s.speed > SPEED_MAX) return null;
 
     return s;
@@ -139,6 +142,7 @@ export function createVoiceController({
       const pitchSelect = document.getElementById('voice-pitch');
       const accentSelect = document.getElementById('voice-accent');
       const styleSelect = document.getElementById('voice-style');
+      const languageSelect = document.getElementById('voice-language');
       const speedInput = document.getElementById('voice-speed');
       const volumeInput = document.getElementById('voice-volume');
       const applyButton = document.getElementById('voice-apply');
@@ -148,6 +152,7 @@ export function createVoiceController({
       if (pitchSelect) pitchSelect.addEventListener('change', () => syncSettingsFromForm());
       if (accentSelect) accentSelect.addEventListener('change', () => syncSettingsFromForm());
       if (styleSelect) styleSelect.addEventListener('change', () => syncSettingsFromForm());
+      if (languageSelect) languageSelect.addEventListener('change', () => syncSettingsFromForm());
       if (speedInput) speedInput.addEventListener('input', () => syncSettingsFromForm());
       if (volumeInput) volumeInput.addEventListener('input', () => {
         const vol = parseFloat(volumeInput.value);
@@ -176,6 +181,7 @@ export function createVoiceController({
     const pitchSelect = document.getElementById('voice-pitch');
     const accentSelect = document.getElementById('voice-accent');
     const styleSelect = document.getElementById('voice-style');
+    const languageSelect = document.getElementById('voice-language');
     const speedInput = document.getElementById('voice-speed');
 
     settings.gender = genderSelect?.value || settings.gender;
@@ -183,6 +189,7 @@ export function createVoiceController({
     settings.pitch = pitchSelect?.value || settings.pitch;
     settings.accent = accentSelect?.value || settings.accent;
     settings.style = styleSelect?.value || null;
+    settings.language = languageSelect?.value || 'English';
     settings.speed = parseFloat(speedInput?.value) || 1.0;
 
     saveSettings();
@@ -194,6 +201,7 @@ export function createVoiceController({
     const pitchSelect = document.getElementById('voice-pitch');
     const accentSelect = document.getElementById('voice-accent');
     const styleSelect = document.getElementById('voice-style');
+    const languageSelect = document.getElementById('voice-language');
     const speedInput = document.getElementById('voice-speed');
     const volumeInput = document.getElementById('voice-volume');
 
@@ -202,6 +210,7 @@ export function createVoiceController({
     if (pitchSelect) pitchSelect.value = settings.pitch;
     if (accentSelect) accentSelect.value = settings.accent;
     if (styleSelect) styleSelect.value = settings.style || '';
+    if (languageSelect) languageSelect.value = settings.language || 'English';
     if (speedInput) speedInput.value = settings.speed;
     if (volumeInput) volumeInput.value = settings.volume;
   }

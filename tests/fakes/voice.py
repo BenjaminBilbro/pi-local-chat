@@ -34,6 +34,7 @@ class VoiceSettings:
     accent: str = "american accent"
     style: str | None = None
     speed: float = 1.0
+    language: str = "English"
 
 
 @dataclass(frozen=True)

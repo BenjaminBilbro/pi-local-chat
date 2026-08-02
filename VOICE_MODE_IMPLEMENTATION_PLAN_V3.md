@@ -10,6 +10,7 @@ together with:
    runtime invariants, event formats, and baseline verification commands.
 2. The loaded orchestration skill at
    `/Users/bbilbro/Documents/pi-subagent/skills/orchestrate-subagent-stack/SKILL.md`.
+3. Locally cloned OmniVoice at `/home/bbilbro/pi-chat/experiments/OmniVoice`
 
 This guide contains all feature-specific design, protocol, testing, and
 execution requirements needed for the implementation.
@@ -94,7 +95,7 @@ CPU inference may take many minutes and may consume substantial system RAM.
 Before loading, the CPU validator must record available RAM/disk, refuse to
 start below a configurable safety threshold, limit Torch CPU threads, and emit
 periodic progress/heartbeat artifacts. Run it serially, never concurrently with
-other memory-heavy validation.
+other memory-heavy validation. You should use a very low number of steps for CPU gen.
 
 Do not add automatic self-termination, GPU process killing, or model swapping
 to pi-chat. CPU validation and the GPU handoff are development/test workflows,

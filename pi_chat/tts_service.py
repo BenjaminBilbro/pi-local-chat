@@ -250,6 +250,7 @@ class _OmniVoiceRuntime:
         # Generate audio
         audio_list = self._model.generate(
             text=text,
+            language=settings.language,
             instruct=instruct,
             voice_clone_prompt=voice_clone_prompt,
             num_step=self._num_steps,
