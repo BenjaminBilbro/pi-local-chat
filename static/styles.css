@@ -1351,6 +1351,258 @@
     border-top: 1px solid var(--surface2);
   }
 
+  /* ── Custom Voice Section ───────────────────────────────────────── */
+
+  .voice-custom-section {
+    margin-top: 4px;
+    padding-top: 8px;
+    border-top: 1px solid var(--surface2);
+  }
+
+  .voice-custom-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+  }
+
+  .voice-custom-header span:first-child {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  .voice-help-icon {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    border: 1px solid var(--surface2);
+    background: var(--bg);
+    color: var(--text-dim);
+    font-size: 10px;
+    font-weight: 700;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .voice-help-icon:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+
+  /* Upload zone */
+  .voice-upload-zone {
+    border: 2px dashed var(--surface2);
+    border-radius: 8px;
+    padding: 14px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .voice-upload-zone:hover,
+  .voice-upload-zone.dragover,
+  .voice-upload-zone:focus {
+    border-color: var(--accent);
+    background: rgba(0,0,0,0.03);
+    outline: none;
+  }
+
+  [data-theme="dark"] .voice-upload-zone:hover,
+  [data-theme="dark"] .voice-upload-zone.dragover {
+    background: rgba(255,255,255,0.03);
+  }
+
+  .voice-upload-prompt {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-dim);
+  }
+
+  .voice-upload-prompt svg {
+    opacity: 0.5;
+  }
+
+  .voice-upload-prompt span:first-child {
+    font-size: 12px;
+  }
+
+  .voice-upload-btn {
+    background: none;
+    border: none;
+    color: var(--accent);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    text-decoration: underline;
+    padding: 0;
+  }
+
+  .voice-upload-hint {
+    font-size: 10px;
+    opacity: 0.6;
+  }
+
+  .voice-upload-status {
+    margin-top: 6px;
+    font-size: 11px;
+    min-height: 16px;
+  }
+
+  .voice-upload-status.uploading { color: var(--detail); }
+  .voice-upload-status.success { color: var(--success); }
+  .voice-upload-status.error { color: var(--error); }
+
+  /* Recording zone */
+  .voice-recording-zone {
+    padding: 8px 0;
+  }
+
+  .voice-recording-prompt {
+    font-size: 11px;
+    color: var(--text-dim);
+    display: block;
+    margin-bottom: 6px;
+  }
+
+  .voice-recording-controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .voice-record-btn,
+  .voice-stop-btn {
+    padding: 5px 10px;
+    border-radius: 4px;
+    border: 1px solid var(--surface2);
+    background: var(--surface);
+    color: var(--text);
+    cursor: pointer;
+    font-size: 11px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .voice-record-btn:hover {
+    border-color: var(--accent);
+  }
+
+  .voice-stop-btn {
+    background: var(--error);
+    color: white;
+    border-color: var(--error);
+  }
+
+  .voice-recording-active {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 11px;
+    color: var(--text);
+  }
+
+  .voice-recording-active.warning {
+    color: var(--error);
+  }
+
+  /* Custom voice actions */
+  .voice-custom-actions {
+    display: flex;
+    gap: 6px;
+    padding: 4px 0;
+  }
+
+  .voice-action-btn {
+    padding: 4px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--surface2);
+    background: var(--surface);
+    color: var(--text);
+    cursor: pointer;
+    font-size: 10px;
+  }
+
+  .voice-action-btn:hover {
+    border-color: var(--accent);
+  }
+
+  .voice-delete-btn:hover {
+    background: var(--error);
+    color: white;
+    border-color: var(--error);
+  }
+
+  /* Name input */
+  .voice-name-input {
+    margin-top: 4px;
+  }
+
+  .voice-name-input input[type="text"] {
+    width: 100%;
+    padding: 6px 8px;
+    border: 1px solid var(--surface2);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 13px;
+    font-family: inherit;
+    outline: none;
+  }
+
+  .voice-name-input input[type="text"]:focus {
+    border-color: var(--accent);
+  }
+
+  /* Disabled bootstrap settings */
+  .voice-bootstrap-settings.disabled {
+    opacity: 0.4;
+    pointer-events: none;
+  }
+
+  .voice-setting-label select:disabled,
+  .voice-setting-label input[type="range"]:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  /* Guidelines popup */
+  .voice-guidelines-popup {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    background: var(--surface);
+    border: 1px solid var(--surface2);
+    border-radius: 8px;
+    padding: 10px;
+    font-size: 11px;
+    max-width: 260px;
+    z-index: 200;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    margin-top: 4px;
+  }
+
+  .voice-guidelines-title {
+    font-weight: 600;
+    margin-bottom: 6px;
+    color: var(--text);
+  }
+
+  .voice-guidelines-popup ul {
+    margin: 0;
+    padding-left: 16px;
+  }
+
+  .voice-guidelines-popup li {
+    margin-bottom: 3px;
+    color: var(--text-dim);
+  }
+
   /* ── Mobile Responsive ──────────────────────────────────────────── */
 
   @media (max-width: 600px) {

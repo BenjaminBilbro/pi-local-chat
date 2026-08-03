@@ -36,7 +36,7 @@ from tests.fakes.voice import (
 # ---------------------------------------------------------------------------
 
 
-class TestImportGuards:
+class Test0ImportGuards:  # Runs first (Test0) before torch is imported
     """Prove fake suite imports without torch or omnivoice."""
 
     def test_no_torch_imported(self):

@@ -42,6 +42,26 @@ TTS_VRAM_REQUIRED_GB = int(os.environ.get("PI_CHAT_TTS_VRAM_REQUIRED_GB", "6"))
 TTS_DEBUG_AUDIO_ENABLED = os.environ.get("PI_CHAT_TTS_DEBUG_AUDIO", "0").lower() in {"1", "true", "yes"}
 TTS_DEBUG_AUDIO_DIR = os.environ.get("PI_CHAT_TTS_DEBUG_AUDIO_DIR", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "voice-debug-audio"))
 
+# Custom voice sample storage
+VOICE_SAMPLES_DIR = os.environ.get(
+    "PI_CHAT_VOICE_SAMPLES_DIR",
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "voices"),
+)
+
+# Feature flag for custom voices (HIGH-18)
+TTS_CUSTOM_VOICES_ENABLED = os.environ.get("PI_CHAT_TTS_CUSTOM_VOICES_ENABLED", "1").lower() in ("1", "true", "yes")
+
+# Validate VOICE_SAMPLES_DIR at import time (HIGH-19)
+try:
+    os.makedirs(VOICE_SAMPLES_DIR, exist_ok=True)
+    # Test writability
+    test_file = os.path.join(VOICE_SAMPLES_DIR, ".writable")
+    with open(test_file, "w") as f:
+        f.write("ok")
+    os.unlink(test_file)
+except Exception as e:
+    raise RuntimeError(f"VOICE_SAMPLES_DIR '{VOICE_SAMPLES_DIR}' is not writable: {e}") from e
+
 # Per-connection queue limits
 TTS_MAX_QUEUE_CHUNKS = int(os.environ.get("PI_CHAT_TTS_MAX_QUEUE_CHUNKS", "12"))
 TTS_MAX_QUEUE_CHARS = int(os.environ.get("PI_CHAT_TTS_MAX_QUEUE_CHARS", "1800"))

@@ -7,7 +7,7 @@ import pytest
 from pi_chat.tts_chunking import StreamingSpeechChunker
 
 
-class TestImportGuard:
+class Test0ImportGuard:  # Runs first (Test0) before torch is imported
     def test_no_torch(self):
         import sys
         assert "torch" not in sys.modules

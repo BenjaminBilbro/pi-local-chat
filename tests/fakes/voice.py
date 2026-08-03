@@ -35,6 +35,7 @@ class VoiceSettings:
     style: str | None = None
     speed: float = 1.0
     language: str = "English"
+    voice_id: str | None = None  # Custom voice sample ID for cloning
 
 
 @dataclass(frozen=True)
@@ -53,6 +54,130 @@ class SynthesizedAudio:
     pcm_s16le: bytes
     sample_count: int
     generation_seconds: float
+
+
+# ---------------------------------------------------------------------------
+# Voice sample types
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class VoiceSample:
+    """Metadata for a stored voice sample (fake)."""
+    voice_id: str
+    filename: str
+    display_name: str
+    duration: float
+    upload_time: float
+    waveform: Any | None = None  # Loaded numpy array or list (lazy)
+
+
+# ---------------------------------------------------------------------------
+# Fake VoiceStore (in-memory, for testing without disk I/O)
+# ---------------------------------------------------------------------------
+
+
+class FakeVoiceStore:
+    """In-memory VoiceStore for testing without disk I/O.
+
+    Matches the real VoiceStore API but stores everything in memory.
+    Produces synthetic waveforms (sine waves) for loaded voices.
+    """
+
+    TARGET_SAMPLE_RATE = 24000
+    HASH_WINDOW_SECONDS = 3.0
+
+    def __init__(self):
+        self._voices: dict[str, VoiceSample] = {}
+        self._lock = threading.Lock()
+
+    def upload(self, file_bytes: bytes, original_filename: str, display_name: str | None = None) -> VoiceSample:
+        """Validate and store an uploaded voice sample (fake)."""
+        import hashlib
+
+        # Basic validation
+        if not file_bytes:
+            raise ValueError("File is empty")
+
+        if len(file_bytes) > 10 * 1024 * 1024:
+            raise ValueError("File too large. Maximum is 10MB.")
+
+        ext = original_filename.lower().split(".")[-1] if "." in original_filename else ""
+        allowed = {"wav", "mp3", "flac", "m4a", "ogg", "webm"}
+        if ext not in allowed:
+            raise ValueError(f"Unsupported format '.{ext}'. Supported: {', '.join(sorted(allowed))}")
+
+        if display_name is None:
+            display_name = original_filename.replace(".", "_").replace(" ", "_")[:40]
+
+        # Compute hash from bytes
+        hash_len = int(self.HASH_WINDOW_SECONDS * self.TARGET_SAMPLE_RATE)
+        voice_id = hashlib.sha256(file_bytes[:hash_len]).hexdigest()[:16]
+
+        with self._lock:
+            if voice_id in self._voices:
+                return self._voices[voice_id]
+
+            duration = min(max(len(file_bytes) / 1000.0, 2.0), 30.0)
+            sample = VoiceSample(
+                voice_id=voice_id,
+                filename=original_filename.replace(".", "_").replace(" ", "_")[:64],
+                display_name=display_name,
+                duration=duration,
+                upload_time=time.time(),
+                waveform=None,
+            )
+            self._voices[voice_id] = sample
+
+        return sample
+
+    def list_voices(self) -> list[VoiceSample]:
+        """List all stored voice samples."""
+        with self._lock:
+            return list(self._voices.values())
+
+    def get_voice(self, voice_id: str) -> VoiceSample | None:
+        """Get a voice sample by ID."""
+        with self._lock:
+            return self._voices.get(voice_id)
+
+    def load_waveform(self, voice_id: str) -> tuple[Any, int]:
+        """Load the waveform for a voice sample (synthetic sine wave as numpy array)."""
+        sample = self.get_voice(voice_id)
+        if sample is None:
+            raise ValueError(f"Voice {voice_id} not found")
+
+        # Generate synthetic waveform (sine wave) as numpy array
+        import numpy as np
+        sr = self.TARGET_SAMPLE_RATE
+        duration = sample.duration
+        num_samples = int(duration * sr)
+        frequency = 440.0
+
+        t = np.arange(num_samples) / sr
+        waveform = (0.7 * np.sin(2 * np.pi * frequency * t)).astype(np.float32)
+        return waveform, sr
+
+    def delete_voice(self, voice_id: str) -> bool:
+        """Delete a voice sample."""
+        with self._lock:
+            return self._voices.pop(voice_id, None) is not None
+
+    def update_display_name(self, voice_id: str, display_name: str) -> bool:
+        """Update the display name for a voice sample."""
+        with self._lock:
+            sample = self._voices.get(voice_id)
+            if sample is None:
+                return False
+            self._voices[voice_id] = VoiceSample(
+                voice_id=sample.voice_id,
+                filename=sample.filename,
+                display_name=display_name[:40],
+                duration=sample.duration,
+                upload_time=sample.upload_time,
+                waveform=sample.waveform,
+            )
+            return True
 
 
 # ---------------------------------------------------------------------------
@@ -115,6 +240,7 @@ class FakeOmniVoiceRuntime:
         fail_on_prepare: bool = False,
         fail_on_generate_index: int | None = None,
         fail_with_oom: bool = False,
+        fail_on_clone_prompt: bool = False,
         generate_empty: bool = False,
         generate_nans: bool = False,
         generate_infs: bool = False,
@@ -131,6 +257,7 @@ class FakeOmniVoiceRuntime:
         self.fail_on_prepare = fail_on_prepare
         self.fail_on_generate_index = fail_on_generate_index
         self.fail_with_oom = fail_with_oom
+        self.fail_on_clone_prompt = fail_on_clone_prompt
         self.generate_empty = generate_empty
         self.generate_nans = generate_nans
         self.generate_infs = generate_infs
@@ -150,6 +277,7 @@ class FakeOmniVoiceRuntime:
         self._generate_calls: list[dict[str, Any]] = []
         self._block_generate_event = block_generate_event
         self._last_waveform: list[float] | None = None  # For TTSService extraction
+        self._voice_clone_prompts: list[dict[str, Any]] = []  # Track create_voice_clone_prompt calls
 
     def load(self) -> None:
         if self.load_delay > 0:
@@ -256,11 +384,33 @@ class FakeOmniVoiceRuntime:
             self.active_calls -= 1
             return prepared_voice, len(samples)
 
+    def create_voice_clone_prompt(self, ref_audio: tuple[Any, int], ref_text: str | None = None) -> object:
+        """Create a voice clone prompt from reference audio (fake).
+
+        Used by custom voice path. Returns a simple dict tracking the call.
+        """
+        if not self._loaded:
+            raise RuntimeError("FakeOmniVoiceRuntime: not loaded")
+        if self.fail_on_clone_prompt:
+            raise RuntimeError("FakeOmniVoiceRuntime: simulated create_voice_clone_prompt failure")
+
+        waveform, sr = ref_audio
+        prompt_id = len(self._voice_clone_prompts)
+        prompt = {
+            "id": prompt_id,
+            "ref_audio_sr": sr,
+            "ref_audio_len": len(waveform) if hasattr(waveform, "__len__") else 0,
+            "ref_text": ref_text,
+        }
+        self._voice_clone_prompts.append(prompt)
+        return prompt
+
     def close(self) -> None:
         self._loaded = False
         self._prepared_voices.clear()
         self._prepare_keys.clear()
         self._generate_calls.clear()
+        self._voice_clone_prompts.clear()
 
     # Public inspection helpers for tests
     @property
@@ -274,6 +424,10 @@ class FakeOmniVoiceRuntime:
     @property
     def call_counter(self) -> int:
         return self._call_counter
+
+    @property
+    def voice_clone_prompts(self) -> list[dict[str, Any]]:
+        return list(self._voice_clone_prompts)
 
     def _voice_key(self, settings: VoiceSettings) -> str:
         raw = f"{settings.gender}|{settings.age}|{settings.pitch}|{settings.accent}|{settings.style}|{settings.speed}|{settings.language}"

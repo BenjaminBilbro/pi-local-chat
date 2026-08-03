@@ -17,6 +17,7 @@ import logging
 import os
 import struct
 import time
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import lru_cache
@@ -26,6 +27,9 @@ from pi_chat import config
 
 # Import shared types from fakes module (no torch dependency there)
 from tests.fakes.voice import SynthesizedAudio, TTSRuntime, VoiceHandle, VoiceSettings
+
+# Import VoiceStore for custom voice path
+from .voice_store import VoiceStore
 
 logger = logging.getLogger(__name__)
 
@@ -309,6 +313,40 @@ class _OmniVoiceRuntime:
             "instruct": instruct,
         }
 
+    def create_voice_clone_prompt(self, ref_audio: tuple, ref_text: str | None) -> object:
+        """Create a voice clone prompt from reference audio.
+
+        Used by custom voice cloning (uploaded samples). Delegates to the
+        underlying OmniVoice model.
+
+        Args:
+            ref_audio: Tuple of (waveform_tensor, sample_rate)
+            ref_text: Reference transcript, or None if not available
+
+        Returns:
+            VoiceClonePrompt object from the model
+        """
+        if not self._loaded:
+            raise RuntimeError("TTSRuntime: not loaded")
+
+        logger.info(
+            "TTS: create_voice_clone_prompt() waveform_len=%d sr=%d ref_text=%s",
+            len(ref_audio[0]),
+            ref_audio[1],
+            ref_text or "<none>",
+        )
+
+        voice_clone_prompt = self._model.create_voice_clone_prompt(
+            ref_audio,
+            ref_text=ref_text,
+        )
+
+        logger.info(
+            "TTS: create_voice_clone_prompt() COMPLETE type=%s",
+            type(voice_clone_prompt).__name__,
+        )
+        return voice_clone_prompt
+
     def generate(
         self,
         text: str,
@@ -324,7 +362,11 @@ class _OmniVoiceRuntime:
             raise RuntimeError("TTSRuntime: not loaded")
 
         voice_clone_prompt = prepared_voice.get("voice_clone_prompt")
-        instruct = prepared_voice.get("instruct", self._build_instruct(settings))
+        # For custom voices, instruct is None (use reference audio directly)
+        # For bootstrap voices, use instruct from prepared_voice or build from settings
+        instruct = prepared_voice.get("instruct")
+        if instruct is None and not settings.voice_id:
+            instruct = self._build_instruct(settings)
 
         logger.info("TTS: [DEBUG] generate() START")
         logger.info("TTS: [DEBUG]   text: %s", repr(text[:100]) + ("..." if len(text) > 100 else ""))
@@ -338,19 +380,22 @@ class _OmniVoiceRuntime:
         except ImportError:
             raise RuntimeError("numpy not available") from None
 
-        # Generate audio
+        # Generate audio - ALWAYS pass language (CRIT-3)
         logger.info("TTS: [DEBUG] calling model.generate() for text...")
-        audio_list = self._model.generate(
-            text=text,
-            language=settings.language,
-            instruct=instruct,
-            voice_clone_prompt=voice_clone_prompt,
-            num_step=self._num_steps,
-            speed=settings.speed,
-            postprocess_output=True,
-            pad_duration=0.02,
-            fade_duration=0.02,
-        )
+        kw = {
+            "text": text,
+            "language": settings.language,  # ALWAYS pass language (CRIT-3)
+            "voice_clone_prompt": voice_clone_prompt,
+            "num_step": self._num_steps,
+            "speed": settings.speed,
+            "postprocess_output": True,
+            "pad_duration": 0.02,
+            "fade_duration": 0.02,
+        }
+        if instruct:
+            kw["instruct"] = instruct  # Only pass instruct if not None (custom voices skip it)
+
+        audio_list = self._model.generate(**kw)
 
         if not audio_list or len(audio_list) == 0:
             raise RuntimeError("TTS: model.generate returned empty audio")
@@ -460,12 +505,13 @@ class TTSService:
     """
 
     BOOTSTRAP_TEXT = BOOTSTRAP_TEXT
-    MAX_VOICE_CACHE_ENTRIES = 8
+    MAX_VOICE_CACHE_ENTRIES = 16  # Increased from 8 (HIGH-14)
 
     def __init__(
         self,
         runtime_factory: Callable[[], TTSRuntime] | None = None,
         config_: Any | None = None,
+        voice_store: Any | None = None,
     ):
         """Create the TTS service.
 
@@ -473,10 +519,20 @@ class TTSService:
             runtime_factory: Factory that returns a TTSRuntime. Defaults to
                 _OmniVoiceRuntime for production. Tests can inject a fake.
             config_: Configuration module. Defaults to pi_chat.config.
+            voice_store: VoiceStore instance for custom voice samples.
+                Defaults to VoiceStore(config_) if not provided (CRIT-2: injected, not new).
         """
         self._config = config_ or config
         self._runtime_factory = runtime_factory or self._default_runtime_factory
         self._runtime: TTSRuntime | None = None
+        # Injected VoiceStore (CRIT-2), or create one if config supports it
+        if voice_store is not None:
+            self._voice_store = voice_store
+        elif hasattr(self._config, "VOICE_SAMPLES_DIR"):
+            self._voice_store = VoiceStore(self._config)
+        else:
+            # Fallback for tests with stub configs: create minimal VoiceStore
+            self._voice_store = VoiceStore()
 
         # Executor: exactly one thread for all model operations
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tts-model")
@@ -486,8 +542,8 @@ class TTSService:
         self._load_lock = asyncio.Lock()
         self._load_future: asyncio.Future[None] | None = None
 
-        # Voice cache: key -> VoiceHandle
-        self._voice_cache: dict[str, VoiceHandle] = {}
+        # Voice cache: LRU via OrderedDict (HIGH-13), key -> VoiceHandle
+        self._voice_cache: OrderedDict[str, VoiceHandle] = OrderedDict()
         # Runtime prepared objects: key -> raw prepared object from runtime
         self._prepared_objects: dict[str, Any] = {}
         # In-flight preparation: key -> asyncio.Future[VoiceHandle]
@@ -557,25 +613,30 @@ class TTSService:
     async def prepare_voice(self, settings: VoiceSettings) -> VoiceHandle:
         """Prepare or retrieve a cached voice handle.
 
+        For custom voices (settings.voice_id), uses reference audio from VoiceStore.
+        For bootstrap voices, uses voice design with bootstrap text.
         Deduplicates in-flight preparation for the same settings key.
         Uses asyncio.shield() so cancellation doesn't abort shared work.
         """
-        logger.info("TTS: [DEBUG] prepare_voice() called")
+        logger.info("TTS: [DEBUG] prepare_voice() called, voice_id=%s", settings.voice_id)
         if not self._loaded:
             await self.load()
 
         key = self._voice_key(settings)
         logger.info("TTS: [DEBUG] prepare_voice() key=%s", key)
 
-        # Check cache
+        # Check cache (LRU: move to end on hit)
         if key in self._voice_cache:
             logger.info("TTS: [DEBUG] prepare_voice() HIT cache for key=%s", key)
+            self._voice_cache.move_to_end(key)  # LRU update (HIGH-13)
             return self._voice_cache[key]
 
         # Check in-flight
         if key in self._prepare_futures:
             logger.info("TTS: [DEBUG] prepare_voice() waiting for in-flight prep for key=%s", key)
             await asyncio.shield(self._prepare_futures[key])
+            if key in self._voice_cache:
+                self._voice_cache.move_to_end(key)
             return self._voice_cache.get(key)
 
         # Create preparation future
@@ -584,22 +645,28 @@ class TTSService:
         self._prepare_futures[key] = future
 
         try:
-            # Prepare in executor thread
-            logger.info("TTS: [DEBUG] prepare_voice() calling runtime.prepare_voice() for key=%s", key)
-            bootstrap_text = get_bootstrap_text(settings.language)
-            prepared = await loop.run_in_executor(
-                self._executor,
-                lambda: self._runtime.prepare_voice(settings, bootstrap_text),
-            )
+            if settings.voice_id:
+                # Custom voice path
+                prepared = await loop.run_in_executor(
+                    self._executor,
+                    lambda: self._prepare_custom_voice(settings),
+                )
+            else:
+                # Bootstrap voice path
+                logger.info("TTS: [DEBUG] prepare_voice() calling runtime.prepare_voice() for key=%s", key)
+                bootstrap_text = get_bootstrap_text(settings.language)
+                prepared = await loop.run_in_executor(
+                    self._executor,
+                    lambda: self._runtime.prepare_voice(settings, bootstrap_text),
+                )
 
             handle = VoiceHandle(key=key, settings=settings)
 
-            # Evict LRU if cache full
+            # Evict LRU if cache full (HIGH-13)
             if len(self._voice_cache) >= self.MAX_VOICE_CACHE_ENTRIES:
-                oldest_key = next(iter(self._voice_cache))
-                del self._voice_cache[oldest_key]
-                del self._prepared_objects[oldest_key]
-                logger.debug("TTS: evicted voice cache entry %s", oldest_key[:8])
+                oldest_key, _ = self._voice_cache.popitem(last=False)
+                self._prepared_objects.pop(oldest_key, None)
+                logger.debug("TTS: evicted LRU voice cache entry %s", oldest_key[:8])
 
             self._voice_cache[key] = handle
             self._prepared_objects[key] = prepared
@@ -617,6 +684,63 @@ class TTSService:
             raise
         finally:
             self._prepare_futures.pop(key, None)
+
+    def _prepare_custom_voice(self, settings: VoiceSettings) -> object:
+        """Prepare a voice clone prompt from a user-uploaded reference audio.
+
+        Uses injected VoiceStore (CRIT-2), not a new instance.
+        Validates waveform before passing to OmniVoice (MED-3).
+        """
+        import torch
+        import numpy as np
+
+        # Load waveform from injected VoiceStore
+        waveform, sr = self._voice_store.load_waveform(settings.voice_id)
+
+        # Validate waveform before OmniVoice (MED-3)
+        self._validate_waveform_for_synthesis(waveform)
+
+        logger.info("TTS: _prepare_custom_voice() voice_id=%s waveform_len=%d sr=%d",
+                    settings.voice_id[:8], len(waveform), sr)
+
+        # Create voice clone prompt directly (no instruct, no bootstrap)
+        voice_clone_prompt = self._runtime.create_voice_clone_prompt(
+            ref_audio=(torch.from_numpy(waveform), sr),
+            ref_text=None,
+        )
+
+        return {
+            "voice_clone_prompt": voice_clone_prompt,
+            "instruct": None,
+            "voice_id": settings.voice_id,
+        }
+
+    def _validate_waveform_for_synthesis(self, waveform) -> None:
+        """Validate waveform before passing to OmniVoice (MED-3).
+
+        Checks: non-empty, finite values, reasonable amplitude.
+        """
+        import numpy as np
+        if len(waveform) == 0:
+            raise ValueError("Voice sample is empty or unreadable.")
+        if not np.all(np.isfinite(waveform)):
+            raise ValueError("Voice sample contains invalid values.")
+        max_val = np.max(np.abs(waveform))
+        if max_val == 0:
+            raise ValueError("Voice sample is silent. Please use a clearer sample.")
+        if max_val > 2.0:
+            raise ValueError("Voice sample has abnormal amplitude.")
+
+    def invalidate_voice(self, voice_id: str) -> None:
+        """Invalidate a voice from the cache (T34/MED-8).
+
+        Called when a voice is deleted to remove cached entries.
+        """
+        key = f"custom:{voice_id}"
+        if key in self._voice_cache:
+            del self._voice_cache[key]
+        self._prepared_objects.pop(key, None)
+        logger.debug("TTS: invalidated voice cache entry %s", key[:8])
 
     async def synthesize(
         self,
@@ -729,7 +853,13 @@ class TTSService:
             self._runtime.set_num_steps(num_steps)
 
     def _voice_key(self, settings: VoiceSettings) -> str:
-        """Generate a stable hash key for voice settings."""
+        """Generate a stable hash key for voice settings.
+
+        For custom voices, uses voice_id directly (faster, deterministic).
+        For bootstrap voices, hashes the design parameters.
+        """
+        if settings.voice_id:
+            return f"custom:{settings.voice_id}"
         raw = f"{settings.gender}|{settings.age}|{settings.pitch}|{settings.accent}|{settings.style}|{settings.speed}|{settings.language}"
         return hashlib.sha256(raw.encode()).hexdigest()[:16]
 

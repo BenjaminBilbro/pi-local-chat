@@ -207,6 +207,82 @@
       <span>Volume</span>
       <input type="range" id="voice-volume" min="0" max="1" step="0.05" value="1.0">
     </label>
+
+    <!-- Custom voice section -->
+    <div class="voice-custom-section">
+      <div class="voice-custom-header">
+        <span>Custom Voice Sample</span>
+        <div class="voice-guidelines-tooltip">
+          <button type="button" class="voice-help-icon" id="voice-guidelines-btn" title="Voice sample guidelines" aria-label="Voice sample guidelines">?</button>
+        </div>
+      </div>
+
+      <!-- Voice type selector -->
+      <label class="voice-setting-label">
+        <span>Voice</span>
+        <select id="voice-type" aria-label="Select voice type">
+          <option value="bootstrap">Designed voice (adjust settings below)</option>
+          <optgroup label="Custom voices" id="voice-custom-optgroup">
+          </optgroup>
+        </select>
+      </label>
+
+      <!-- Custom voice actions row -->
+      <div class="voice-custom-actions" id="voice-custom-actions" style="display:none">
+        <button type="button" class="voice-action-btn voice-preview-btn" aria-label="Play voice preview">▶ Play</button>
+        <button type="button" class="voice-action-btn voice-rename-btn" aria-label="Rename voice">✎ Rename</button>
+        <button type="button" class="voice-action-btn voice-delete-btn" aria-label="Delete voice">✕ Delete</button>
+      </div>
+
+      <!-- Upload zone (keyboard accessible) -->
+      <div class="voice-upload-zone" id="voice-upload-zone" tabindex="0" role="button" aria-label="Upload audio file. Drop file here or press Enter to browse.">
+        <div class="voice-upload-prompt">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="17 8 12 3 7 8"/>
+            <line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+          <span>Drop audio file here or <button class="voice-upload-btn" type="button">browse</button></span>
+          <span class="voice-upload-hint">WAV, MP3, FLAC, M4A, OGG, WebM · 2–30 seconds · max 10MB</span>
+        </div>
+        <input type="file" id="voice-upload-input" accept=".wav,.mp3,.flac,.m4a,.ogg,.webm" aria-label="Select audio file to upload" style="display:none">
+        <div class="voice-upload-status" id="voice-upload-status" aria-live="polite"></div>
+      </div>
+
+      <!-- Recording zone -->
+      <div class="voice-recording-zone">
+        <span class="voice-recording-prompt">Or record from microphone:</span>
+        <div class="voice-recording-controls">
+          <button type="button" id="record-btn" class="voice-record-btn" aria-label="Start recording">🎤 Record</button>
+          <div class="voice-recording-active" id="voice-recording-active" style="display:none">
+            <span id="recording-timer" aria-live="polite">Recording... 00:00</span>
+            <button type="button" id="stop-record-btn" class="voice-stop-btn" aria-label="Stop recording">⏹ Stop</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Name input -->
+      <div class="voice-name-input" id="voice-name-input" style="display:none">
+        <label class="voice-setting-label">
+          <span>Name this voice</span>
+          <input type="text" id="voice-display-name" maxlength="40" placeholder="My Voice" aria-label="Voice display name">
+        </label>
+      </div>
+    </div>
+
+    <!-- Guidelines popup -->
+    <div class="voice-guidelines-popup" id="voice-guidelines-popup" role="dialog" aria-label="Voice sample guidelines" style="display:none">
+      <div class="voice-guidelines-title">Voice Sample Guidelines</div>
+      <ul>
+        <li>3–10 seconds of clear speech works best</li>
+        <li>Speak naturally as you would in conversation</li>
+        <li>Avoid loud background noise or music</li>
+        <li>OmniVoice handles accent, language, and tone automatically</li>
+        <li>Samples longer than 20s are truncated</li>
+        <li>Only clone voices you have permission to use</li>
+      </ul>
+    </div>
+
     <div class="voice-settings-actions">
       <button class="btn-icon" id="voice-apply">Apply</button>
     </div>

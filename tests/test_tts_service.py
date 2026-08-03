@@ -27,7 +27,7 @@ from tests.fakes.voice import FakeOmniVoiceRuntime
 # ---------------------------------------------------------------------------
 
 
-class TestImportGuards:
+class Test0ImportGuards:  # Runs first (Test0) before torch is imported
     """Prove TTSService imports without torch."""
 
     def test_no_torch_imported(self):
@@ -157,8 +157,8 @@ class TestVoicePreparation:
         service, runtime = make_service()
         await service.load()
 
-        # Fill cache beyond MAX_VOICE_CACHE_ENTRIES (8)
-        for i in range(10):
+        # Fill cache beyond MAX_VOICE_CACHE_ENTRIES (16)
+        for i in range(20):
             settings = VoiceSettings(speed=0.8 + i * 0.01)
             await service.prepare_voice(settings)
 

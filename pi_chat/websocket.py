@@ -147,7 +147,19 @@ async def _dispatch_command(
             await voice.stop_current(reason="stopped")
     elif command_type == "voice_prepare":
         if voice is not None:
-            await voice.prepare(message.get("settings", {}))
+            await _handle_voice_prepare(websocket, voice, message.get("settings", {}))
+
+
+async def _handle_voice_prepare(websocket: WebSocket, voice, settings: dict) -> None:
+    """Prepare voice with timeout protection (CRIT-8)."""
+    try:
+        await asyncio.wait_for(voice.prepare(settings), timeout=60.0)
+    except asyncio.TimeoutError:
+        log.error("Voice preparation timed out")
+        await _send_error(
+            websocket,
+            "Voice preparation timed out. Try again or use a shorter sample.",
+        )
 
 
 async def _handle_prompt(

@@ -6,6 +6,7 @@
  * - Binary PCM frame parsing and validation
  * - Web Audio scheduled playback
  * - Settings persistence per account
+ * - Custom voice upload, recording, and management
  * - Accessible UI state management
  */
 
@@ -49,6 +50,15 @@ export function createVoiceController({
   let pendingPrepareResolve = null;
   let pendingPrepareReject = null;
 
+  // Custom voice state
+  let uploadInProgress = false;
+  let previewAudio = null;
+  let mediaRecorder = null;
+  let audioChunks = [];
+  let recordingStartTime = 0;
+  let recordingTimer = null;
+  let currentStream = null;
+
   // UI references (lazy-init)
   let toggleButton = null;
   let stopButton = null;
@@ -57,11 +67,24 @@ export function createVoiceController({
   let settingsCloseButton = null;
   let resumeButton = null;
 
+  // Custom voice UI references
+  let voiceTypeSelect = null;
+  let voiceCustomOptgroup = null;
+  let voiceCustomActions = null;
+  let voiceUploadZone = null;
+  let voiceUploadInput = null;
+  let voiceUploadStatus = null;
+  let voiceRecordingZone = null;
+  let voiceNameInput = null;
+  let voiceBootstrapSettings = null;
+  let voiceGuidelinesPopup = null;
+
   // Audio context factory (defaults to browser AudioContext)
   const audioCtxFactory = audioContextFactory || (() => new (window.AudioContext || window.webkitAudioContext)());
 
   function defaultSettings() {
     return {
+      voiceType: 'bootstrap',
       gender: 'female',
       age: 'young adult',
       pitch: 'moderate pitch',
@@ -79,6 +102,10 @@ export function createVoiceController({
       const raw = localStorage.getItem(STORAGE_KEY_PREFIX + acc);
       if (!raw) return null;
       const parsed = JSON.parse(raw);
+      // Validate voiceType on load
+      if (!parsed.voiceType || (!parsed.voiceType.startsWith('custom:') && parsed.voiceType !== 'bootstrap')) {
+        parsed.voiceType = 'bootstrap';
+      }
       return validateSettings(parsed) || null;
     } catch {
       return null;
@@ -98,6 +125,7 @@ export function createVoiceController({
 
   function validateSettings(raw) {
     if (!raw || typeof raw !== 'object') return null;
+
     const s = { ...defaultSettings(), ...raw };
 
     if (!ALLOWED_GENDERS.includes(s.gender)) return null;
@@ -111,6 +139,354 @@ export function createVoiceController({
     return s;
   }
 
+  // -----------------------------------------------------------------------
+  // Custom voice API calls
+  // -----------------------------------------------------------------------
+
+  async function loadCustomVoices() {
+    try {
+      const resp = await fetch('/api/voices');
+      if (!resp.ok) return;
+      const data = await resp.json();
+      const voices = data.voices || [];
+
+      if (!voiceCustomOptgroup) return;
+      voiceCustomOptgroup.innerHTML = '';
+
+      voices.forEach(v => {
+        const opt = document.createElement('option');
+        opt.value = 'custom:' + v.voiceId;
+        opt.textContent = v.displayName || v.filename;
+        opt.dataset.voiceId = v.voiceId;
+        voiceCustomOptgroup.appendChild(opt);
+      });
+
+      // Restore saved voice selection
+      if (settings.voiceType && settings.voiceType.startsWith('custom:')) {
+        const targetValue = settings.voiceType;
+        if (voiceCustomOptgroup.querySelector(`option[value="${targetValue}"]`)) {
+          voiceTypeSelect.value = targetValue;
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to load custom voices:', e);
+    }
+  }
+
+  function showUploadStatus(text, className) {
+    if (!voiceUploadStatus) return;
+    voiceUploadStatus.textContent = text;
+    voiceUploadStatus.className = className
+      ? 'voice-upload-status ' + className
+      : 'voice-upload-status';
+  }
+
+  async function uploadVoiceFile(file) {
+    // Debounce: reject concurrent uploads
+    if (uploadInProgress) {
+      showUploadStatus('Upload already in progress. Please wait.', 'error');
+      return;
+    }
+
+    // Client-side file validation
+    if (file.size > 10 * 1024 * 1024) {
+      showUploadStatus('File too large. Maximum is 10MB.', 'error');
+      return;
+    }
+
+    const allowedTypes = ['audio/wav', 'audio/mpeg', 'audio/flac', 'audio/mp4', 'audio/ogg', 'audio/webm', 'video/webm'];
+    if (!allowedTypes.includes(file.type) && !file.name.match(/\.(wav|mp3|flac|m4a|ogg|webm)$/i)) {
+      showUploadStatus('Unsupported file type.', 'error');
+      return;
+    }
+
+    uploadInProgress = true;
+    showUploadStatus('Uploading...', 'uploading');
+
+    const formData = new FormData();
+    formData.append('file', file);
+    const displayNameEl = document.getElementById('voice-display-name');
+    const displayName = displayNameEl?.value?.trim();
+    if (displayName) {
+      formData.append('display_name', displayName);
+    }
+
+    try {
+      const resp = await fetch('/api/voices', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.detail || 'Upload failed');
+      }
+
+      const data = await resp.json();
+      showUploadStatus(`Voice "${data.displayName}" uploaded!`, 'success');
+
+      await loadCustomVoices();
+
+      // Auto-select the new voice
+      if (voiceTypeSelect) {
+        voiceTypeSelect.value = 'custom:' + data.voiceId;
+        syncSettingsFromForm();
+      }
+
+      // Hide upload/recording zones after success
+      hideUploadControls();
+
+    } catch (err) {
+      showUploadStatus('Error: ' + err.message, 'error');
+      setTimeout(() => {
+        showUploadStatus('', '');
+      }, 5000);
+    } finally {
+      uploadInProgress = false;
+    }
+  }
+
+  async function previewVoice(voiceId) {
+    // Stop any current playback
+    if (previewAudio) {
+      previewAudio.pause();
+      previewAudio.src = '';
+    }
+
+    try {
+      previewAudio = new Audio('/api/voices/' + voiceId + '/audio');
+      await previewAudio.play();
+      previewAudio.onended = () => {
+        previewAudio.src = '';
+        previewAudio = null;
+      };
+    } catch (e) {
+      console.warn('Preview playback failed:', e);
+    }
+  }
+
+  async function deleteVoice(voiceId) {
+    if (!confirm('Delete this voice sample?')) return;
+
+    try {
+      const resp = await fetch('/api/voices/' + voiceId, {
+        method: 'DELETE',
+      });
+
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.detail || 'Delete failed');
+      }
+
+      // If this was the selected voice, revert to bootstrap
+      if (settings.voiceType === 'custom:' + voiceId) {
+        settings.voiceType = 'bootstrap';
+        if (voiceTypeSelect) voiceTypeSelect.value = 'bootstrap';
+        saveSettings();
+        updateBootstrapSettingsEnabled();
+      }
+
+      await loadCustomVoices();
+      hideUploadControls();
+
+    } catch (err) {
+      onError?.('Delete failed: ' + err.message);
+    }
+  }
+
+  async function renameVoice(voiceId) {
+    const currentName = getVoiceDisplayName(voiceId);
+    const newName = prompt('Rename this voice:', currentName);
+    if (!newName || newName.trim() === currentName) return;
+
+    try {
+      const resp = await fetch('/api/voices/' + voiceId, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ displayName: newName.trim() }),
+      });
+
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.detail || 'Rename failed');
+      }
+
+      await loadCustomVoices();
+
+    } catch (err) {
+      onError?.('Rename failed: ' + err.message);
+    }
+  }
+
+  function getVoiceDisplayName(voiceId) {
+    if (!voiceCustomOptgroup) return '';
+    const opt = voiceCustomOptgroup.querySelector(`option[data-voice-id="${voiceId}"]`);
+    return opt?.textContent || '';
+  }
+
+  function getCurrentCustomVoiceId() {
+    if (settings.voiceType && settings.voiceType.startsWith('custom:')) {
+      return settings.voiceType.slice(7);
+    }
+    return null;
+  }
+
+  function showUploadControls() {
+    if (voiceUploadZone) voiceUploadZone.style.display = 'block';
+    if (voiceRecordingZone) voiceRecordingZone.style.display = 'block';
+    if (voiceNameInput) voiceNameInput.style.display = 'block';
+  }
+
+  function hideUploadControls() {
+    if (voiceUploadZone) voiceUploadZone.style.display = 'none';
+    if (voiceRecordingZone) voiceRecordingZone.style.display = 'none';
+    if (voiceNameInput) voiceNameInput.style.display = 'none';
+  }
+
+  function updateBootstrapSettingsEnabled() {
+    const isCustom = settings.voiceType && settings.voiceType.startsWith('custom:');
+    if (voiceBootstrapSettings) {
+      voiceBootstrapSettings.classList.toggle('disabled', isCustom);
+    }
+    // Also disable individual controls
+    const controls = settingsDialog?.querySelectorAll('.voice-custom-section ~ .voice-setting-label select, .voice-custom-section ~ .voice-setting-label input[type="range"]');
+    if (controls) {
+      controls.forEach(el => {
+        el.disabled = isCustom;
+      });
+    }
+  }
+
+  function updateCustomVoiceUI() {
+    const voiceId = getCurrentCustomVoiceId();
+    if (voiceId) {
+      voiceCustomActions.style.display = 'flex';
+      hideUploadControls();
+    } else if (settings.voiceType === 'bootstrap') {
+      voiceCustomActions.style.display = 'none';
+      showUploadControls();
+    }
+    updateBootstrapSettingsEnabled();
+  }
+
+  // -----------------------------------------------------------------------
+  // Recording
+  // -----------------------------------------------------------------------
+
+  async function startRecording() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      currentStream = stream;
+      mediaRecorder = new MediaRecorder(stream);
+      audioChunks = [];
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunks.push(e.data);
+      };
+
+      mediaRecorder.onstop = async () => {
+        // Stop all tracks
+        if (currentStream) {
+          currentStream.getTracks().forEach(t => t.stop());
+          currentStream = null;
+        }
+
+        const blob = new Blob(audioChunks, { type: 'audio/webm' });
+
+        if (blob.size === 0) {
+          showUploadStatus('Recording failed: no audio captured.', 'error');
+          return;
+        }
+
+        const file = new File([blob], 'recording.webm', { type: 'audio/webm' });
+        await uploadVoiceFile(file);
+      };
+
+      mediaRecorder.onerror = (e) => {
+        console.error('MediaRecorder error:', e);
+        if (currentStream) {
+          currentStream.getTracks().forEach(t => t.stop());
+          currentStream = null;
+        }
+        showUploadStatus('Recording error. Please try again.', 'error');
+      };
+
+      mediaRecorder.start();
+      recordingStartTime = Date.now();
+      startRecordingTimer();
+      updateRecordingUI(true);
+
+    } catch (err) {
+      console.error('Recording error:', err);
+      showUploadStatus('Could not access microphone. Please check permissions.', 'error');
+    }
+  }
+
+  function stopRecording() {
+    if (!mediaRecorder || mediaRecorder.state === 'inactive') return;
+
+    const duration = (Date.now() - recordingStartTime) / 1000;
+    if (duration < 2) {
+      showUploadStatus('Recording too short. Please record at least 2 seconds.', 'error');
+      return;
+    }
+    if (duration > 30) {
+      showUploadStatus('Recording too long. Maximum is 30 seconds.', 'error');
+    }
+
+    mediaRecorder.stop();
+    stopRecordingTimer();
+    updateRecordingUI(false);
+  }
+
+  function startRecordingTimer() {
+    recordingTimer = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - recordingStartTime) / 1000);
+      const timerEl = document.getElementById('recording-timer');
+      if (timerEl) {
+        const mins = String(Math.floor(elapsed / 60)).padStart(2, '0');
+        const secs = String(elapsed % 60).padStart(2, '0');
+        timerEl.textContent = `Recording... ${mins}:${secs}`;
+      }
+      // Visual warning at 25 seconds
+      if (elapsed >= 25) {
+        const activeEl = document.getElementById('voice-recording-active');
+        if (activeEl) activeEl.classList.add('warning');
+      }
+    }, 1000);
+  }
+
+  function stopRecordingTimer() {
+    if (recordingTimer) {
+      clearInterval(recordingTimer);
+      recordingTimer = null;
+    }
+    const activeEl = document.getElementById('voice-recording-active');
+    if (activeEl) activeEl.classList.remove('warning');
+  }
+
+  function updateRecordingUI(isRecording) {
+    const recordBtn = document.getElementById('record-btn');
+    const activeEl = document.getElementById('voice-recording-active');
+    if (recordBtn) recordBtn.style.display = isRecording ? 'none' : 'inline-flex';
+    if (activeEl) activeEl.style.display = isRecording ? 'flex' : 'none';
+  }
+
+  // Cleanup on page unload
+  window.addEventListener('beforeunload', () => {
+    stopRecordingTimer();
+    if (currentStream) {
+      currentStream.getTracks().forEach(t => t.stop());
+    }
+    if (previewAudio) {
+      previewAudio.pause();
+    }
+  });
+
+  // -----------------------------------------------------------------------
+  // UI Initialization
+  // -----------------------------------------------------------------------
+
   function initUI() {
     toggleButton = document.querySelector('#chat-screen [data-voice-toggle]');
     stopButton = document.querySelector('#chat-screen [data-voice-stop]');
@@ -119,6 +495,17 @@ export function createVoiceController({
     settingsCloseButton = document.querySelector('#voice-settings-dialog [data-voice-settings-close]');
     resumeButton = document.querySelector('#chat-screen [data-voice-resume]');
     const settingsButton = document.querySelector('#chat-screen [data-voice-settings]');
+
+    // Custom voice UI references
+    voiceTypeSelect = document.getElementById('voice-type');
+    voiceCustomOptgroup = document.getElementById('voice-custom-optgroup');
+    voiceCustomActions = document.getElementById('voice-custom-actions');
+    voiceUploadZone = document.getElementById('voice-upload-zone');
+    voiceUploadInput = document.getElementById('voice-upload-input');
+    voiceUploadStatus = document.getElementById('voice-upload-status');
+    voiceRecordingZone = document.querySelector('.voice-recording-zone');
+    voiceNameInput = document.getElementById('voice-name-input');
+    voiceGuidelinesPopup = document.getElementById('voice-guidelines-popup');
 
     if (toggleButton) {
       toggleButton.addEventListener('click', handleToggleClick);
@@ -162,20 +549,70 @@ export function createVoiceController({
         applyVolume();
       });
 
+      // Voice type selector
+      if (voiceTypeSelect) {
+        voiceTypeSelect.addEventListener('change', () => {
+          const val = voiceTypeSelect.value;
+          if (val === 'bootstrap') {
+            settings.voiceType = 'bootstrap';
+            saveSettings();
+            updateCustomVoiceUI();
+          } else if (val.startsWith('custom:')) {
+            settings.voiceType = val;
+            saveSettings();
+            updateCustomVoiceUI();
+          }
+        });
+      }
+
+      // Custom voice action buttons
+      if (voiceCustomActions) {
+        voiceCustomActions.querySelector('.voice-preview-btn')?.addEventListener('click', () => {
+          const voiceId = getCurrentCustomVoiceId();
+          if (voiceId) previewVoice(voiceId);
+        });
+        voiceCustomActions.querySelector('.voice-delete-btn')?.addEventListener('click', () => {
+          const voiceId = getCurrentCustomVoiceId();
+          if (voiceId) deleteVoice(voiceId);
+        });
+        voiceCustomActions.querySelector('.voice-rename-btn')?.addEventListener('click', () => {
+          const voiceId = getCurrentCustomVoiceId();
+          if (voiceId) renameVoice(voiceId);
+        });
+      }
+
+      // Upload zone
+      setupUploadZone();
+
+      // Recording buttons
+      const recordBtn = document.getElementById('record-btn');
+      const stopRecordBtn = document.getElementById('stop-record-btn');
+      if (recordBtn) recordBtn.addEventListener('click', startRecording);
+      if (stopRecordBtn) stopRecordBtn.addEventListener('click', stopRecording);
+
+      // Guidelines popup
+      const guidelinesBtn = document.getElementById('voice-guidelines-btn');
+      if (guidelinesBtn && voiceGuidelinesPopup) {
+        guidelinesBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const isVisible = voiceGuidelinesPopup.style.display !== 'none';
+          voiceGuidelinesPopup.style.display = isVisible ? 'none' : 'block';
+        });
+        // Close on outside click
+        document.addEventListener('click', () => {
+          voiceGuidelinesPopup.style.display = 'none';
+        });
+        voiceGuidelinesPopup.addEventListener('click', (e) => {
+          e.stopPropagation();
+        });
+      }
+
       if (applyButton) {
         applyButton.addEventListener('click', async () => {
           applyButton.disabled = true;
           applyButton.textContent = 'Preparing...';
 
-          const backendSettings = {
-            gender: settings.gender,
-            age: settings.age,
-            pitch: settings.pitch,
-            accent: settings.accent,
-            style: settings.style,
-            speed: settings.speed,
-            language: settings.language,
-          };
+          const backendSettings = getBackendSettings();
 
           try {
             await sendVoicePrepare(backendSettings);
@@ -196,6 +633,49 @@ export function createVoiceController({
     }
 
     updateUI();
+  }
+
+  function setupUploadZone() {
+    if (!voiceUploadZone || !voiceUploadInput) return;
+
+    const browseBtn = voiceUploadZone.querySelector('.voice-upload-btn');
+
+    browseBtn?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      voiceUploadInput.click();
+    });
+
+    voiceUploadInput.addEventListener('change', (e) => {
+      if (e.target.files?.[0]) {
+        uploadVoiceFile(e.target.files[0]);
+        e.target.value = '';
+      }
+    });
+
+    // Keyboard activation
+    voiceUploadZone.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        voiceUploadInput.click();
+      }
+    });
+
+    // Drag and drop with file validation
+    voiceUploadZone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      voiceUploadZone.classList.add('dragover');
+    });
+    voiceUploadZone.addEventListener('dragleave', () => {
+      voiceUploadZone.classList.remove('dragover');
+    });
+    voiceUploadZone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      voiceUploadZone.classList.remove('dragover');
+      const files = e.dataTransfer.files;
+      if (files && files.length > 0) {
+        uploadVoiceFile(files[0]);
+      }
+    });
   }
 
   function syncSettingsFromForm() {
@@ -236,6 +716,14 @@ export function createVoiceController({
     if (languageSelect) languageSelect.value = settings.language || 'English';
     if (speedInput) speedInput.value = settings.speed;
     if (volumeInput) volumeInput.value = settings.volume;
+
+    // Load custom voices and restore selection
+    loadCustomVoices().then(() => {
+      if (voiceTypeSelect) {
+        voiceTypeSelect.value = settings.voiceType || 'bootstrap';
+      }
+      updateCustomVoiceUI();
+    });
   }
 
   function closeSettings() {
@@ -245,11 +733,37 @@ export function createVoiceController({
     settingsCloseButton?.focus();
   }
 
+  // -----------------------------------------------------------------------
+  // Backend settings
+  // -----------------------------------------------------------------------
+
+  function getBackendSettings() {
+    const result = {
+      gender: settings.gender,
+      age: settings.age,
+      pitch: settings.pitch,
+      accent: settings.accent,
+      style: settings.style,
+      speed: settings.speed,
+      language: settings.language,
+    };
+
+    // Add voice_id for custom voices
+    if (settings.voiceType && settings.voiceType.startsWith('custom:')) {
+      result.voice_id = settings.voiceType.slice(7);
+    }
+
+    return result;
+  }
+
+  // -----------------------------------------------------------------------
+  // Toggle / stop / resume handlers
+  // -----------------------------------------------------------------------
+
   function handleToggleClick() {
     if (!toggleButton) return;
 
     if (enabled) {
-      // Disable voice
       enabled = false;
       sendCommand({ type: 'voice_disable' });
       stopLocalPlayback();
@@ -257,7 +771,6 @@ export function createVoiceController({
       return;
     }
 
-    // Enable voice - must create/resume AudioContext from user gesture
     ensureAudioContext(() => {
       enabled = true;
       applyBackendSettings();
@@ -298,7 +811,6 @@ export function createVoiceController({
         playSilentBufferIfNeeded();
         callback();
       }).catch(() => {
-        // Autoplay blocked - show resume button
         if (resumeButton) resumeButton.style.display = 'block';
       });
     } else {
@@ -308,7 +820,6 @@ export function createVoiceController({
   }
 
   function playSilentBufferIfNeeded() {
-    // iOS sometimes requires an actual audio buffer to fully unlock
     try {
       const buffer = audioContext.createBuffer(1, 1, 22050);
       const source = audioContext.createBufferSource();
@@ -327,15 +838,7 @@ export function createVoiceController({
   }
 
   function applyBackendSettings() {
-    const backendSettings = {
-      gender: settings.gender,
-      age: settings.age,
-      pitch: settings.pitch,
-      accent: settings.accent,
-      style: settings.style,
-      speed: settings.speed,
-      language: settings.language,
-    };
+    const backendSettings = getBackendSettings();
     sendCommand({ type: 'voice_enable', settings: backendSettings });
     saveSettings();
   }
@@ -355,14 +858,13 @@ export function createVoiceController({
     });
   }
 
+  // -----------------------------------------------------------------------
+  // Playback
+  // -----------------------------------------------------------------------
+
   function stopLocalPlayback() {
-    // Stop all scheduled sources
     for (const source of activeSources) {
-      try {
-        source.stop();
-      } catch {
-        // Already stopped
-      }
+      try { source.stop(); } catch { /* already stopped */ }
     }
     activeSources.clear();
     activeStreamId = null;
@@ -375,24 +877,20 @@ export function createVoiceController({
   function updateUI() {
     if (!toggleButton) return;
 
-    // Toggle button state
     toggleButton.setAttribute('aria-pressed', enabled ? 'true' : 'false');
     toggleButton.classList.toggle('is-enabled', enabled);
     toggleButton.classList.toggle('is-loading', backendState === 'loading');
     toggleButton.classList.toggle('is-ready', backendState === 'ready');
     toggleButton.classList.toggle('is-error', backendState === 'error');
 
-    // Stop button visibility
     if (stopButton) {
       stopButton.classList.toggle('visible', speaking);
     }
 
-    // Resume button visibility
     if (resumeButton && audioContext?.state === 'suspended') {
       resumeButton.style.display = 'block';
     }
 
-    // Status text
     if (statusElement) {
       if (speaking) {
         statusElement.textContent = 'speaking';
@@ -416,7 +914,9 @@ export function createVoiceController({
     updateUI();
   }
 
+  // -----------------------------------------------------------------------
   // Public API
+  // -----------------------------------------------------------------------
 
   function setAccount(acc) {
     account = acc;
@@ -473,7 +973,6 @@ export function createVoiceController({
   }
 
   function handleVoiceStreamStart(message) {
-    // Stop old playback immediately
     stopLocalPlayback();
     activeStreamId = message.streamId;
     lastSequence = -1;
@@ -485,7 +984,6 @@ export function createVoiceController({
   function handleVoiceStreamEnd(message) {
     if (message.streamId === activeStreamId) {
       backendStreamEnded = true;
-      // Will stop speaking when all sources drain
       checkSpeakingDrain();
     }
   }
@@ -507,50 +1005,40 @@ export function createVoiceController({
 
     const view = new DataView(arrayBuffer);
 
-    // Validate magic
     const magic = String.fromCharCode(
       view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3)
     );
     if (magic !== PCM_MAGIC) return;
 
-    // Validate version
     const version = view.getUint8(4);
     if (version !== PCM_VERSION) return;
 
-    // Validate header length
     const headerLength = view.getUint16(6, true);
     if (headerLength !== PCM_HEADER_LENGTH) return;
 
-    // Read fields
     const streamId = view.getUint32(8, true);
     const sequence = view.getUint32(12, true);
     const sampleRate = view.getUint32(16, true);
     const sampleCount = view.getUint32(20, true);
 
-    // Drop stale stream frames
     if (streamId !== activeStreamId) return;
 
-    // Drop out-of-order or duplicate sequences
     if (sequence <= lastSequence) return;
     lastSequence = sequence;
 
-    // Validate payload size
     const expectedPayload = sampleCount * 2;
     const actualPayload = arrayBuffer.byteLength - PCM_HEADER_LENGTH;
     if (expectedPayload !== actualPayload) return;
 
-    // Create audio buffer
     const audioBuffer = audioContext.createBuffer(1, sampleCount, sampleRate);
     const channelData = audioBuffer.getChannelData(0);
 
-    // Decode PCM
     const pcmStart = PCM_HEADER_LENGTH;
     for (let i = 0; i < sampleCount; i++) {
       const int16 = view.getInt16(pcmStart + i * 2, true);
       channelData[i] = int16 / 32768.0;
     }
 
-    // Schedule playback
     scheduleBuffer(audioBuffer);
   }
 
@@ -586,12 +1074,10 @@ export function createVoiceController({
   }
 
   function beforePrompt() {
-    // Stop old scheduled audio before new prompt
     stopLocalPlayback();
   }
 
   function resetConnection() {
-    // WebSocket closed - stop playback
     stopLocalPlayback();
     enabled = false;
     backendState = 'disabled';
@@ -601,6 +1087,10 @@ export function createVoiceController({
 
   function destroy() {
     stopLocalPlayback();
+    stopRecordingTimer();
+    if (currentStream) {
+      currentStream.getTracks().forEach(t => t.stop());
+    }
     if (audioContext && audioContext.state !== 'closed') {
       audioContext.close().catch(() => {});
     }

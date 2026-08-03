@@ -73,6 +73,7 @@ def validate_settings(raw: dict) -> VoiceSettings | None:
     """Validate and construct VoiceSettings from raw dict.
 
     Returns None if settings are invalid.
+    Now accepts voice_id for custom voice cloning (CRIT-1).
     """
     try:
         gender = raw.get("gender", "female")
@@ -82,8 +83,8 @@ def validate_settings(raw: dict) -> VoiceSettings | None:
         style = raw.get("style")
         speed = float(raw.get("speed", 1.0))
 
-        # Reject unknown keys
-        allowed_keys = {"gender", "age", "pitch", "accent", "style", "speed", "language"}
+        # (CRIT-1) voice_id MUST be in allowed_keys
+        allowed_keys = {"gender", "age", "pitch", "accent", "style", "speed", "language", "voice_id"}
         if not set(raw.keys()).issubset(allowed_keys):
             return None
 
@@ -104,6 +105,15 @@ def validate_settings(raw: dict) -> VoiceSettings | None:
         if language not in ALLOWED_LANGUAGES:
             return None
 
+        # (CRIT-1) Validate voice_id if present
+        voice_id = raw.get("voice_id")
+        if voice_id is not None:
+            if not isinstance(voice_id, str):
+                return None
+            # Validate hex format (16 lowercase hex chars)
+            if len(voice_id) != 16 or not all(c in "0123456789abcdef" for c in voice_id):
+                return None
+
         return VoiceSettings(
             gender=gender,
             age=age,
@@ -112,6 +122,7 @@ def validate_settings(raw: dict) -> VoiceSettings | None:
             style=style,
             speed=speed,
             language=language,
+            voice_id=voice_id,
         )
     except (TypeError, ValueError):
         return None

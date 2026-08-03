@@ -10,7 +10,7 @@ from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query, Request, Response, UploadFile, WebSocket
+from fastapi import FastAPI, Form, HTTPException, Query, Request, Response, UploadFile, WebSocket
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -27,6 +27,7 @@ from .sessions import (
 import pdfplumber
 
 from .tts_service import TTSService
+from .voice_store import VoiceStore, MAX_FILE_SIZE as VOICE_MAX_FILE_SIZE
 from .websocket import handle_websocket
 
 logging.basicConfig(
@@ -57,8 +58,11 @@ def create_app(
     auth = auth_manager or AuthManager()
     active_processes: set[PiProcess] = set()
 
+    # Create VoiceStore (shared across all profiles)
+    voice_store = VoiceStore()
+
     # Create or use injected TTS service
-    _tts = tts_service or TTSService()
+    _tts = tts_service or TTSService(voice_store=voice_store)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -201,6 +205,109 @@ def create_app(
             "content": text,
             "mimeType": mime_type,
         }
+
+    # ------------------------------------------------------------------
+    # Custom voice API routes
+    # ------------------------------------------------------------------
+
+    @application.post("/api/voices")
+    async def upload_voice(request: Request, file: UploadFile, display_name: str | None = Form(None)):
+        """Upload a custom voice sample."""
+        _require_account(request, auth)
+
+        if not file.filename:
+            raise HTTPException(status_code=400, detail="No file provided")
+
+        # (CRIT-4) Check Content-Length before reading
+        content_length = file.size if hasattr(file, 'size') else None
+        if content_length and content_length > VOICE_MAX_FILE_SIZE:
+            raise HTTPException(
+                status_code=400,
+                detail="File too large. Maximum is 10MB."
+            )
+
+        content = await file.read()
+
+        # (HIGH-15) Run upload in thread pool to avoid blocking event loop
+        loop = asyncio.get_running_loop()
+        try:
+            sample = await loop.run_in_executor(
+                None,
+                lambda: voice_store.upload(content, file.filename, display_name)
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        return {
+            "voiceId": sample.voice_id,
+            "filename": sample.filename,
+            "displayName": sample.display_name,
+            "duration": round(sample.duration, 1),
+        }
+
+    @application.get("/api/voices")
+    async def list_voices(request: Request):
+        """List available custom voices."""
+        _require_account(request, auth)
+        samples = voice_store.list_voices()
+        return {
+            "voices": [
+                {
+                    "voiceId": s.voice_id,
+                    "filename": s.filename,
+                    "displayName": s.display_name,
+                    "duration": round(s.duration, 1),
+                    "uploadTime": int(s.upload_time),
+                }
+                for s in samples
+            ]
+        }
+
+    @application.patch("/api/voices/{voice_id}")
+    async def update_voice(request: Request, voice_id: str):
+        """Update a voice sample's metadata (display name)."""
+        _require_account(request, auth)
+
+        # (HIGH-7) Validate JSON body properly
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+        display_name = body.get("displayName")
+        if not isinstance(display_name, str) or not display_name:
+            raise HTTPException(status_code=400, detail="displayName must be a non-empty string")
+
+        if not voice_store.get_voice(voice_id):
+            raise HTTPException(status_code=404, detail="Voice not found")
+
+        voice_store.update_display_name(voice_id, display_name)
+        return {"success": True}
+
+    @application.delete("/api/voices/{voice_id}")
+    async def delete_voice(request: Request, voice_id: str):
+        """Delete a custom voice sample."""
+        _require_account(request, auth)
+        if not voice_store.delete_voice(voice_id):
+            raise HTTPException(status_code=404, detail="Voice not found")
+        # Invalidate from TTS cache (T34/MED-8)
+        _tts.invalidate_voice(voice_id)
+        return {"success": True}
+
+    @application.get("/api/voices/{voice_id}/audio")
+    async def get_voice_audio(request: Request, voice_id: str):
+        """Get the audio file for a voice sample (for preview playback)."""
+        _require_account(request, auth)
+
+        sample = voice_store.get_voice(voice_id)
+        if not sample:
+            raise HTTPException(status_code=404, detail="Voice not found")
+
+        wav_path = voice_store._wav_path(voice_id)
+        if not wav_path.exists():
+            raise HTTPException(status_code=404, detail="Audio file not found")
+
+        return FileResponse(wav_path, media_type="audio/wav")
 
     @application.get("/api/debug/session")
     async def debug_session(
