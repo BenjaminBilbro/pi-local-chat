@@ -1266,6 +1266,48 @@
     border-bottom: 1px solid var(--surface2);
   }
 
+  /* Voice Settings Tabs */
+  .voice-settings-tabs {
+    display: flex;
+    border-bottom: 1px solid var(--surface2);
+    background: var(--bg);
+  }
+
+  .voice-settings-tab {
+    flex: 1;
+    padding: 10px 16px;
+    border: none;
+    border-bottom: 2px solid transparent;
+    background: none;
+    color: var(--text-dim);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .voice-settings-tab:hover {
+    color: var(--text);
+    background: rgba(0,0,0,0.03);
+  }
+
+  .voice-settings-tab.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+  }
+
+  .voice-settings-tab-panel {
+    display: none;
+  }
+
+  .voice-settings-tab-panel.active {
+    display: block;
+  }
+
+  [data-theme="dark"] .voice-settings-tab:hover {
+    background: rgba(255,255,255,0.03);
+  }
+
   .voice-settings-header h2 {
     font-size: 14px;
     font-weight: 600;
@@ -1519,17 +1561,29 @@
   }
 
   .voice-action-btn {
-    padding: 4px 8px;
-    border-radius: 4px;
+    flex: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 6px 8px;
+    border-radius: 6px;
     border: 1px solid var(--surface2);
-    background: var(--surface);
+    background: var(--bg);
     color: var(--text);
     cursor: pointer;
-    font-size: 10px;
+    font-size: 11px;
+    font-family: inherit;
+    transition: all 0.15s;
   }
 
   .voice-action-btn:hover {
     border-color: var(--accent);
+    background: var(--surface2);
+  }
+
+  .voice-action-btn svg {
+    flex-shrink: 0;
   }
 
   .voice-delete-btn:hover {

@@ -76,7 +76,7 @@
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
         </button>
         <button class="btn-icon voice-settings-btn" data-voice-settings type="button" aria-label="Voice settings">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         </button>
       </div>
       <button class="btn-icon voice-stop" data-voice-stop type="button" aria-label="Stop speech">
@@ -140,76 +140,83 @@
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
     </button>
   </div>
+  <div class="voice-settings-tabs" role="tablist">
+    <button class="voice-settings-tab active" role="tab" data-voice-tab="settings" aria-selected="true">Settings</button>
+    <button class="voice-settings-tab" role="tab" data-voice-tab="custom" aria-selected="false">Custom Voice</button>
+  </div>
   <div class="voice-settings-body">
-    <label class="voice-setting-label">
-      <span>Gender</span>
-      <select id="voice-gender">
-        <option value="female">Female</option>
-        <option value="male">Male</option>
-      </select>
-    </label>
-    <label class="voice-setting-label">
-      <span>Age</span>
-      <select id="voice-age">
-        <option value="young adult">Young adult</option>
-        <option value="child">Child</option>
-        <option value="teenager">Teenager</option>
-        <option value="middle-aged">Middle-aged</option>
-        <option value="elderly">Elderly</option>
-      </select>
-    </label>
-    <label class="voice-setting-label">
-      <span>Pitch</span>
-      <select id="voice-pitch">
-        <option value="very low pitch">Very low</option>
-        <option value="low pitch">Low</option>
-        <option value="moderate pitch" selected>Moderate</option>
-        <option value="high pitch">High</option>
-        <option value="very high pitch">Very high</option>
-      </select>
-    </label>
-    <label class="voice-setting-label">
-      <span>Accent</span>
-      <select id="voice-accent">
-        <option value="american accent" selected>American</option>
-        <option value="british accent">British</option>
-        <option value="australian accent">Australian</option>
-        <option value="canadian accent">Canadian</option>
-        <option value="indian accent">Indian</option>
-        <option value="chinese accent">Chinese</option>
-        <option value="korean accent">Korean</option>
-        <option value="japanese accent">Japanese</option>
-        <option value="portuguese accent">Portuguese</option>
-        <option value="russian accent">Russian</option>
-      </select>
-    </label>
-    <label class="voice-setting-label">
-      <span>Style</span>
-      <select id="voice-style">
-        <option value="">Normal</option>
-        <option value="whisper">Whisper</option>
-      </select>
-    </label>
-    <label class="voice-setting-label">
-      <span>Language</span>
-      <select id="voice-language">
-        <option value="English" selected>English</option>
-        <option value="Spanish">Spanish</option>
-        <option value="French">French</option>
-        <option value="German">German</option>
-      </select>
-    </label>
-    <label class="voice-setting-label">
-      <span>Speed</span>
-      <input type="range" id="voice-speed" min="0.8" max="1.25" step="0.05" value="1.0">
-    </label>
-    <label class="voice-setting-label">
-      <span>Volume</span>
-      <input type="range" id="voice-volume" min="0" max="1" step="0.05" value="1.0">
-    </label>
+    <!-- Tab: Settings -->
+    <div class="voice-settings-tab-panel active" data-voice-tab-panel="settings">
+      <label class="voice-setting-label">
+        <span>Gender</span>
+        <select id="voice-gender">
+          <option value="female">Female</option>
+          <option value="male">Male</option>
+        </select>
+      </label>
+      <label class="voice-setting-label">
+        <span>Age</span>
+        <select id="voice-age">
+          <option value="young adult">Young adult</option>
+          <option value="child">Child</option>
+          <option value="teenager">Teenager</option>
+          <option value="middle-aged">Middle-aged</option>
+          <option value="elderly">Elderly</option>
+        </select>
+      </label>
+      <label class="voice-setting-label">
+        <span>Pitch</span>
+        <select id="voice-pitch">
+          <option value="very low pitch">Very low</option>
+          <option value="low pitch">Low</option>
+          <option value="moderate pitch" selected>Moderate</option>
+          <option value="high pitch">High</option>
+          <option value="very high pitch">Very high</option>
+        </select>
+      </label>
+      <label class="voice-setting-label">
+        <span>Accent</span>
+        <select id="voice-accent">
+          <option value="american accent" selected>American</option>
+          <option value="british accent">British</option>
+          <option value="australian accent">Australian</option>
+          <option value="canadian accent">Canadian</option>
+          <option value="indian accent">Indian</option>
+          <option value="chinese accent">Chinese</option>
+          <option value="korean accent">Korean</option>
+          <option value="japanese accent">Japanese</option>
+          <option value="portuguese accent">Portuguese</option>
+          <option value="russian accent">Russian</option>
+        </select>
+      </label>
+      <label class="voice-setting-label">
+        <span>Style</span>
+        <select id="voice-style">
+          <option value="">Normal</option>
+          <option value="whisper">Whisper</option>
+        </select>
+      </label>
+      <label class="voice-setting-label">
+        <span>Language</span>
+        <select id="voice-language">
+          <option value="English" selected>English</option>
+          <option value="Spanish">Spanish</option>
+          <option value="French">French</option>
+          <option value="German">German</option>
+        </select>
+      </label>
+      <label class="voice-setting-label">
+        <span>Speed</span>
+        <input type="range" id="voice-speed" min="0.8" max="1.25" step="0.05" value="1.0">
+      </label>
+      <label class="voice-setting-label">
+        <span>Volume</span>
+        <input type="range" id="voice-volume" min="0" max="1" step="0.05" value="1.0">
+      </label>
+    </div>
 
-    <!-- Custom voice section -->
-    <div class="voice-custom-section">
+    <!-- Tab: Custom Voice -->
+    <div class="voice-settings-tab-panel" data-voice-tab-panel="custom">
       <div class="voice-custom-header">
         <span>Custom Voice Sample</span>
         <div class="voice-guidelines-tooltip">
@@ -221,17 +228,32 @@
       <label class="voice-setting-label">
         <span>Voice</span>
         <select id="voice-type" aria-label="Select voice type">
-          <option value="bootstrap">Designed voice (adjust settings below)</option>
+          <option value="bootstrap">Upload Voice to Clone</option>
           <optgroup label="Custom voices" id="voice-custom-optgroup">
           </optgroup>
         </select>
       </label>
 
+      <!-- Speed slider for custom voices -->
+      <label class="voice-setting-label">
+        <span>Speed</span>
+        <input type="range" id="voice-speed-custom" min="0.8" max="1.25" step="0.05" value="1.0">
+      </label>
+
       <!-- Custom voice actions row -->
       <div class="voice-custom-actions" id="voice-custom-actions" style="display:none">
-        <button type="button" class="voice-action-btn voice-preview-btn" aria-label="Play voice preview">▶ Play</button>
-        <button type="button" class="voice-action-btn voice-rename-btn" aria-label="Rename voice">✎ Rename</button>
-        <button type="button" class="voice-action-btn voice-delete-btn" aria-label="Delete voice">✕ Delete</button>
+        <button type="button" class="voice-action-btn voice-preview-btn" aria-label="Play voice preview">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
+          Play
+        </button>
+        <button type="button" class="voice-action-btn voice-rename-btn" aria-label="Rename voice">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>
+          Rename
+        </button>
+        <button type="button" class="voice-action-btn voice-delete-btn" aria-label="Delete voice">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+          Delete
+        </button>
       </div>
 
       <!-- Upload zone (keyboard accessible) -->
@@ -268,19 +290,19 @@
           <input type="text" id="voice-display-name" maxlength="40" placeholder="My Voice" aria-label="Voice display name">
         </label>
       </div>
-    </div>
 
-    <!-- Guidelines popup -->
-    <div class="voice-guidelines-popup" id="voice-guidelines-popup" role="dialog" aria-label="Voice sample guidelines" style="display:none">
-      <div class="voice-guidelines-title">Voice Sample Guidelines</div>
-      <ul>
-        <li>3–10 seconds of clear speech works best</li>
-        <li>Speak naturally as you would in conversation</li>
-        <li>Avoid loud background noise or music</li>
-        <li>OmniVoice handles accent, language, and tone automatically</li>
-        <li>Samples longer than 20s are truncated</li>
-        <li>Only clone voices you have permission to use</li>
-      </ul>
+      <!-- Guidelines popup -->
+      <div class="voice-guidelines-popup" id="voice-guidelines-popup" role="dialog" aria-label="Voice sample guidelines" style="display:none">
+        <div class="voice-guidelines-title">Voice Sample Guidelines</div>
+        <ul>
+          <li>3–10 seconds of clear speech works best</li>
+          <li>Speak naturally as you would in conversation</li>
+          <li>Avoid loud background noise or music</li>
+          <li>OmniVoice handles accent, language, and tone automatically</li>
+          <li>Samples longer than 20s are truncated</li>
+          <li>Only clone voices you have permission to use</li>
+        </ul>
+      </div>
     </div>
 
     <div class="voice-settings-actions">

@@ -37,6 +37,7 @@ export function createVoiceController({
   // Internal state
   let enabled = false;
   let backendState = 'disabled'; // disabled | loading | ready | error
+  let uiInitialized = false;
   let settings = loadSavedSettings(null) || defaultSettings();
   let account = null;
   let audioContext = null;
@@ -52,7 +53,9 @@ export function createVoiceController({
 
   // Custom voice state
   let uploadInProgress = false;
+  let actionInProgress = false;  // Guard against double-clicks on delete/rename
   let previewAudio = null;
+  let previewVoiceId = null;  // Track which voice is playing for toggle
   let mediaRecorder = null;
   let audioChunks = [];
   let recordingStartTime = 0;
@@ -247,26 +250,56 @@ export function createVoiceController({
   }
 
   async function previewVoice(voiceId) {
-    // Stop any current playback
-    if (previewAudio) {
-      previewAudio.pause();
-      previewAudio.src = '';
+    // If clicking the same voice that's loaded, toggle play/pause
+    if (previewAudio && previewVoiceId === voiceId) {
+      if (previewAudio.paused) {
+        try {
+          await previewAudio.play();
+        } catch (e) {
+          console.warn('Preview playback failed:', e);
+        }
+      } else {
+        previewAudio.pause();
+      }
+      return;
     }
+
+    // Different voice or nothing loaded — stop current and start new
+    stopPreview();
 
     try {
       previewAudio = new Audio('/api/voices/' + voiceId + '/audio');
-      await previewAudio.play();
+      previewVoiceId = voiceId;
       previewAudio.onended = () => {
-        previewAudio.src = '';
         previewAudio = null;
+        previewVoiceId = null;
       };
+      await previewAudio.play();
     } catch (e) {
       console.warn('Preview playback failed:', e);
+      previewAudio = null;
+      previewVoiceId = null;
+    }
+  }
+
+  function stopPreview() {
+    if (previewAudio) {
+      try {
+        previewAudio.pause();
+      } catch { /* ignore */ }
+      previewAudio.src = '';
+      previewAudio = null;
+      previewVoiceId = null;
     }
   }
 
   async function deleteVoice(voiceId) {
+    if (actionInProgress) return;
     if (!confirm('Delete this voice sample?')) return;
+
+    actionInProgress = true;
+    // Immediately hide actions to prevent double-click
+    if (voiceCustomActions) voiceCustomActions.style.display = 'none';
 
     try {
       const resp = await fetch('/api/voices/' + voiceId, {
@@ -287,18 +320,24 @@ export function createVoiceController({
       }
 
       await loadCustomVoices();
-      hideUploadControls();
+      updateCustomVoiceUI();
 
     } catch (err) {
       onError?.('Delete failed: ' + err.message);
+      // Restore actions on failure
+      updateCustomVoiceUI();
+    } finally {
+      actionInProgress = false;
     }
   }
 
   async function renameVoice(voiceId) {
+    if (actionInProgress) return;
     const currentName = getVoiceDisplayName(voiceId);
     const newName = prompt('Rename this voice:', currentName);
     if (!newName || newName.trim() === currentName) return;
 
+    actionInProgress = true;
     try {
       const resp = await fetch('/api/voices/' + voiceId, {
         method: 'PATCH',
@@ -315,6 +354,8 @@ export function createVoiceController({
 
     } catch (err) {
       onError?.('Rename failed: ' + err.message);
+    } finally {
+      actionInProgress = false;
     }
   }
 
@@ -488,6 +529,9 @@ export function createVoiceController({
   // -----------------------------------------------------------------------
 
   function initUI() {
+    if (uiInitialized) return;
+    uiInitialized = true;
+
     toggleButton = document.querySelector('#chat-screen [data-voice-toggle]');
     stopButton = document.querySelector('#chat-screen [data-voice-stop]');
     statusElement = document.querySelector('#chat-screen [data-voice-status]');
@@ -542,11 +586,59 @@ export function createVoiceController({
       if (accentSelect) accentSelect.addEventListener('change', () => syncSettingsFromForm());
       if (styleSelect) styleSelect.addEventListener('change', () => syncSettingsFromForm());
       if (languageSelect) languageSelect.addEventListener('change', () => syncSettingsFromForm());
-      if (speedInput) speedInput.addEventListener('input', () => syncSettingsFromForm());
+      if (speedInput) speedInput.addEventListener('input', () => {
+        syncSettingsFromForm();
+        // Re-apply speed to backend if voice is enabled
+        if (enabled && backendState === 'ready') {
+          sendCommand({ type: 'voice_settings', settings: getBackendSettings() });
+        }
+      });
       if (volumeInput) volumeInput.addEventListener('input', () => {
         const vol = parseFloat(volumeInput.value);
         settings.volume = isNaN(vol) ? 1.0 : vol;
         applyVolume();
+        // Save volume to localStorage too (browser-only but persistent)
+        if (account) {
+          try {
+            const raw = localStorage.getItem(STORAGE_KEY_PREFIX + account);
+            const parsed = raw ? JSON.parse(raw) : {};
+            parsed.volume = vol;
+            localStorage.setItem(STORAGE_KEY_PREFIX + account, JSON.stringify(parsed));
+          } catch { /* ignore */ }
+        }
+      });
+
+      // Custom voice tab speed slider
+      const speedInputCustom = document.getElementById('voice-speed-custom');
+      if (speedInputCustom) {
+        speedInputCustom.addEventListener('input', () => {
+          const speed = parseFloat(speedInputCustom.value);
+          settings.speed = isNaN(speed) ? 1.0 : speed;
+          // Sync with main speed slider
+          if (speedInput) speedInput.value = speed;
+          saveSettings();
+          // Re-apply speed to backend if voice is enabled
+          if (enabled && backendState === 'ready') {
+            sendCommand({ type: 'voice_settings', settings: getBackendSettings() });
+          }
+        });
+      }
+
+      // Tab switching
+      const tabs = settingsDialog.querySelectorAll('.voice-settings-tab');
+      tabs.forEach(tab => {
+        tab.addEventListener('click', () => {
+          const targetTab = tab.dataset.voiceTab;
+          // Update tab buttons
+          tabs.forEach(t => {
+            t.classList.toggle('active', t === tab);
+            t.setAttribute('aria-selected', t === tab ? 'true' : 'false');
+          });
+          // Update panels
+          settingsDialog.querySelectorAll('.voice-settings-tab-panel').forEach(panel => {
+            panel.classList.toggle('active', panel.dataset.voiceTabPanel === targetTab);
+          });
+        });
       });
 
       // Voice type selector
@@ -567,15 +659,21 @@ export function createVoiceController({
 
       // Custom voice action buttons
       if (voiceCustomActions) {
-        voiceCustomActions.querySelector('.voice-preview-btn')?.addEventListener('click', () => {
+        voiceCustomActions.querySelector('.voice-preview-btn')?.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
           const voiceId = getCurrentCustomVoiceId();
           if (voiceId) previewVoice(voiceId);
         });
-        voiceCustomActions.querySelector('.voice-delete-btn')?.addEventListener('click', () => {
+        voiceCustomActions.querySelector('.voice-delete-btn')?.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
           const voiceId = getCurrentCustomVoiceId();
           if (voiceId) deleteVoice(voiceId);
         });
-        voiceCustomActions.querySelector('.voice-rename-btn')?.addEventListener('click', () => {
+        voiceCustomActions.querySelector('.voice-rename-btn')?.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
           const voiceId = getCurrentCustomVoiceId();
           if (voiceId) renameVoice(voiceId);
         });
@@ -715,6 +813,8 @@ export function createVoiceController({
     if (styleSelect) styleSelect.value = settings.style || '';
     if (languageSelect) languageSelect.value = settings.language || 'English';
     if (speedInput) speedInput.value = settings.speed;
+    const speedInputCustom = document.getElementById('voice-speed-custom');
+    if (speedInputCustom) speedInputCustom.value = settings.speed;
     if (volumeInput) volumeInput.value = settings.volume;
 
     // Load custom voices and restore selection
