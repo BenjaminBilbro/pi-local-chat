@@ -9,6 +9,7 @@ dependencies = [
     "matplotlib",
     "pdfplumber",
     "python-multipart",
+    "pywebrtc-audio>=0.1.0",
     "scipy",
     "setuptools",
     "silero-vad[onnx-cpu]",

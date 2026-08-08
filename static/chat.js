@@ -54,6 +54,17 @@ const subagentTools = new Map();
 // Landing page
 const inputArea = document.querySelector('.input-area');
 
+const MASCOT_SVGS = [
+  '/static/pi-mascot-greeting.svg',
+  '/static/pi-mascot-searching.svg',
+  '/static/pi-mascot-success.svg',
+  '/static/pi-mascot-helpful.svg',
+];
+
+function randomMascotSrc() {
+  return MASCOT_SVGS[Math.floor(Math.random() * MASCOT_SVGS.length)];
+}
+
 function showLanding() {
   // Clear any existing landing page
   const existingLanding = document.getElementById('landing-page');
@@ -63,7 +74,9 @@ function showLanding() {
   landing.className = 'landing-page-header';
   landing.id = 'landing-page';
   landing.innerHTML = `
-    <div class="landing-page-avatar">🍰૮₍ •⤙• ₎ა</div>
+    <div class="landing-page-avatar">
+      <img src="${randomMascotSrc()}" alt="Pi mascot" />
+    </div>
     <div class="landing-page-title">Pi v0.2</div>
   `;
 
@@ -77,7 +90,12 @@ function showLanding() {
 
 function hideLanding() {
   const landing = document.getElementById('landing-page');
-  if (landing) landing.remove();
+  if (landing) {
+    // Remove the image element to free memory
+    const img = landing.querySelector('.landing-page-avatar img');
+    if (img) img.remove();
+    landing.remove();
+  }
   if (inputArea) {
     inputArea.classList.remove('landing-mode');
   }

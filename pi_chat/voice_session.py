@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import struct
+import threading
 import time
 from dataclasses import dataclass, field
 
@@ -179,6 +180,12 @@ class VoiceSession:
         self._activation_id: int = 0
         self._current_activation_id: int = 0
 
+        # AEC reference: TTS audio buffer for echo cancellation
+        self.is_speaking: bool = False
+        self._tts_reference_buffer: bytearray = bytearray()
+        self._aec_max_buffer_bytes: int = 640_000  # 2 seconds at 16kHz mono
+        self._reference_lock: threading.Lock = threading.Lock()
+
         # Closed flag
         self.closed: bool = False
 
@@ -242,6 +249,20 @@ class VoiceSession:
     async def stop_current(self, reason: str = "stopped") -> None:
         """Stop the current response's voice but keep voice mode enabled."""
         await self._stop_current_internal(reason=reason)
+
+    def drain_reference_bytes(self, n: int) -> bytes:
+        """Drain up to n bytes from the TTS reference buffer for AEC.
+
+        Returns available bytes (may be shorter than n if buffer is low).
+        Thread-safe: called from STT text worker thread.
+        """
+        with self._reference_lock:
+            if len(self._tts_reference_buffer) == 0:
+                return b""
+            available = min(n, len(self._tts_reference_buffer))
+            data = bytes(self._tts_reference_buffer[:available])
+            del self._tts_reference_buffer[:available]
+            return data
 
     async def prepare(self, raw_settings: dict) -> None:
         """Prepare voice for given settings without changing enabled state.
@@ -588,6 +609,7 @@ class VoiceSession:
 
         # Send stream end if we had an active stream
         if stream_id > 0:
+            self.is_speaking = False
             await self._send_json({
                 "type": "voice_stream_end",
                 "streamId": stream_id,
@@ -616,6 +638,7 @@ class VoiceSession:
                     logger.info("Voice: [DEBUG] _worker() received sentinel, stream_id=%d", stream_id)
                     # Send stream end if this stream is still active
                     if self._stream_id == stream_id:
+                        self.is_speaking = False
                         await self._send_json({
                             "type": "voice_stream_end",
                             "streamId": stream_id,
@@ -653,6 +676,16 @@ class VoiceSession:
                         pcm_s16le=audio.pcm_s16le,
                     )
                     logger.info("Voice: [DEBUG] _worker() sending frame seq=%d stream=%d samples=%d bytes=%d", self._sequence, stream_id, audio.sample_count, len(frame))
+
+                    # AEC: mark speaking on first frame, buffer reference audio
+                    if not self.is_speaking:
+                        self.is_speaking = True
+                    with self._reference_lock:
+                        self._tts_reference_buffer.extend(audio.pcm_s16le)
+                        # Overflow protection: drop oldest if buffer exceeds 2 seconds
+                        if len(self._tts_reference_buffer) > self._aec_max_buffer_bytes:
+                            self._tts_reference_buffer = self._tts_reference_buffer[-self._aec_max_buffer_bytes:]
+
                     await self._send_bytes(frame)
 
                 except MemoryError as e:

@@ -197,8 +197,67 @@ class STTSession:
         # Activation ID for race safety (same pattern as VoiceSession)
         self._activation_id = 0
 
+        # AEC: echo cancellation during TTS playback
+        self._voice_session: Any | None = None  # VoiceSession reference
+        self._aec: Any | None = None  # pywebrtc_audio.AudioProcessor (lazy init)
+        self._aec_was_speaking: bool = False  # track speaking transitions for reset
+
         # Closed flag
         self.closed = False
+
+    def set_voice_session(self, voice_session: Any) -> None:
+        """Link to the VoiceSession for AEC reference audio.
+
+        Called by the WebSocket handler after both sessions are created.
+        """
+        self._voice_session = voice_session
+
+    def _ensure_aec(self) -> None:
+        """Lazily create the AEC processor on first use.
+
+        Called from the text worker thread. Imports pywebrtc_audio here
+        to keep it out of the critical path when STT is enabled but TTS
+        is not in use.
+        """
+        if self._aec is not None:
+            return
+        from pywebrtc_audio import AudioProcessor
+        self._aec = AudioProcessor(
+            sample_rate=SERVER_SAMPLE_RATE,
+            echo_cancellation=True,
+            noise_suppression=True,
+        )
+        logger.info("STT: AEC processor created")
+
+    def _run_aec(self, mic_samples: "np.ndarray") -> "np.ndarray":
+        """Run acoustic echo cancellation on a mic packet.
+
+        Pulls matching reference audio from the VoiceSession buffer.
+        Returns cleaned samples (same length as input).
+        """
+        import numpy as np
+        from pywebrtc_audio import AudioProcessor
+
+        aec: AudioProcessor = self._aec
+        voice = self._voice_session
+        if aec is None or voice is None:
+            return mic_samples
+
+        # Drain reference bytes matching the mic packet size
+        needed_bytes = len(mic_samples) * 2  # int16 = 2 bytes/sample
+        ref_bytes = voice.drain_reference_bytes(needed_bytes)
+
+        # If reference is shorter, zero-pad (underflow guardrail)
+        if len(ref_bytes) < needed_bytes:
+            ref_bytes = ref_bytes + b"\x00" * (needed_bytes - len(ref_bytes))
+
+        # Convert to numpy arrays
+        near = np.frombuffer(mic_samples.tobytes(), dtype=np.int16)
+        far = np.frombuffer(ref_bytes[:needed_bytes], dtype=np.int16)
+
+        # Run AEC
+        clean = aec.process(near, far)
+        return clean
 
     async def enable(self, settings: Optional[dict] = None) -> None:
         """Enable STT: create recorder, start text worker thread.
@@ -279,16 +338,33 @@ class STTSession:
         await self._send_json({"type": "stt_state", "state": "disabled"})
 
     def ingest_audio_packet(self, packet: AudioPacket) -> None:
-        """Ingest an audio packet: decode, resample, feed to recorder.
+        """Ingest an audio packet: decode, resample, optionally AEC, feed to recorder.
 
         Called directly from the WebSocket handler (event loop thread).
         No queue — recorder manages its own internal audio buffer.
+
+        When the agent is speaking (TTS playing), runs acoustic echo
+        cancellation using the TTS reference audio before feeding to STT.
         """
         if not self.enabled or self._recorder is None:
             return
 
         try:
             samples = packet_to_server_samples(packet)
+
+            # AEC: cancel echo when agent is speaking
+            voice = self._voice_session
+            if voice is not None and voice.is_speaking:
+                # Reset AEC on new stream (speaking transition)
+                if not self._aec_was_speaking:
+                    self._ensure_aec()
+                    if self._aec is not None:
+                        self._aec.reset()
+                    self._aec_was_speaking = True
+                samples = self._run_aec(samples)
+            else:
+                self._aec_was_speaking = False
+
             self._recorder.feed_audio(samples, original_sample_rate=SERVER_SAMPLE_RATE)
         except AudioPacketError as e:
             logger.warning("STT: invalid audio packet: %s", e)

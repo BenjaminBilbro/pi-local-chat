@@ -710,18 +710,16 @@
   }
 
   .landing-page-avatar {
-    width: 36px;
-    height: 36px;
-    border-radius: 50%;
-    background: transparent;
-    border: 2px solid var(--surface-text);
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 15px;
-    line-height: 1.1;
-    text-align: center;
     flex-shrink: 0;
+  }
+
+  .landing-page-avatar img {
+    height: 40px;
+    width: auto;
+    display: block;
   }
 
   .landing-page-title {
@@ -1946,10 +1944,8 @@
       bottom: 70px;
     }
 
-    .landing-page-avatar {
-      width: 50px;
+    .landing-page-avatar img {
       height: 32px;
-      font-size: 13px;
     }
 
     .landing-page-title {

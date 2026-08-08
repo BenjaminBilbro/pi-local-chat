@@ -169,3 +169,170 @@ PI_CHAT_DEV=1 uv run python server.py
 
 For full technical details (architecture, RPC events, testing, rendering
 contract, voice protocol), see `AGENTS.md`.
+
+## Architecture
+
+### High-Level Overview
+
+```mermaid
+graph TB
+    subgraph Browser["Browser"]
+        UI["Chat UI"]
+        WS["WebSocket Client"]
+    end
+
+    subgraph Server["pi-chat Server (FastAPI)"]
+        API["HTTP Routes"]
+        WSH["WebSocket Handler"]
+        AUTH["Auth Manager"]
+        TTS["TTS Service"]
+        STT["STT Service"]
+    end
+
+    subgraph Pi["pi Agent"]
+        RPC["pi --mode rpc"]
+        LLM["LLM Backend"]
+        TOOLS["Tool Execution"]
+    end
+
+    subgraph Storage["Storage"]
+        SESSIONS["Session JSONL Files"]
+        VOICES["Voice Samples"]
+    end
+
+    UI --> WS
+    WS -->|"JSON commands + binary audio"| WSH
+    UI -->|"login, sessions, uploads"| API
+    API --> AUTH
+    API --> SESSIONS
+    API --> VOICES
+    WSH -->|"RPC commands"| RPC
+    RPC -->|"streaming events"| WSH
+    RPC --> LLM
+    RPC --> TOOLS
+    WSH -->|"text to synthesize"| TTS
+    TTS -->|"PCM audio frames"| WSH
+    WSH -->|"audio packets"| STT
+    STT -->|"transcripts"| WSH
+    WSH -->|"pi_event messages"| WS
+    WSH -->|"write sessions"| SESSIONS
+```
+
+### Module-Level Data Flow
+
+```mermaid
+graph TB
+    subgraph Frontend["Browser (static/)"]
+        APP["app.js<br/>message router"]
+        AUTH_JS["auth.js<br/>login/profile"]
+        SOCKET["socket.js<br/>WebSocket + heartbeat"]
+        CHAT["chat.js<br/>composer + live rendering"]
+        HISTORY["history.js<br/>saved session rendering"]
+        TIMELINE["timeline.js<br/>DOM primitives"]
+        SUBAGENT["subagent.js<br/>cards + enrichment"]
+        SESSIONS_JS["sessions.js<br/>drawer + load"]
+        VOICE_JS["voice.js<br/>TTS playback"]
+        STT_JS["stt.js<br/>mic capture"]
+    end
+
+    subgraph Backend["Server (pi_chat/)"]
+        APP_PY["app.py<br/>FastAPI + routes"]
+        WS_PY["websocket.py<br/>command dispatch"]
+        AUTH_PY["auth.py<br/>passwords + tokens"]
+        PROC["process.py<br/>pi subprocess lifecycle"]
+        SESSIONS_PY["sessions.py<br/>JSONL parsing"]
+        TTS_PY["tts_service.py<br/>OmniVoice synthesis"]
+        VOICE_PY["voice_session.py<br/>per-conn TTS state + AEC ref"]
+        STT_PY["stt_session.py<br/>per-conn STT state + AEC"]
+        STT_SVC["stt_service.py<br/>RealtimeSTT loader"]
+    end
+
+    subgraph Pi["pi RPC"]
+        PI["pi --mode rpc"]
+    end
+
+    %% Frontend wiring
+    AUTH_JS -->|"POST /api/login"| APP_PY
+    SESSIONS_JS -->|"GET /api/sessions"| APP_PY
+    SOCKET -->|"WS /ws"| APP_PY
+    APP -->|"routes events"| CHAT
+    APP -->|"routes session_loaded"| SESSIONS_JS
+    CHAT -->|"prompt command"| SOCKET
+    CHAT -->|"voice_enable/disable"| SOCKET
+    CHAT -->|"stt_enable/disable"| SOCKET
+    VOICE_JS -->|"play PCM frames"| CHAT
+    STT_JS -->|"binary audio packets"| SOCKET
+    CHAT -->|"render runs"| HISTORY
+    HISTORY --> TIMELINE
+    HISTORY --> SUBAGENT
+    CHAT --> TIMELINE
+    CHAT --> SUBAGENT
+
+    %% Backend wiring
+    APP_PY -->|"auth"| AUTH_PY
+    APP_PY -->|"session listing"| SESSIONS_PY
+    APP_PY -->|"WS upgrade"| WS_PY
+    WS_PY -->|"spawn/control"| PROC
+    PROC -->|"stdin RPC"| PI
+    PI -->|"stdout events"| PROC
+    WS_PY -->|"pi_event relay"| PROC
+    WS_PY -->|"TTS orchestration"| VOICE_PY
+    VOICE_PY -->|"synthesize"| TTS_PY
+    WS_PY -->|"STT orchestration"| STT_PY
+    STT_PY -->|"load RealtimeSTT"| STT_SVC
+    STT_PY -->|"drain AEC reference"| VOICE_PY
+
+    %% Cross-boundary
+    SOCKET <-->|"WebSocket"| WS_PY
+```
+
+### Voice Mode (TTS + STT + AEC) Flow
+
+```mermaid
+sequenceDiagram
+    participant Browser
+    participant WS as websocket.py
+    participant Voice as voice_session.py
+    participant TTS as tts_service.py
+    participant STT as stt_session.py
+    participant AEC as pywebrtc-audio
+    participant Recorder as RealtimeSTT
+
+    Note over Browser,Recorder: TTS Playback
+    Browser->>WS: voice_enable
+    WS->>Voice: enable(settings)
+    Voice->>TTS: prepare voice handle
+    TTS-->>Voice: handle ready
+    Voice->>Voice: is_speaking = false
+
+    pi->>Voice: agent_start + text deltas
+    Voice->>TTS: synthesize(chunk)
+    TTS-->>Voice: PCM audio
+    Voice->>Voice: is_speaking = true<br/>buffer PCM to _tts_reference_buffer
+    Voice->>Browser: binary PCM frame
+    Browser->>Browser: play audio (speaker)
+
+    Note over Browser,Recorder: STT with Echo Cancellation
+    Browser->>WS: binary mic audio packet
+    WS->>STT: ingest_audio_packet()
+    STT->>STT: voice.is_speaking?
+    alt agent speaking
+        STT->>Voice: drain_reference_bytes(n)
+        Voice-->>STT: TTS reference PCM
+        STT->>AEC: process(mic, reference)
+        AEC-->>STT: cleaned audio
+        STT->>Recorder: feed_audio(cleaned)
+    else agent idle
+        STT->>Recorder: feed_audio(raw mic)
+    end
+    Recorder->>STT: transcription ready
+    STT->>Browser: stt_final(text)
+
+    Note over Browser,Recorder: Stream End
+    Voice->>Voice: is_speaking = false
+    Voice->>Browser: voice_stream_end
+```
+
+## License
+
+MIT

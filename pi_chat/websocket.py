@@ -63,6 +63,10 @@ async def handle_websocket(
         stt = _make_stt_session(stt_service, pi, config_)
         log.info("[STT DEBUG] STTSession created: %s", stt)
 
+    # Wire STT to Voice for AEC reference audio (if both available)
+    if stt is not None and voice is not None:
+        stt.set_voice_session(voice)
+
     await _load_dev_session(websocket)
 
     try:
