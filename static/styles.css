@@ -258,9 +258,9 @@
     width: 100%;
   }
 
-  .messages::-webkit-scrollbar { width: 6px; }
-  .messages::-webkit-scrollbar-track { background: transparent; }
-  .messages::-webkit-scrollbar-thumb { background: var(--surface2); border-radius: 3px; }
+  /* Hidden scrollbar, scroll still works */
+  .messages::-webkit-scrollbar { display: none; }
+  .messages { scrollbar-width: none; }
 
   .message {
     max-width: 720px;
@@ -291,13 +291,16 @@
   }
 
   .message.assistant .message-bubble {
-    background: var(--surface);
+    background: var(--assistant-bubble-bg);
     border: 1px solid var(--surface2);
+    border-left: 3px solid var(--detail);
   }
 
   .message.user .message-bubble {
-    background: var(--accent);
-    color: var(--accent-contrast);
+    background: var(--user-bubble-bg);
+    color: var(--user-bubble-text);
+    border: 1px solid var(--surface2);
+    border-left: 3px solid var(--accent);
   }
 
   /* Image in user message */
@@ -530,6 +533,55 @@
   .send-btn:hover { filter: brightness(1.15); }
   .send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
+  /* Mic toggle button */
+  #mic-toggle {
+    width: 46px;
+    height: 46px;
+    border: none;
+    border-radius: var(--radius);
+    background: transparent;
+    color: var(--text-dim);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s ease;
+    flex-shrink: 0;
+    margin-right: 8px;
+  }
+
+  #mic-toggle:hover {
+    background: var(--surface2);
+    color: var(--text);
+  }
+
+  #mic-toggle.is-enabled {
+    color: var(--accent);
+  }
+
+  #mic-toggle.is-loading {
+    color: var(--text-dim);
+    opacity: 0.6;
+  }
+
+  #mic-toggle.is-ready {
+    color: var(--accent);
+  }
+
+  #mic-toggle.is-error {
+    color: var(--accent-red, #ef4444);
+  }
+
+  #mic-toggle.recording {
+    color: var(--accent-red, #ef4444);
+    animation: mic-pulse 1s ease-in-out infinite;
+  }
+
+  @keyframes mic-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+
   /* Image preview */
   .image-preview {
     display: none;
@@ -643,6 +695,68 @@
 
   .welcome p { font-size: 14px; }
 
+  /* ── Landing Page (new session) ─────────────────────────────────── */
+
+  .landing-page-header {
+    display: none;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 12px;
+    justify-content: center;
+  }
+
+  .input-area.landing-mode .landing-page-header {
+    display: flex;
+  }
+
+  .landing-page-avatar {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background: transparent;
+    border: 2px solid var(--surface-text);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 15px;
+    line-height: 1.1;
+    text-align: center;
+    flex-shrink: 0;
+  }
+
+  .landing-page-title {
+    font-size: 17px;
+    font-weight: 600;
+    color: var(--surface-text);
+    letter-spacing: 0.3px;
+  }
+
+  /* Center input area when in landing mode */
+  .input-area.landing-mode {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    bottom: auto;
+    right: auto;
+    padding: 16px;
+    background: var(--surface);
+    border: 1px solid var(--surface2);
+    border-radius: 18px;
+    width: min(600px, 90vw);
+    box-shadow: 0 4px 24px rgba(0,0,0,0.12);
+    z-index: 50;
+  }
+
+  .input-area.landing-mode .input-row {
+    max-width: 100%;
+  }
+
+  /* Prevent body scroll on landing page */
+  body.has-landing-page {
+    overflow: hidden;
+  }
+
   /* ── Markdown Rendering ─────────────────────────────────────────── */
 
   .markdown-content p { margin: 0 0 0.6em 0; }
@@ -732,33 +846,59 @@
 
   /* ── Session Panel ──────────────────────────────────────────────── */
 
-  .session-backdrop {
-    display: none;
-    position: fixed;
-    inset: 0;
-    background: rgba(0,0,0,0.5);
-    z-index: 90;
-  }
-
-  .session-backdrop.active { display: block; }
-
   .session-panel {
     position: fixed;
     top: 0;
     left: 0;
-    width: min(380px, 85vw);
+    width: 280px;
     height: 100vh;
     height: 100svh;
     background: var(--surface);
     border-right: 1px solid var(--surface2);
     z-index: 100;
-    display: flex;
+    display: none;
     flex-direction: column;
-    transform: translateX(-100%);
-    transition: transform 0.25s ease;
+    /* Hidden on login page, shown when chat is active */
   }
 
-  .session-panel.active { transform: translateX(0); }
+  /* Only show sidebar when chat screen is active */
+  #chat-screen.active ~ .session-panel {
+    display: flex;
+  }
+
+  .session-panel.active {
+    /* Desktop: already visible */
+  }
+
+  .session-panel.collapsed {
+    transform: translateX(-100%);
+  }
+
+  /* Desktop: offset chat content for sidebar */
+  #chat-screen > .chat-header,
+  #chat-screen > .messages,
+  #chat-screen > .image-preview,
+  #chat-screen > .file-attachments,
+  #chat-screen > .input-area {
+    margin-left: 280px;
+  }
+
+  #chat-screen > .messages {
+    max-width: calc(1100px - 280px);
+  }
+
+  /* When sidebar is collapsed on desktop */
+  #chat-screen.sidebar-closed > .chat-header,
+  #chat-screen.sidebar-closed > .messages,
+  #chat-screen.sidebar-closed > .image-preview,
+  #chat-screen.sidebar-closed > .file-attachments,
+  #chat-screen.sidebar-closed > .input-area {
+    margin-left: 0;
+  }
+
+  #chat-screen.sidebar-closed > .messages {
+    max-width: 1100px;
+  }
 
   .session-panel-header {
     display: flex;
@@ -1660,8 +1800,32 @@
   /* ── Mobile Responsive ──────────────────────────────────────────── */
 
   @media (max-width: 600px) {
+    /* Mobile: sidebar slides in over content */
     .session-panel {
       width: 100vw;
+      transform: translateX(-100%);
+      transition: transform 0.25s ease;
+    }
+
+    .session-panel.active {
+      transform: translateX(0);
+    }
+
+    .session-panel.collapsed {
+      transform: translateX(-100%);
+    }
+
+    /* Mobile: no margin offset for chat content */
+    #chat-screen > .chat-header,
+    #chat-screen > .messages,
+    #chat-screen > .image-preview,
+    #chat-screen > .file-attachments,
+    #chat-screen > .input-area {
+      margin-left: 0;
+    }
+
+    #chat-screen > .messages {
+      max-width: 100%;
     }
 
     .login-icons {
@@ -1780,5 +1944,21 @@
 
     .voice-resume {
       bottom: 70px;
+    }
+
+    .landing-page-avatar {
+      width: 50px;
+      height: 32px;
+      font-size: 13px;
+    }
+
+    .landing-page-title {
+      font-size: 15px;
+    }
+
+    .input-area.landing-mode {
+      width: calc(100vw - 24px);
+      padding: 12px;
+      border-radius: 14px;
     }
   }

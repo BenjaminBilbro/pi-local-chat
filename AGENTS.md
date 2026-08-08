@@ -62,7 +62,8 @@ These are non-negotiable. Violating any of these will break the application:
 |------|----------------|
 | `pi_chat/tts_service.py` | Lazy OmniVoice model, voice cache, serialized inference |
 | `pi_chat/tts_chunking.py` | Streaming Markdown-aware speech chunker |
-| `pi_chat/voice_session.py` | Per-WebSocket voice state, queue, framing, cancellation |
+| `pi_chat/voice_session.py` | Per-WebSocket voice state, queue, framing, cancellation, settings validation |
+| `pi_chat/voice_store.py` | Persistent voice sample storage, validation, CRUD |
 
 `pi_chat/app.py` is the composition root. It creates an authenticated `PiProcess` for each WebSocket and tracks active processes for shutdown.
 
@@ -180,6 +181,11 @@ If pi is already running, `websocket.py` sends its native `new_session` RPC comm
 | `get_messages` | Request messages from the current pi session |
 | `abort` | Abort the active pi request |
 | `ping` | Keep the proxied WebSocket active |
+| `voice_enable` | Enable voice output with settings |
+| `voice_disable` | Disable voice output |
+| `voice_settings` | Update voice settings (model, voice ID, etc.) |
+| `voice_stop` | Stop current voice playback |
+| `voice_prepare` | Pre-load voice with settings (timeout-protected) |
 
 ### Server Messages (routed by `static/app.js`)
 
@@ -191,6 +197,11 @@ If pi is already running, `websocket.py` sends its native `new_session` RPC comm
 | `messages_retrieved` | Contains messages from an explicit request |
 | `error` | Reports browser-command or pi RPC failure |
 | `pong` | Heartbeat response; no UI action |
+| `voice_state` | Voice system state (loading, enabled, disabled, error) |
+| `voice_prepared` | Voice successfully prepared with settings |
+| `voice_stream_start` | TTS streaming audio has begun |
+| `voice_stream_end` | TTS streaming audio completed |
+| `voice_error` | Voice system error with message |
 
 ## pi RPC Event Format
 
@@ -696,7 +707,8 @@ pi-chat/
 │   ├── websocket.py    # Browser WebSocket command handling (incl. voice cmds)
 │   ├── tts_service.py  # Lazy OmniVoice model, voice cache, serialized inference
 │   ├── tts_chunking.py # Streaming Markdown-aware speech chunker
-│   └── voice_session.py # Per-WebSocket voice state, queue, framing
+│   ├── voice_session.py # Per-WebSocket voice state, queue, framing
+│   └── voice_store.py  # Persistent voice sample storage, validation, CRUD
 ├── static/
 │   ├── index.html      # Page structure (incl. voice controls)
 │   ├── theme.css       # Color palette and design tokens
@@ -714,18 +726,27 @@ pi-chat/
 │   ├── utils.js        # Browser-side formatting helpers
 │   └── marked.min.js   # Vendored Markdown renderer
 ├── tests/
+│   ├── conftest.py              # Shared pytest fixtures
 │   ├── compare_render.py        # Live vs historical rendering parity tests
 │   ├── mobile_viewport_test.py  # Mobile viewport screenshot tests
 │   ├── fakes/                   # Deterministic test doubles
 │   │   └── voice.py             # FakeOmniVoiceRuntime, FakeTTSService
+│   ├── fixtures/                # Test fixture generators
+│   │   └── generate_voice_fixtures.py # Test fixture WAV generator
 │   ├── test_voice_fakes.py      # Fake runtime tests (no torch)
 │   ├── test_tts_chunking.py     # Streaming chunker tests
 │   ├── test_tts_service.py      # TTSService tests with fake runtime
+│   ├── test_tts_custom_voice.py # Custom voice upload/selection tests
 │   ├── test_voice_session.py    # VoiceSession tests
+│   ├── test_voice_session_validate.py # Voice session validation tests
+│   ├── test_voice_store.py      # VoiceStore persistence tests
+│   ├── test_voice_api.py        # HTTP voice endpoint tests
+│   ├── test_voice_e2e.py        # End-to-end voice integration tests
 │   └── test_voice_fake_e2e.py   # No-GPU pi-event-to-frame integration
 ├── tools/
 │   ├── capture.py                # Unified RPC event capture CLI
 │   ├── render_message.js         # jsdom harness for production JS rendering
+│   ├── inspect_chunks.py         # Debug TTS chunking behavior
 │   ├── run_fake_voice_server.py  # Dev server with audible fake PCM
 │   ├── run_voice_cpu_validation.py # Real checkpoint CPU validator
 │   ├── run_voice_gpu_validation.py # Human-gated GPU validator
@@ -739,3 +760,45 @@ pi-chat/
 ├── pyproject.toml               # Python project configuration
 └── package.json                 # Node devDependencies (jsdom)
 ```
+
+<!-- graft:start -->
+## Graft — repo context graph
+
+This repo is indexed in `graft/`: small linked markdown nodes that explain each
+system and carry exact file:line spans, kept in sync with the code through git.
+
+For ANY task here — understanding how something works, finding where code lives,
+or scoping a change — get context from the graph before grepping or opening
+source files. Re-ask freely (it's cheap) and reuse literal identifiers you
+already have (symbol, error string, file name) as the query. New to this repo?
+Run `graft map` first — a token-budgeted orientation (dir clusters, hubs,
+hotspots), no LLM, no key.
+
+- Run `graft ask "<your question>" --source` → ranked nodes with the relevant
+  code spans inlined (each hit's ≤8-line crux by default; `--full` for whole
+  definitions when the crux isn't enough). Match the tool to the task shape:
+  for understanding or editing, the top node IS the answer — cite its
+  `covers:` file:line spans and edit straight from `--source`. For
+  exhaustive tasks ("every occurrence / every caller of this pattern"), ranked
+  results are top-N, not complete — run `graft grep "<literal>"` instead
+  (exhaustive over indexed files, grouped by enclosing symbol), falling back
+  to raw `grep -rn` only for unindexed files.
+- `graft skeleton <file>` → every definition's signature + span, ~10× cheaper
+  than reading the file; use it to skim an API surface.
+- `graft callers <symbol>` gives precomputed, exact edges — who calls this.
+  Add `--direction out` for what it calls, or `--depth N` to walk
+  transitively for the full blast radius. For structural questions, skip
+  ranking and use this directly.
+- Or browse: `graft/INDEX.md` lists every node; follow the links.
+- Monorepos and folders of multiple repos rank fairly across sub-projects —
+  hits carry `[scope/]` labels naming which one they're from. Narrow with
+  `graft ask "<task>" --in <scope>/` once you know where you're working.
+
+If a returned span is truncated ("+N more lines"), open the file at that exact
+range before finalizing. Only open source files when a node genuinely lacks a
+needed detail, and then at the exact file:line the node points to — never
+re-read whole files.
+
+After big code changes, refresh the graph with `graft build` (deterministic,
+no API key, $0).
+<!-- graft:end -->

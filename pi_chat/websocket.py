@@ -10,6 +10,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from .config import DEV_MODE
 from .process import PiProcess
 from .sessions import parse_jsonl_messages, session_belongs_to_account
+from .stt_session import AudioPacketError, STTSession, decode_audio_packet
 from .voice_session import VoiceSession
 
 log = logging.getLogger("pi-chat")
@@ -25,11 +26,21 @@ def _make_voice_session(tts_service, pi, config_):
     )
 
 
+def _make_stt_session(stt_service, pi, config_):
+    """Factory for STTSession to allow test injection."""
+    return STTSession(
+        stt_service=stt_service,
+        send_json=pi.send_browser_json,
+        config_=config_,
+    )
+
+
 async def handle_websocket(
     websocket: WebSocket,
     pi: PiProcess,
     account: str,
     tts_service=None,
+    stt_service=None,
     config_=None,
     voice_session_factory=None,
 ) -> None:
@@ -45,13 +56,39 @@ async def handle_websocket(
         voice = factory(tts_service, pi, config_)
         pi.event_observer = voice.observe_pi_event
 
+    # Create STT session if STT service is available
+    stt = None
+    log.info("[STT DEBUG] handle_websocket: stt_service=%s", stt_service)
+    if stt_service is not None:
+        stt = _make_stt_session(stt_service, pi, config_)
+        log.info("[STT DEBUG] STTSession created: %s", stt)
+
     await _load_dev_session(websocket)
 
     try:
         while True:
-            message = await _receive_command(websocket)
-            if message is not None:
-                await _dispatch_command(websocket, pi, account, message, voice)
+            raw = await websocket.receive()
+            if "bytes" in raw and raw["bytes"] is not None:
+                # Binary audio packet for STT
+                log.debug("[STT DEBUG] received binary audio packet, stt=%s, enabled=%s",
+                         stt, stt.enabled if stt else None)
+                if stt is not None and stt.enabled:
+                    try:
+                        packet = decode_audio_packet(raw["bytes"])
+                        stt.ingest_audio_packet(packet)
+                    except AudioPacketError as e:
+                        log.warning("[STT DEBUG] AudioPacketError: %s", e)
+                        await websocket.send_json({
+                            "type": "stt_error",
+                            "code": "invalid_packet",
+                            "message": str(e),
+                            "recoverable": True,
+                        })
+            else:
+                # Text command
+                message = await _parse_text_command(raw)
+                if message is not None:
+                    await _dispatch_command(websocket, pi, account, message, voice, stt)
     except WebSocketDisconnect:
         log.info("Client disconnected — killing pi subprocess")
     except Exception as error:
@@ -60,6 +97,8 @@ async def handle_websocket(
         pi.event_observer = None
         if voice is not None:
             await voice.close()
+        if stt is not None:
+            await stt.close()
         pi.ws = None
         await pi.kill()
 
@@ -92,10 +131,12 @@ async def _load_dev_session(websocket: WebSocket) -> None:
     )
 
 
-async def _receive_command(websocket: WebSocket) -> dict | None:
-    raw_message = await websocket.receive_text()
+async def _parse_text_command(raw) -> dict | None:
+    """Parse a text WebSocket message as a JSON command."""
+    if "text" not in raw or raw["text"] is None:
+        return None
     try:
-        return json.loads(raw_message)
+        return json.loads(raw["text"])
     except json.JSONDecodeError:
         return None
 
@@ -106,6 +147,7 @@ async def _dispatch_command(
     account: str,
     message: dict,
     voice=None,
+    stt=None,
 ) -> None:
     command_type = message.get("type")
 
@@ -148,6 +190,25 @@ async def _dispatch_command(
     elif command_type == "voice_prepare":
         if voice is not None:
             await _handle_voice_prepare(websocket, voice, message.get("settings", {}))
+    # STT commands
+    elif command_type == "stt_enable":
+        log.info("[STT DEBUG] stt_enable command received, stt=%s", stt)
+        if stt is not None:
+            log.info("[STT DEBUG] calling stt.enable()")
+            await stt.enable(message.get("settings"))
+        else:
+            log.warning("[STT DEBUG] stt is None, sending error")
+            await websocket.send_json({
+                "type": "stt_error",
+                "code": "stt_not_configured",
+                "message": "STT is not configured",
+                "recoverable": False,
+            })
+    elif command_type == "stt_disable":
+        log.info("[STT DEBUG] stt_disable command received, stt=%s", stt)
+        if stt is not None:
+            log.info("[STT DEBUG] calling stt.disable()")
+            await stt.disable()
 
 
 async def _handle_voice_prepare(websocket: WebSocket, voice, settings: dict) -> None:

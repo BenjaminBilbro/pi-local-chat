@@ -125,3 +125,20 @@ def tts_dtypes_for_device() -> dict[str, object]:
         "float16": "torch.float16" if not _CPU_DEVICE else "torch.float32",
         "float32": "torch.float32",
     }
+
+
+# ---------------------------------------------------------------------------
+# STT / Speech-to-Text configuration
+# ---------------------------------------------------------------------------
+
+STT_ENABLED = os.environ.get("PI_CHAT_STT_ENABLED", "1").lower() in {"1", "true", "yes"}
+STT_MODEL = os.environ.get("PI_CHAT_STT_MODEL", "small.en")
+STT_REALTIME_MODEL = os.environ.get("PI_CHAT_STT_REALTIME_MODEL", "tiny.en")
+STT_DEVICE = os.environ.get("PI_CHAT_STT_DEVICE", "cpu")
+STT_COMPUTE_TYPE = os.environ.get("PI_CHAT_STT_COMPUTE_TYPE", "default")
+STT_LANGUAGE = os.environ.get("PI_CHAT_STT_LANGUAGE", "en")
+STT_SILENCE_DURATION = float(os.environ.get("PI_CHAT_STT_POST_SPEECH_SILENCE", "0.6"))
+STT_MIN_RECORDING_LENGTH = float(os.environ.get("PI_CHAT_STT_MIN_RECORDING_LENGTH", "0.3"))
+STT_MIN_GAP_BETWEEN_RECORDINGS = float(os.environ.get("PI_CHAT_STT_MIN_GAP_BETWEEN_RECORDINGS", "0.3"))
+STT_REALTIME_PROCESSING_PAUSE = float(os.environ.get("PI_CHAT_STT_REALTIME_PAUSE", "0.2"))
+STT_MAX_AUDIO_QUEUE_SIZE = int(os.environ.get("PI_CHAT_STT_MAX_AUDIO_QUEUE_SIZE", "128"))

@@ -33,6 +33,7 @@ export function createSocket({
 
     const socket = new WebSocket(url);
     connection = socket;
+    window.__piSocket = socket;  // Expose for STT audio streaming
     socket.binaryType = 'arraybuffer';
 
     socket.onopen = () => {
@@ -59,6 +60,7 @@ export function createSocket({
       clearInterval(heartbeatTimer);
       heartbeatTimer = null;
       if (connection === socket) connection = null;
+      if (window.__piSocket === socket) window.__piSocket = null;
       onClose(event);
 
       if (!reconnectEnabled) return;

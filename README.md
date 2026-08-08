@@ -15,7 +15,10 @@ source of truth for architecture, testing, RPC format, and development patterns.
 - [`uv`](https://docs.astral.sh/uv/)
 - A working `pi` executable on your `PATH`
 
-Optional: Node.js 20.19+, 22.13+, or 24+ for the renderer-parity tests.
+Optional:
+
+- Node.js 20.19+, 22.13+, or 24+ for the renderer-parity tests
+- CUDA-capable GPU with ~6GB VRAM for production TTS (voice mode)
 
 ## Run locally
 
@@ -63,7 +66,7 @@ Your choice is saved locally in the browser.
 When `cloudflared` runs on the same machine, listen only on loopback:
 
 ```bash
-uv run uvicorn server:app --host 127.0.0.1 --port 9000
+uv run python server.py
 ```
 
 Point the tunnel at `http://127.0.0.1:9000` and use Cloudflare Access to
@@ -94,6 +97,18 @@ uv sync --extra voice
 | `PI_CHAT_TTS_FLASHINFER` | `0` | Enable FlashInfer acceleration |
 | `PI_CHAT_TTS_CUDA_GRAPH` | `0` | Enable CUDA graph |
 | `PI_CHAT_TTS_CPU_THREADS` | `4` | Torch CPU threads for CPU mode |
+
+### Custom Voices
+
+Upload voice samples to create custom voices for TTS. Samples are normalized to
+24 kHz mono WAV and stored in `~/.pi/voices/`.
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /api/voice/upload` | Upload a voice sample file |
+| `GET /api/voice/list` | List available custom voices |
+| `PUT /api/voice/{voice_id}` | Rename a custom voice |
+| `DELETE /api/voice/{voice_id}` | Delete a custom voice |
 
 ### Development with fake PCM
 

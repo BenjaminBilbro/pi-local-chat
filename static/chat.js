@@ -37,6 +37,7 @@ const waitingIndicator = document.getElementById('waiting-indicator');
 
 let sendCommand = () => false;
 let onPromptSubmitted = () => {};
+let sttController = null;
 let pendingFiles = [];
 let timeline = null;
 let currentThinking = null;
@@ -50,9 +51,46 @@ const seenToolIds = new Set();
 const toolItems = new Map();
 const subagentTools = new Map();
 
+// Landing page
+const inputArea = document.querySelector('.input-area');
+
+function showLanding() {
+  // Clear any existing landing page
+  const existingLanding = document.getElementById('landing-page');
+  if (existingLanding) existingLanding.remove();
+
+  const landing = document.createElement('div');
+  landing.className = 'landing-page-header';
+  landing.id = 'landing-page';
+  landing.innerHTML = `
+    <div class="landing-page-avatar">🍰૮₍ •⤙• ₎ა</div>
+    <div class="landing-page-title">Pi v0.2</div>
+  `;
+
+  // Insert header into the input area so they move together
+  if (inputArea) {
+    inputArea.insertBefore(landing, inputArea.firstChild);
+    inputArea.classList.add('landing-mode');
+  }
+  document.body.classList.add('has-landing-page');
+}
+
+function hideLanding() {
+  const landing = document.getElementById('landing-page');
+  if (landing) landing.remove();
+  if (inputArea) {
+    inputArea.classList.remove('landing-mode');
+  }
+  document.body.classList.remove('has-landing-page');
+}
+
 export function setupChat(options) {
   sendCommand = options.sendCommand;
   onPromptSubmitted = options.onPromptSubmitted || (() => {});
+  sttController = options.stt || null;
+
+  // Show landing page on init
+  showLanding();
 
   attachButton.addEventListener('click', () => fileInput.click());
   fileInput.addEventListener('change', handleFileSelection);
@@ -60,6 +98,44 @@ export function setupChat(options) {
   userInput.addEventListener('input', handleComposerInput);
   userInput.addEventListener('keydown', handleComposerKeydown);
   sendButton.addEventListener('click', submitPrompt);
+
+  // Create and wire mic button
+  createMicButton();
+}
+
+export function setSTTController(controller) {
+  sttController = controller;
+}
+
+function createMicButton() {
+  const inputRow = sendButton.parentElement;
+  if (!inputRow || document.getElementById('mic-toggle')) return;
+
+  const micButton = document.createElement('button');
+  micButton.id = 'mic-toggle';
+  micButton.type = 'button';
+  micButton.setAttribute('aria-label', 'Toggle voice input');
+  micButton.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>';
+
+  micButton.addEventListener('click', () => {
+    console.log('[STT DEBUG] mic-toggle clicked');
+    console.log('[STT DEBUG] sttController:', sttController);
+    if (!sttController) {
+      console.warn('[STT DEBUG] sttController is null/undefined');
+      return;
+    }
+    const ws = window.__piSocket;
+    console.log('[STT DEBUG] ws:', ws, 'readyState:', ws?.readyState);
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      console.log('[STT DEBUG] calling sttController.toggle(ws)');
+      sttController.toggle(ws);
+    } else {
+      console.warn('[STT DEBUG] WebSocket not open');
+    }
+  });
+
+  // Insert before send button
+  inputRow.insertBefore(micButton, sendButton);
 }
 
 export function focusComposer() {
@@ -79,6 +155,7 @@ export function setConnectionStatus(connected) {
 
   if (!connected) {
     isAgentRunning = false;
+    sttController?.setAgentActive(false);
     hideWaiting();
     messagesElement.appendChild(waitingIndicator);
     resetStreamingState();
@@ -128,11 +205,10 @@ export function resetConversation() {
   resetStreamingState();
   clearPendingFiles();
   isAgentRunning = false;
+  sttController?.setAgentActive(false);
 
-  const welcome = document.createElement('div');
-  welcome.className = 'welcome';
-  welcome.innerHTML = '<h2>New Session</h2><p>Start a fresh conversation</p>';
-  messagesElement.insertBefore(welcome, waitingIndicator);
+  hideLanding();
+  showLanding();
   updateSendButton();
 }
 
@@ -140,14 +216,14 @@ export function loadHistoricalMessages(messages = []) {
   clearConversation();
   resetStreamingState();
   isAgentRunning = false;
+  sttController?.setAgentActive(false);
 
   if (messages.length > 0) {
+    hideLanding();
     renderHistoricalMessages(messages, messagesElement);
   } else {
-    const welcome = document.createElement('div');
-    welcome.className = 'welcome';
-    welcome.innerHTML = '<h2>Empty Session</h2><p>Start a conversation</p>';
-    messagesElement.appendChild(welcome);
+    hideLanding();
+    showLanding();
   }
 
   messagesElement.appendChild(waitingIndicator);
@@ -176,6 +252,7 @@ function startAgentRun() {
   }
 
   isAgentRunning = true;
+  sttController?.setAgentActive(true);
   statusDot.className = 'status-dot thinking';
   removeWelcome();
 
@@ -443,6 +520,7 @@ function finishAgentRun() {
   hideWaiting();
   messagesElement.appendChild(waitingIndicator);
   isAgentRunning = false;
+  sttController?.setAgentActive(false);
   resetStreamingState();
   updateSendButton();
 }
@@ -456,6 +534,8 @@ function showFirstContent() {
 function submitPrompt() {
   const text = userInput.value.trim();
   if (!text && pendingFiles.length === 0) return;
+
+  hideLanding();
 
   // Build message with file content appended
   let messageText = text;
@@ -798,5 +878,9 @@ function hideWaiting() {
 }
 
 function scrollToBottom() {
-  messagesElement.scrollTop = messagesElement.scrollHeight;
+  // Only auto-scroll if user is already near the bottom (~150px threshold)
+  const nearBottom = messagesElement.scrollHeight - messagesElement.scrollTop - messagesElement.clientHeight < 150;
+  if (nearBottom) {
+    messagesElement.scrollTop = messagesElement.scrollHeight;
+  }
 }

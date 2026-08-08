@@ -28,6 +28,9 @@
   --accent-glow: rgba(255, 242, 242, 0.25);
   --code-bg: rgba(45, 51, 107, 0.1);
   --pre-bg: rgba(45, 51, 107, 0.14);
+  --assistant-bubble-bg: rgba(255, 242, 242, 0.75);
+  --user-bubble-bg: var(--blush);
+  --user-bubble-text: var(--navy);
 }
 
 :root[data-theme="blush"] {
@@ -56,4 +59,7 @@
   --accent-glow: rgba(45, 51, 107, 0.18);
   --code-bg: rgba(45, 51, 107, 0.08);
   --pre-bg: rgba(45, 51, 107, 0.12);
+  --assistant-bubble-bg: rgba(45, 51, 107, 0.75);
+  --user-bubble-bg: #2d336b;
+  --user-bubble-text: #FFF2F2;
 }

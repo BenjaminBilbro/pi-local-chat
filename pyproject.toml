@@ -3,37 +3,60 @@ name = "pi-chat"
 version = "0.1.0"
 description = "Sleek web UI for pi coding agent"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.11,<3.13"
 dependencies = [
     "fastapi",
-    "matplotlib>=3.11.1",
-    "pdfplumber>=0.11.10",
-    "python-multipart>=0.0.32",
-    "soundfile>=0.14.0",
+    "matplotlib",
+    "pdfplumber",
+    "python-multipart",
+    "scipy",
+    "setuptools",
+    "silero-vad[onnx-cpu]",
+    "soundfile",
     "uvicorn[standard]",
     "websockets",
 ]
+
+[tool.uv]
+constraint-dependencies = [
+    "numba>=0.60.0",
+    "librosa>=0.10.0",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cuda"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cuda" }]
+torchaudio = [{ index = "pytorch-cuda" }]
+
+[tool.uv.extra-build-dependencies]
+resampy = ["numpy"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
-    "voice_cpu: slow real-checkpoint CPU tests (deselect with '-m \"not voice_cpu\"')",
-    "voice_gpu: slow real-model GPU tests (deselect with '-m \"not voice_gpu\"')",
+    "audio_cpu: slow real-checkpoint CPU tests (deselect with '-m \"not audio_cpu\"')",
+    "audio_gpu: slow real-model GPU tests (deselect with '-m \"not audio_gpu\"')",
 ]
 
 [project.optional-dependencies]
-voice = [
+audio = [
     "numpy",
     "torch==2.8.0",
     "torchaudio==2.8.0",
     "omnivoice @ git+https://github.com/k2-fsa/OmniVoice.git@28bc0889d92110491d726a9c79f26a895db5a074",
+    "realtimestt @ file:///home/bbilbro/pi-chat/experiments/RealtimeSTT",
+    "RealtimeSTT[faster-whisper]",
 ]
 
 [dependency-groups]
 dev = [
-    "numpy>=2.5.1",
-    "pytest>=9.1.1",
-    "pytest-asyncio>=1.4.0",
-    "pytest-timeout>=2.4.0",
+    "numpy",
+    "pytest",
+    "pytest-asyncio",
+    "pytest-timeout",
 ]

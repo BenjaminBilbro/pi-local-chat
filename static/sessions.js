@@ -8,31 +8,56 @@ export function createSessionPanel({
 }) {
   const menuButton = document.getElementById('session-menu-btn');
   const panel = document.getElementById('session-panel');
-  const backdrop = document.getElementById('session-backdrop');
   const closeButton = document.getElementById('session-panel-close');
   const body = document.getElementById('session-panel-body');
   const loadOverlay = document.getElementById('session-load-overlay');
+  const chatScreen = document.getElementById('chat-screen');
 
-  menuButton.addEventListener('click', open);
+  // Desktop: sidebar starts open; Mobile: starts closed
+  const isMobile = () => window.matchMedia('(max-width: 600px)').matches;
+  if (isMobile()) {
+    panel.classList.remove('active');
+    panel.setAttribute('aria-hidden', 'true');
+  } else {
+    panel.classList.add('active');
+    panel.setAttribute('aria-hidden', 'false');
+    // Don't fetch yet — wait for auth to complete (app.js will call refresh())
+  }
+
+  menuButton.addEventListener('click', toggle);
   closeButton.addEventListener('click', close);
-  backdrop.addEventListener('click', close);
   document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape' && panel.classList.contains('active')) close();
+    // Escape only closes on mobile (where it slides over content)
+    if (isMobile() && event.key === 'Escape' && panel.classList.contains('active')) {
+      close();
+    }
   });
 
   function open() {
     panel.classList.add('active');
-    backdrop.classList.add('active');
+    panel.classList.remove('collapsed');
     panel.setAttribute('aria-hidden', 'false');
-    closeButton.focus();
+    chatScreen.classList.remove('sidebar-closed');
     fetchSessions();
+    // Only steal focus on mobile
+    if (isMobile()) {
+      closeButton.focus();
+    }
   }
 
   function close() {
     panel.classList.remove('active');
-    backdrop.classList.remove('active');
+    panel.classList.add('collapsed');
     panel.setAttribute('aria-hidden', 'true');
-    menuButton.focus();
+    chatScreen.classList.add('sidebar-closed');
+  }
+
+  function toggle() {
+    if (panel.classList.contains('active')) {
+      close();
+    } else {
+      open();
+    }
   }
 
   async function fetchSessions() {
@@ -106,7 +131,10 @@ export function createSessionPanel({
 
   function handleSessionLoaded(message) {
     loadOverlay.classList.remove('active');
-    close();
+    // Only close sidebar on mobile after loading a session
+    if (isMobile()) {
+      close();
+    }
     onMessagesLoaded(message.messages);
   }
 
@@ -135,5 +163,6 @@ export function createSessionPanel({
     handleMessagesRetrieved,
     handleSessionLoaded,
     isLoading,
+    refresh: fetchSessions,
   };
 }

@@ -26,6 +26,7 @@ from .sessions import (
 )
 import pdfplumber
 
+from .config import STT_ENABLED
 from .tts_service import TTSService
 from .voice_store import VoiceStore, MAX_FILE_SIZE as VOICE_MAX_FILE_SIZE
 from .websocket import handle_websocket
@@ -46,6 +47,7 @@ def create_app(
     process_factory: Callable[[], PiProcess] | None = None,
     auth_manager: AuthManager | None = None,
     tts_service=None,
+    stt_service=None,
 ) -> FastAPI:
     """Create the web app with isolated pi processes per browser connection.
 
@@ -53,6 +55,7 @@ def create_app(
         process_factory: Factory for PiProcess (for tests).
         auth_manager: AuthManager instance (for tests).
         tts_service: TTSService instance (for tests; production creates one).
+        stt_service: STTService instance (for tests; production creates one if STT_ENABLED).
     """
     make_process = process_factory or PiProcess
     auth = auth_manager or AuthManager()
@@ -63,6 +66,19 @@ def create_app(
 
     # Create or use injected TTS service
     _tts = tts_service or TTSService(voice_store=voice_store)
+
+    # Create or use injected STT service (conditionally enabled)
+    _stt = stt_service
+    log.info("[STT DEBUG] STT_ENABLED=%s, stt_service=%s", STT_ENABLED, stt_service)
+    if _stt is None and STT_ENABLED:
+        try:
+            from .stt_service import STTService
+            _stt = STTService()
+            log.info("[STT DEBUG] STTService created")
+        except ImportError as error:
+            log.warning("[STT DEBUG] STT not available (RealtimeSTT not installed): %s", error)
+    elif _stt is None:
+        log.info("[STT DEBUG] STT disabled (STT_ENABLED=%s)", STT_ENABLED)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -75,6 +91,12 @@ def create_app(
             *(pi.kill() for pi in active_processes),
             return_exceptions=True,
         )
+        # Close STT service
+        if _stt is not None:
+            try:
+                await _stt.close()
+            except Exception as error:
+                log.warning("STT close error during shutdown: %s", error)
         # Close TTS service last (after all processes are killed)
         try:
             await _tts.close()
@@ -85,6 +107,7 @@ def create_app(
     application.state.auth = auth
     application.state.active_processes = active_processes
     application.state.tts = _tts
+    application.state.stt = _stt
 
     @application.get("/")
     async def index():
@@ -361,7 +384,7 @@ def create_app(
         pi.account = account
         active_processes.add(pi)
         try:
-            await handle_websocket(websocket, pi, account, tts_service=_tts)
+            await handle_websocket(websocket, pi, account, tts_service=_tts, stt_service=_stt)
         finally:
             active_processes.discard(pi)
 
