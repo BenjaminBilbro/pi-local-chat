@@ -77,8 +77,24 @@ function showLanding() {
     <div class="landing-page-avatar">
       <img src="${randomMascotSrc()}" alt="Pi mascot" />
     </div>
-    <div class="landing-page-title">Pi v0.2</div>
+    <div class="landing-page-title">What are we building?</div>
+    <div class="landing-page-subtitle">I'm pi — fast, local, and judgment-free.</div>
+    <div class="landing-chips">
+      <button type="button" class="landing-chip" data-prompt="Explain how this codebase is put together">Explain this codebase</button>
+      <button type="button" class="landing-chip" data-prompt="I have a bug to squash — here's what's happening:">Fix a bug</button>
+      <button type="button" class="landing-chip" data-prompt="Hi! Just saying hi 👋">Just say hi</button>
+    </div>
   `;
+
+  // Suggestion chips: fill the composer, don't auto-send
+  landing.querySelectorAll('.landing-chip').forEach((chip) => {
+    chip.addEventListener('click', () => {
+      if (!userInput) return;
+      userInput.value = chip.dataset.prompt || '';
+      userInput.dispatchEvent(new Event('input'));
+      userInput.focus();
+    });
+  });
 
   // Insert header into the input area so they move together
   if (inputArea) {

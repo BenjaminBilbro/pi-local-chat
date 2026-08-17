@@ -16,7 +16,7 @@ export function setupAuth(onAuthenticated) {
     selectedAccount = account;
     loginScreen.classList.add('hidden');
     chatScreen.classList.add('active');
-    onAuthenticated();
+    onAuthenticated(account);
   }
 
   function selectAccount(account) {
@@ -70,7 +70,7 @@ export function setupAuth(onAuthenticated) {
       const response = await fetch('/api/me');
       if (!response.ok) return;
       const session = await response.json();
-      onAuthenticated(session.account);
+      completeLogin(session.account);
     } catch {
       // The regular login screen remains available if the server is offline.
     }

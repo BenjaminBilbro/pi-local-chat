@@ -64,6 +64,126 @@ document.getElementById('new-session-btn').addEventListener('click', () => {
   }
 });
 
+/* Browser-only UX layers. None of this runs under the parity test
+ * harness, which loads index.html + chat.js/history.js directly. */
+setupCodeCopy();
+setupJumpToBottom();
+setupKeyboardShortcuts();
+
+/* ── Code block copy buttons ─────────────────────────────────── */
+
+const COPY_FEEDBACK_MS = 1500;
+
+function setupCodeCopy() {
+  const messages = document.getElementById('messages');
+  if (!messages) return;
+
+  const attachCopyButton = (pre) => {
+    if (pre.querySelector(':scope > .code-copy')) return;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'code-copy';
+    button.textContent = 'Copy';
+    button.setAttribute('aria-label', 'Copy code');
+    pre.appendChild(button);
+  };
+
+  const copyCode = async (pre, button) => {
+    const code = pre.querySelector('code');
+    const text = code ? code.textContent : pre.textContent;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        textarea.remove();
+      }
+      button.classList.add('copied');
+      button.textContent = 'Copied!';
+      setTimeout(() => {
+        button.classList.remove('copied');
+        button.textContent = 'Copy';
+      }, COPY_FEEDBACK_MS);
+    } catch {
+      // Clipboard unavailable (permissions) — leave the button as-is.
+    }
+  };
+
+  messages.addEventListener('click', (event) => {
+    const button = event.target.closest('.code-copy');
+    const pre = button?.closest('pre');
+    if (button && pre) copyCode(pre, button);
+  });
+
+  const scan = (node) => {
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    if (node.matches?.('pre')) attachCopyButton(node);
+    node.querySelectorAll?.('pre').forEach(attachCopyButton);
+  };
+
+  scan(messages);
+  const observer = new MutationObserver((mutations) => {
+    for (const mutation of mutations) {
+      mutation.addedNodes.forEach(scan);
+    }
+  });
+  observer.observe(messages, { childList: true, subtree: true });
+}
+
+/* ── Jump-to-bottom pill ───────────────────────────────────────── */
+
+function setupJumpToBottom() {
+  const chatScreen = document.getElementById('chat-screen');
+  const messages = document.getElementById('messages');
+  if (!chatScreen || !messages) return;
+
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'jump-to-bottom';
+  button.setAttribute('aria-label', 'Jump to latest message');
+  button.innerHTML =
+    '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12l7 7 7-7"/></svg>'
+    + '<span>Latest</span>';
+  chatScreen.appendChild(button);
+
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+
+  const update = () => {
+    const distance = messages.scrollHeight - messages.scrollTop - messages.clientHeight;
+    const hasScrollableContent = messages.scrollHeight - messages.clientHeight > 400;
+    button.classList.toggle('visible', distance > 240 && hasScrollableContent);
+  };
+
+  messages.addEventListener('scroll', update, { passive: true });
+  button.addEventListener('click', () => {
+    messages.scrollTo({
+      top: messages.scrollHeight,
+      behavior: reduceMotion.matches ? 'auto' : 'smooth',
+    });
+  });
+}
+
+/* ── Keyboard shortcuts ─────────────────────────────────────────── */
+
+function setupKeyboardShortcuts() {
+  const newSessionBtn = document.getElementById('new-session-btn');
+  document.addEventListener('keydown', (event) => {
+    const isCtrlK = (event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === 'k';
+    if (!isCtrlK) return;
+    const chatScreen = document.getElementById('chat-screen');
+    if (chatScreen?.classList.contains('active')) {
+      event.preventDefault();
+      newSessionBtn?.click();
+    }
+  });
+}
+
 document.getElementById('logout-btn').addEventListener('click', async () => {
   socket.disconnect();
   try {

@@ -3,23 +3,30 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#0a0a0b">
 <title>pi chat</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%236366f1'/><g transform='translate(32 35) scale(0.6)'><circle cx='0' cy='-55' r='16' fill='%23D38033'/><circle cx='27.5' cy='-47.6' r='16' fill='%23D38033'/><circle cx='47.6' cy='-27.5' r='16' fill='%23D38033'/><circle cx='55' cy='0' r='16' fill='%23D38033'/><circle cx='47.6' cy='27.5' r='16' fill='%23D38033'/><circle cx='27.5' cy='47.6' r='16' fill='%23D38033'/><circle cx='0' cy='55' r='16' fill='%23D38033'/><circle cx='-27.5' cy='47.6' r='16' fill='%23D38033'/><circle cx='-47.6' cy='27.5' r='16' fill='%23D38033'/><circle cx='-55' cy='0' r='16' fill='%23D38033'/><circle cx='-47.6' cy='-27.5' r='16' fill='%23D38033'/><circle cx='-27.5' cy='-47.6' r='16' fill='%23D38033'/><circle r='55' fill='%23D38033'/><circle r='48' fill='%23F4C275'/><circle r='44' fill='%23F8CE8B'/><path d='M -18 -14 L 18 -14' stroke='%234E2F1D' stroke-width='8' stroke-linecap='round'/><path d='M -7 -14 L -7 6 C -7 14 -16 14 -16 14' fill='none' stroke='%234E2F1D' stroke-width='8' stroke-linecap='round' stroke-linejoin='round'/><path d='M 7 -14 L 7 10 C 7 14 11 14 11 14' fill='none' stroke='%234E2F1D' stroke-width='8' stroke-linecap='round' stroke-linejoin='round'/></g></svg>">
 <link rel="stylesheet" href="/static/theme.css">
 <link rel="stylesheet" href="/static/styles.css">
-<link rel="preconnect" href="https://cdn.jsdelivr.net">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/devchauhann/fonts@v1.1.0/cdn/v1/css/all.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 </head>
 <body>
 
 <!-- Login Screen -->
 <div id="login-screen">
   <button class="theme-toggle login-theme-toggle" data-theme-toggle type="button">
-    <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
-      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/>
-      <path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor"/>
+    <svg class="theme-icon theme-icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="4"/>
+      <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>
+    </svg>
+    <svg class="theme-icon theme-icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
     </svg>
     <span data-theme-label>Theme</span>
   </button>
+  <img class="login-mascot" src="/static/pi-mascot-greeting.svg" alt="" aria-hidden="true">
   <div class="login-title">pi chat</div>
   <div class="login-subtitle">Select your profile</div>
   <div class="login-icons">
@@ -41,13 +48,17 @@
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
       </button>
       <div class="status-dot" id="status-dot"></div>
+      <img class="header-mascot" src="/static/pi-mascot-greeting.svg" alt="" aria-hidden="true">
       <h1>pi chat</h1>
     </div>
     <div class="header-actions">
       <button class="btn-icon theme-toggle" data-theme-toggle type="button">
-        <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
-          <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/>
-          <path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor"/>
+        <svg class="theme-icon theme-icon-sun" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="4"/>
+          <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>
+        </svg>
+        <svg class="theme-icon theme-icon-moon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
         </svg>
         <span data-theme-label>Theme</span>
       </button>
@@ -62,7 +73,7 @@
       <button class="btn-icon voice-stop" data-voice-stop type="button" aria-label="Stop speech">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
       </button>
-      <button class="btn-icon" id="new-session-btn" type="button">
+      <button class="btn-icon" id="new-session-btn" type="button" title="New session (Ctrl+K)">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
         New Session
       </button>

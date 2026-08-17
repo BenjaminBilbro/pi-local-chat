@@ -1,65 +1,172 @@
+/* Technical Minimalist Theme — dark-first, near-monochrome, border-driven depth */
+
+/* ── Dark Theme (default) ─────────────────────────────────────── */
+
 :root,
 :root[data-theme="navy"] {
-  --navy: #2d336b;
-  --blush: #FFF2F2;
-  --bg: var(--navy);
-  --surface: var(--blush);
-  --surface2: #E7DADD;
-  --page-text: var(--blush);
-  --page-text-dim: #c8c0d0;
-  --page-detail: var(--blush);
-  --surface-text: var(--navy);
-  --surface-text-dim: #5d638e;
-  --surface-detail: #414a82;
-  --text: var(--page-text);
-  --text-dim: var(--page-text-dim);
-  --page-accent: var(--blush);
-  --detail: var(--page-detail);
-  --success: #286A4A;
-  --warning: #8A5B16;
-  --error: #A43B4B;
-  --page-error: #FFB9C2;
-  --error-surface: #FFE1E5;
-  --error-border: #CF7E89;
-  --neutral: #79758E;
-  --radius: 12px;
-  --accent: var(--blush);
-  --accent-contrast: var(--navy);
-  --accent-glow: rgba(255, 242, 242, 0.25);
-  --code-bg: rgba(45, 51, 107, 0.1);
-  --pre-bg: rgba(45, 51, 107, 0.14);
-  --assistant-bubble-bg: rgba(255, 242, 242, 0.75);
-  --user-bubble-bg: var(--blush);
-  --user-bubble-text: var(--navy);
+  /* Backgrounds */
+  --bg: #0a0a0b;
+  --bg-elevated: #111113;
+  --bg-subtle: #18181b;
+
+  /* Borders */
+  --border: #27272a;
+  --border-subtle: #1f1f23;
+
+  /* Text */
+  --text: #fafafa;
+  --text-muted: #a1a1aa;
+  --text-subtle: #52525b;
+
+  /* Accent */
+  --accent: #6366f1;
+  --accent-2: #8b5cf6;
+  --accent-hover: #818cf8;
+  --accent-contrast: #fafafa;
+  --accent-glow: rgba(99, 102, 241, 0.22);
+
+  /* Status */
+  --success: #22c55e;
+  --warning: #eab308;
+  --error: #ef4444;
+  --error-surface: rgba(239, 68, 68, 0.08);
+  --error-border: rgba(239, 68, 68, 0.3);
+
+  /* Radius */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+
+  /* Typography */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+  --font-size-base: 13px;
+  --font-size-sm: 12px;
+  --font-size-xs: 11px;
+  --line-height-base: 1.5;
+
+  /* Code blocks */
+  --code-bg: #09090b;
+  --code-border: var(--accent);
+
+  /* Elevation & atmosphere */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 14px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.5);
+  --scrim: rgba(0, 0, 0, 0.55);
+  --glow: rgba(99, 102, 241, 0.06);
+  --focus-ring: rgba(99, 102, 241, 0.45);
+
+  /* Native form controls follow the theme */
+  color-scheme: dark;
+
+  /* Motion */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* Legacy compatibility tokens (mapped to new system) */
+  --navy: #0a0a0b;
+  --blush: #fafafa;
+  --surface: var(--bg-elevated);
+  --surface2: var(--bg-subtle);
+  --page-text: var(--text);
+  --page-text-dim: var(--text-muted);
+  --page-detail: var(--accent);
+  --surface-text: var(--text);
+  --surface-text-dim: var(--text-muted);
+  --surface-detail: var(--accent);
+  --text-dim: var(--text-muted);
+  --page-accent: var(--accent);
+  --detail: var(--accent);
+  --page-error: var(--error);
+  --neutral: var(--text-subtle);
+  --radius: var(--radius-md);
+  --pre-bg: var(--code-bg);
+  --assistant-bubble-bg: var(--bg-elevated);
+  --user-bubble-bg: var(--accent);
+  --user-bubble-text: var(--accent-contrast);
 }
 
+/* ── Light Theme / Blush ──────────────────────────────────────── */
+
 :root[data-theme="blush"] {
-  --bg: #FFF8F8;
-  --surface: #2d336b;
-  --surface2: #3d4382;
-  --page-text: #2d336b;
-  --page-text-dim: #5d638e;
-  --page-detail: #4a5082;
-  --surface-text: #FFF2F2;
-  --surface-text-dim: #c8c0d0;
-  --surface-detail: #FFD2DC;
-  --text: var(--page-text);
-  --text-dim: var(--page-text-dim);
-  --page-accent: #2d336b;
-  --detail: var(--page-detail);
-  --success: #286A4A;
-  --warning: #8A5B16;
-  --error: #A43B4B;
-  --page-error: #A43B4B;
-  --error-surface: #ffe1e5;
-  --error-border: #cf7e89;
-  --neutral: #79758e;
-  --accent: #2d336b;
-  --accent-contrast: #FFF2F2;
-  --accent-glow: rgba(45, 51, 107, 0.18);
-  --code-bg: rgba(45, 51, 107, 0.08);
-  --pre-bg: rgba(45, 51, 107, 0.12);
-  --assistant-bubble-bg: rgba(45, 51, 107, 0.75);
-  --user-bubble-bg: #2d336b;
-  --user-bubble-text: #FFF2F2;
+  /* Backgrounds */
+  --bg: #fafafa;
+  --bg-elevated: #ffffff;
+  --bg-subtle: #f4f4f5;
+
+  /* Borders */
+  --border: #e4e4e7;
+  --border-subtle: #f0f0f3;
+
+  /* Text */
+  --text: #09090b;
+  --text-muted: #52525b;
+  --text-subtle: #a1a1aa;
+
+  /* Accent */
+  --accent: #6366f1;
+  --accent-2: #8b5cf6;
+  --accent-hover: #4f46e5;
+  --accent-contrast: #ffffff;
+  --accent-glow: rgba(99, 102, 241, 0.16);
+
+  /* Status */
+  --success: #16a34a;
+  --warning: #ca8a04;
+  --error: #dc2626;
+  --error-surface: rgba(220, 38, 38, 0.06);
+  --error-border: rgba(220, 38, 38, 0.25);
+
+  /* Radius */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+
+  /* Typography */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+  --font-size-base: 13px;
+  --font-size-sm: 12px;
+  --font-size-xs: 11px;
+  --line-height-base: 1.5;
+
+  /* Code blocks (light code on light UI, GitHub-style) */
+  --code-bg: #f1f0f4;
+  --code-border: var(--accent);
+
+  /* Elevation & atmosphere */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 14px rgba(0, 0, 0, 0.07);
+  --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.12);
+  --scrim: rgba(9, 9, 11, 0.35);
+  --glow: rgba(99, 102, 241, 0.07);
+  --focus-ring: rgba(99, 102, 241, 0.4);
+
+  /* Native form controls follow the theme */
+  color-scheme: light;
+
+  /* Motion */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* Legacy compatibility tokens */
+  --navy: #09090b;
+  --blush: #fafafa;
+  --surface: var(--bg-elevated);
+  --surface2: var(--bg-subtle);
+  --page-text: var(--text);
+  --page-text-dim: var(--text-muted);
+  --page-detail: var(--accent);
+  --surface-text: var(--text);
+  --surface-text-dim: var(--text-muted);
+  --surface-detail: var(--accent);
+  --text-dim: var(--text-muted);
+  --page-accent: var(--accent);
+  --detail: var(--accent);
+  --page-error: var(--error);
+  --neutral: var(--text-subtle);
+  --radius: var(--radius-md);
+  --pre-bg: var(--code-bg);
+  --assistant-bubble-bg: var(--bg-elevated);
+  --user-bubble-bg: var(--accent);
+  --user-bubble-text: var(--accent-contrast);
 }

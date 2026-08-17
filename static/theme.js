@@ -12,10 +12,20 @@ export function setupTheme() {
   });
 }
 
+const THEME_COLORS = {
+  navy: '#0a0a0b',
+  blush: '#fafafa',
+};
+
 function applyTheme(theme) {
   const activeTheme = theme === 'blush' ? 'blush' : 'navy';
   const nextTheme = activeTheme === 'navy' ? 'blush' : 'navy';
   document.documentElement.dataset.theme = activeTheme;
+
+  const metaThemeColor = document.querySelector('meta[name="theme-color"]');
+  if (metaThemeColor) {
+    metaThemeColor.content = THEME_COLORS[activeTheme];
+  }
 
   try {
     localStorage.setItem(STORAGE_KEY, activeTheme);
