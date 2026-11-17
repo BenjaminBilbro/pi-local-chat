@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="135 140 155 160">
+  <defs>
+    <g id="pie-base">
+      <circle cx="0" cy="-55" r="16" fill="#D38033"/>
+      <circle cx="27.5" cy="-47.6" r="16" fill="#D38033"/>
+      <circle cx="47.6" cy="-27.5" r="16" fill="#D38033"/>
+      <circle cx="55" cy="0" r="16" fill="#D38033"/>
+      <circle cx="47.6" cy="27.5" r="16" fill="#D38033"/>
+      <circle cx="27.5" cy="47.6" r="16" fill="#D38033"/>
+      <circle cx="0" cy="55" r="16" fill="#D38033"/>
+      <circle cx="-27.5" cy="47.6" r="16" fill="#D38033"/>
+      <circle cx="-47.6" cy="27.5" r="16" fill="#D38033"/>
+      <circle cx="-55" cy="0" r="16" fill="#D38033"/>
+      <circle cx="-47.6" cy="-27.5" r="16" fill="#D38033"/>
+      <circle cx="-27.5" cy="-47.6" r="16" fill="#D38033"/>
+      <circle cx="0" cy="0" r="55" fill="#D38033"/>
+      <circle cx="0" cy="0" r="48" fill="#F4C275"/>
+      <circle cx="0" cy="0" r="44" fill="#F8CE8B"/>
+    </g>
+    <g id="pi-symbol">
+      <path d="M -18 -14 L 18 -14" stroke="#4E2F1D" stroke-width="8" stroke-linecap="round"/>
+      <path d="M -7 -14 L -7 6 C -7 14 -16 14 -16 14" fill="none" stroke="#4E2F1D" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M 7 -14 L 7 10 C 7 14 11 14 11 14" fill="none" stroke="#4E2F1D" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+  </defs>
+
+  <!-- POSE 1: GREETING -->
+  <path d="M 190 267 L 188 287" stroke="#4E2F1D" stroke-width="8" stroke-linecap="round"/>
+  <path d="M 230 267 L 232 287" stroke="#4E2F1D" stroke-width="8" stroke-linecap="round"/>
+  <use href="#pie-base" x="210" y="215" />
+  <use href="#pi-symbol" x="210" y="215" />
+  <path d="M 152 225 Q 140 235 148 245" fill="none" stroke="#4E2F1D" stroke-width="6" stroke-linecap="round"/>
+  <path d="M 268 225 Q 285 205 280 190" fill="none" stroke="#4E2F1D" stroke-width="6" stroke-linecap="round"/>
+  <circle cx="184" cy="210" r="5" fill="#4E2F1D"/>
+  <circle cx="236" cy="210" r="5" fill="#4E2F1D"/>
+  <circle cx="178" cy="219" r="6" fill="#F28D8D"/>
+  <circle cx="242" cy="219" r="6" fill="#F28D8D"/>
+  <path d="M 205 218 Q 210 224 215 218" fill="none" stroke="#4E2F1D" stroke-width="3" stroke-linecap="round"/>
+</svg>

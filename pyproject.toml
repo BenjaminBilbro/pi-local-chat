@@ -1,0 +1,124 @@
+[project]
+name = "pi-chat"
+version = "0.1.0"
+description = "Sleek web UI for pi coding agent"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "fastapi",
+    # Declared because 5 modules in `pi_chat/` import it directly (`audio_utils`, `stt_service`,
+    # `voice_session`, and the two TTS engines). It arrived transitively via scipy, silero-vad, soundfile and
+    # ptts for months, which is fine until an upstream drops it and the failure lands at import time in the
+    # audio path rather than at install time (`PK-04`).
+    "numpy",
+    # Not a dependency since 2026-11-17 (`PK-02`). It was declared for `visualize_sessions.py`, a July
+    # session-comparison script that no longer exists, and it pulled roughly 40 MB of transitive packages
+    # (contourpy, cycler, fonttools, kiwisolver, pyparsing) into every install for a file nobody runs.
+    "pdfplumber",
+    # The default speech engine (PI_CHAT_TTS_ENGINE, default "phonon"). A default dependency, not an
+    # extra: an install that follows the README must be able to speak. Requires only numpy.
+    "ptts>=0.7.1",
+    # FastAPI imports this lazily, only when a request parses a form, and `POST /api/upload` takes an
+    # UploadFile. Declared because the alternative is a 500 that blames the route.
+    "python-multipart",
+    "pywebrtc-audio>=0.1.0",
+    # Imported directly by `pi_chat/audio_utils.py`, with a linear-interpolation fallback when it is
+    # missing, so an install without it still runs and says so once in the log.
+    "scipy",
+    "silero-vad[onnx-cpu]",
+    "soundfile",
+    "uvicorn[standard]",
+    # `uvicorn[standard]` already brings websockets in, so this line is technically redundant and stays
+    # anyway: `tools/smoke_test_ws.py` imports websockets directly, and a direct import that rides on a
+    # transitive dependency breaks the day someone tidies the other one.
+    "websockets",
+]
+
+[tool.uv]
+# Virtual project: pi-chat is run from source (`uv run python server.py`), never installed.
+# Without this, setuptools flat-layout discovery sees static/, sessions/, experiments/ and
+# refuses to build the package metadata (seen on the first Windows resolve, 2026-11-08).
+package = false
+
+constraint-dependencies = [
+    "numba>=0.60.0",
+    "librosa>=0.10.0",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cuda"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cuda" }]
+torchaudio = [{ index = "pytorch-cuda" }]
+# The `realtimestt` path source that used to sit here is gone; see the `stt` extra above. It pointed at a
+# gitignored local checkout of plain upstream, and a directory dependency has to resolve whether or not it
+# is asked for, so it made `uv sync` impossible on a fresh clone.
+
+[tool.uv.extra-build-dependencies]
+resampy = ["numpy"]
+
+[tool.setuptools]
+# Only pi_chat is importable code; the other top-level dirs are assets, fixtures and
+# generated output. Flat-layout auto-discovery refuses to guess (2026-11-08, Windows).
+packages = ["pi_chat"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "audio_cpu: slow real-checkpoint CPU tests (deselect with '-m \"not audio_cpu\"')",
+    "audio_gpu: slow real-model GPU tests (deselect with '-m \"not audio_gpu\"')",
+]
+
+[project.optional-dependencies]
+# Phonon TTS engine (`PI_CHAT_TTS_ENGINE=phonon`). CPU-only q8 weights, no torch, no GPU. Since
+# 2026-11-17 `ptts` is also a base dependency, because Phonon is the default engine; the extra stays so
+# `uv sync --extra phonon` in older notes and scripts keeps working and says what it means.
+# The `audio` extra is the OmniVoice engine and is deliberately separate: torch stays out of a Phonon
+# install, and either engine can be installed without the other.
+phonon = [
+    "ptts>=0.7.1",
+]
+audio = [
+    "numpy",
+    "torch==2.8.0",
+    "torchaudio==2.8.0",
+    "omnivoice @ git+https://github.com/k2-fsa/OmniVoice.git@28bc0889d92110491d726a9c79f26a895db5a074",
+    # Self-reference rather than repeating the git URL: `audio` is a superset of `stt`, and one place to
+    # bump a pin is the difference between a coherent install and two extras that quietly disagree.
+    "pi-chat[stt]",
+]
+# Speech input only: the transcriber stack, without OmniVoice. This extra existed in the runtime's own error
+# message (`stt_service.py` told people to run `uv sync --extra stt`) long before it existed here, which is
+# the worst kind of drift: the message was correct once and then only the message survived. It is
+# deliberately NOT merged into `phonon`, because RealtimeSTT's own dependencies include torch and
+# torchaudio and the comment above exists to keep torch out of a Phonon install.
+#
+# Pinned to a commit of upstream KoljaB/RealtimeSTT instead of a local checkout, and the commit is v1.0.2
+# plus nine, which is what this application has actually been tested against. It used to resolve through
+# `[tool.uv.sources]` as `path = "experiments/RealtimeSTT"`, described everywhere as a vendored fork.
+# `WP-02` checked: that checkout is plain upstream at a89fabb, `git status` clean, no fork remote, so the
+# path bought nothing and cost a lot. A directory dependency must be resolved even when nothing asks for it,
+# so a fresh clone without that gitignored directory could not run `uv sync` at all, not even
+# `uv sync --group dev` with no extras, and the error named a missing distribution rather than a missing
+# clone step, which made it unguessable.
+stt = [
+    "RealtimeSTT[faster-whisper] @ git+https://github.com/KoljaB/RealtimeSTT.git@a89fabb05ffe1933ec30d70e17fe73465eea3358",
+]
+
+[dependency-groups]
+dev = [
+    # Do not "fix" this to `httpx`. starlette's TestClient does `import httpx2 as httpx` in preference to
+    # plain httpx (`starlette/testclient.py:33`), and its own error message tells you to `pip install httpx2`,
+    # so 27 route tests are green against this package deliberately. Renaming it to the familiar name changes
+    # which client the suite exercises and looks, from the diff, like a typo fix (`PK-05`).
+    "httpx2>=2.16.0",
+    "numpy",
+    "ptts>=0.7.1",
+    "pytest",
+    "pytest-asyncio",
+    "pytest-timeout",
+]

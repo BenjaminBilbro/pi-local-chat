@@ -1,0 +1,660 @@
+"""Deterministic fake OmniVoice runtime and TTS service for testing without GPU.
+
+This module provides fake implementations that:
+- Never import torch, numpy, or omnivoice at module load time
+- Produce deterministic, machine-verifiable audio output
+- Support configurable failures, delays, and concurrency proofs
+- Match the real TTSRuntime protocol and TTSService public API
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import math
+import struct
+import threading
+import time
+from abc import abstractmethod
+from dataclasses import dataclass
+from typing import Any
+
+# The shared voice types live in production, not here (`pi_chat/tts_types.py`), so that `pi_chat` never
+# imports from `tests/` (`VOICE-06`). They are re-exported under their old names because eight test modules
+# already import them from here; `tests/test_import_layering.py` asserts those are the *same* objects, not
+# copies.
+from pi_chat.tts_types import SynthesizedAudio, TTSRuntime, VoiceHandle, VoiceSettings
+
+# ---------------------------------------------------------------------------
+# Voice sample types
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class VoiceSample:
+    """Metadata for a stored voice sample (fake)."""
+    voice_id: str
+    filename: str
+    display_name: str
+    duration: float
+    upload_time: float
+    waveform: Any | None = None  # Loaded numpy array or list (lazy)
+
+
+# ---------------------------------------------------------------------------
+# Fake VoiceStore (in-memory, for testing without disk I/O)
+# ---------------------------------------------------------------------------
+
+
+class FakeVoiceStore:
+    """In-memory VoiceStore for testing without disk I/O.
+
+    Matches the real VoiceStore API but stores everything in memory.
+    Produces synthetic waveforms (sine waves) for loaded voices.
+    """
+
+    TARGET_SAMPLE_RATE = 24000
+    HASH_WINDOW_SECONDS = 3.0
+
+    def __init__(self):
+        self._voices: dict[str, VoiceSample] = {}
+        self._lock = threading.Lock()
+
+    def upload(self, file_bytes: bytes, original_filename: str, display_name: str | None = None) -> VoiceSample:
+        """Validate and store an uploaded voice sample (fake)."""
+        import hashlib
+
+        # Basic validation
+        if not file_bytes:
+            raise ValueError("File is empty")
+
+        if len(file_bytes) > 10 * 1024 * 1024:
+            raise ValueError("File too large. Maximum is 10MB.")
+
+        ext = original_filename.lower().split(".")[-1] if "." in original_filename else ""
+        allowed = {"wav", "mp3", "flac", "m4a", "ogg", "webm"}
+        if ext not in allowed:
+            raise ValueError(f"Unsupported format '.{ext}'. Supported: {', '.join(sorted(allowed))}")
+
+        if display_name is None:
+            display_name = original_filename.replace(".", "_").replace(" ", "_")[:40]
+
+        # Compute hash from bytes
+        hash_len = int(self.HASH_WINDOW_SECONDS * self.TARGET_SAMPLE_RATE)
+        voice_id = hashlib.sha256(file_bytes[:hash_len]).hexdigest()[:16]
+
+        with self._lock:
+            if voice_id in self._voices:
+                return self._voices[voice_id]
+
+            duration = min(max(len(file_bytes) / 1000.0, 2.0), 30.0)
+            sample = VoiceSample(
+                voice_id=voice_id,
+                filename=original_filename.replace(".", "_").replace(" ", "_")[:64],
+                display_name=display_name,
+                duration=duration,
+                upload_time=time.time(),
+                waveform=None,
+            )
+            self._voices[voice_id] = sample
+
+        return sample
+
+    def list_voices(self) -> list[VoiceSample]:
+        """List all stored voice samples."""
+        with self._lock:
+            return list(self._voices.values())
+
+    def get_voice(self, voice_id: str) -> VoiceSample | None:
+        """Get a voice sample by ID."""
+        with self._lock:
+            return self._voices.get(voice_id)
+
+    def load_waveform(self, voice_id: str) -> tuple[Any, int]:
+        """Load the waveform for a voice sample (synthetic sine wave as numpy array)."""
+        sample = self.get_voice(voice_id)
+        if sample is None:
+            raise ValueError(f"Voice {voice_id} not found")
+
+        # Generate synthetic waveform (sine wave) as numpy array
+        import numpy as np
+        sr = self.TARGET_SAMPLE_RATE
+        duration = sample.duration
+        num_samples = int(duration * sr)
+        frequency = 440.0
+
+        t = np.arange(num_samples) / sr
+        waveform = (0.7 * np.sin(2 * np.pi * frequency * t)).astype(np.float32)
+        return waveform, sr
+
+    def delete_voice(self, voice_id: str) -> bool:
+        """Delete a voice sample."""
+        with self._lock:
+            return self._voices.pop(voice_id, None) is not None
+
+    def update_display_name(self, voice_id: str, display_name: str) -> bool:
+        """Update the display name for a voice sample."""
+        with self._lock:
+            sample = self._voices.get(voice_id)
+            if sample is None:
+                return False
+            self._voices[voice_id] = VoiceSample(
+                voice_id=sample.voice_id,
+                filename=sample.filename,
+                display_name=display_name[:40],
+                duration=sample.duration,
+                upload_time=sample.upload_time,
+                waveform=sample.waveform,
+            )
+            return True
+
+
+# ---------------------------------------------------------------------------
+# Internal runtime seam
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Fake OmniVoice runtime
+# ---------------------------------------------------------------------------
+
+
+class FakeOmniVoiceRuntime:
+    """Deterministic fake OmniVoice runtime with full failure/delay control.
+
+    Produces a sine wave whose frequency encodes the call index so ordering
+    is both audible and machine-verifiable.
+    """
+
+    BASE_SAMPLE_RATE = 24_000
+    # Base frequency (Hz) for the first call; each subsequent call adds 50 Hz
+    BASE_FREQUENCY = 440.0
+    FREQUENCY_STEP = 50.0
+    # Approximate duration per character of text
+    DURATION_PER_CHAR = 0.08
+
+    def __init__(
+        self,
+        *,
+        sampling_rate: int = BASE_SAMPLE_RATE,
+        load_delay: float = 0.0,
+        prepare_delay: float = 0.0,
+        generate_delay: float = 0.0,
+        fail_on_load: bool = False,
+        fail_on_prepare: bool = False,
+        fail_on_generate_index: int | None = None,
+        fail_with_oom: bool = False,
+        fail_on_clone_prompt: bool = False,
+        generate_empty: bool = False,
+        generate_nans: bool = False,
+        generate_infs: bool = False,
+        clip_output: bool = False,
+        alternate_sample_rate: int | None = None,
+        block_generate_event: threading.Event | None = None,
+    ):
+        # alternate_sample_rate takes precedence over sampling_rate
+        self.sampling_rate = alternate_sample_rate if alternate_sample_rate else sampling_rate
+        self.load_delay = load_delay
+        self.prepare_delay = prepare_delay
+        self.generate_delay = generate_delay
+        self.fail_on_load = fail_on_load
+        self.fail_on_prepare = fail_on_prepare
+        self.fail_on_generate_index = fail_on_generate_index
+        self.fail_with_oom = fail_with_oom
+        self.fail_on_clone_prompt = fail_on_clone_prompt
+        self.generate_empty = generate_empty
+        self.generate_nans = generate_nans
+        self.generate_infs = generate_infs
+        self.clip_output = clip_output
+        self.alternate_sample_rate = alternate_sample_rate
+
+        # Concurrency tracking
+        self._lock = threading.Lock()
+        self.active_calls: int = 0
+        self.max_active_calls: int = 0
+        self._call_counter: int = 0
+
+        # State
+        self._loaded: bool = False
+        self._prepared_voices: dict[str, Any] = {}
+        self._prepare_keys: list[str] = []
+        self._generate_calls: list[dict[str, Any]] = []
+        self._block_generate_event = block_generate_event
+        self._last_waveform: list[float] | None = None  # For TTSService extraction
+        self._voice_clone_prompts: list[dict[str, Any]] = []  # Track create_voice_clone_prompt calls
+
+    def load(self) -> None:
+        if self.load_delay > 0:
+            time.sleep(self.load_delay)
+        if self.fail_on_load:
+            raise RuntimeError("FakeOmniVoiceRuntime: simulated load failure")
+        self._loaded = True
+
+    def prepare_voice(
+        self,
+        settings: VoiceSettings,
+        bootstrap_text: str,
+    ) -> object:
+        if not self._loaded:
+            raise RuntimeError("FakeOmniVoiceRuntime: not loaded")
+        if self.prepare_delay > 0:
+            time.sleep(self.prepare_delay)
+        if self.fail_on_prepare:
+            raise RuntimeError("FakeOmniVoiceRuntime: simulated prepare failure")
+
+        key = self._voice_key(settings)
+        with self._lock:
+            if key not in self._prepared_voices:
+                self._prepared_voices[key] = {
+                    "settings": settings,
+                    "bootstrap_text": bootstrap_text,
+                    "created_at": time.monotonic(),
+                }
+                self._prepare_keys.append(key)
+        return self._prepared_voices[key]
+
+    def generate(
+        self,
+        text: str,
+        prepared_voice: object,
+        settings: VoiceSettings,
+    ) -> tuple[object, int]:
+        if not self._loaded:
+            raise RuntimeError("FakeOmniVoiceRuntime: not loaded")
+
+        # Serialize all generate calls so only one is active at a time.
+        # This matches the TTSService single-thread executor behavior.
+        with self._lock:
+            self.active_calls += 1
+            self.max_active_calls = max(self.max_active_calls, self.active_calls)
+            call_index = self._call_counter
+            self._call_counter += 1
+
+            # Check for Nth-call failure
+            if (
+                self.fail_on_generate_index is not None
+                and call_index == self.fail_on_generate_index
+            ):
+                self.active_calls -= 1
+                if self.fail_with_oom:
+                    raise MemoryError("FakeOmniVoiceRuntime: simulated OOM")
+                raise RuntimeError(
+                    f"FakeOmniVoiceRuntime: simulated generate failure at index {call_index}"
+                )
+
+            if self.generate_delay > 0:
+                time.sleep(self.generate_delay)
+
+            # Block until event is set (event starts cleared = blocked)
+            # Lock is held during wait so other threads queue behind
+            if self._block_generate_event is not None:
+                self._block_generate_event.wait()
+
+            # Record call
+            self._generate_calls.append({
+                "index": call_index,
+                "text": text,
+                "settings": settings,
+                "prepared_voice_key": (
+                    prepared_voice.get("key")
+                    if isinstance(prepared_voice, dict)
+                    else None
+                ),
+            })
+
+            # Generate deterministic audio
+            if self.generate_empty:
+                self.active_calls -= 1
+                return prepared_voice, 0
+
+            sr = self.alternate_sample_rate if self.alternate_sample_rate else self.sampling_rate
+            frequency = self.BASE_FREQUENCY + (call_index * self.FREQUENCY_STEP)
+            duration = max(0.1, len(text) * self.DURATION_PER_CHAR)
+            num_samples = int(duration * sr)
+
+            samples = []
+            for i in range(num_samples):
+                t = i / sr
+                value = 0.7 * math.sin(2 * math.pi * frequency * t)
+                if self.generate_nans:
+                    value = float("nan")
+                elif self.generate_infs:
+                    value = float("inf")
+                samples.append(value)
+
+            # Store waveform for TTSService extraction (matches _OmniVoiceRuntime)
+            self._last_waveform = samples
+
+            self.active_calls -= 1
+            return prepared_voice, len(samples)
+
+    def create_voice_clone_prompt(self, ref_audio: tuple[Any, int], ref_text: str | None = None) -> object:
+        """Create a voice clone prompt from reference audio (fake).
+
+        Used by custom voice path. Returns a simple dict tracking the call.
+        """
+        if not self._loaded:
+            raise RuntimeError("FakeOmniVoiceRuntime: not loaded")
+        if self.fail_on_clone_prompt:
+            raise RuntimeError("FakeOmniVoiceRuntime: simulated create_voice_clone_prompt failure")
+
+        waveform, sr = ref_audio
+        prompt_id = len(self._voice_clone_prompts)
+        prompt = {
+            "id": prompt_id,
+            "ref_audio_sr": sr,
+            "ref_audio_len": len(waveform) if hasattr(waveform, "__len__") else 0,
+            "ref_text": ref_text,
+        }
+        self._voice_clone_prompts.append(prompt)
+        return prompt
+
+    def close(self) -> None:
+        self._loaded = False
+        self._prepared_voices.clear()
+        self._prepare_keys.clear()
+        self._generate_calls.clear()
+        self._voice_clone_prompts.clear()
+
+    # Public inspection helpers for tests
+    @property
+    def prepared_voice_keys(self) -> list[str]:
+        return list(self._prepare_keys)
+
+    @property
+    def generate_calls(self) -> list[dict[str, Any]]:
+        return list(self._generate_calls)
+
+    @property
+    def call_counter(self) -> int:
+        return self._call_counter
+
+    @property
+    def voice_clone_prompts(self) -> list[dict[str, Any]]:
+        return list(self._voice_clone_prompts)
+
+    def _voice_key(self, settings: VoiceSettings) -> str:
+        raw = f"{settings.gender}|{settings.age}|{settings.pitch}|{settings.accent}|{settings.style}|{settings.speed}|{settings.language}"
+        return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+# ---------------------------------------------------------------------------
+# Fake TTS service (for VoiceSession testing)
+# ---------------------------------------------------------------------------
+
+
+class FakeTTSService:
+    """Fake TTSService that wraps FakeOmniVoiceRuntime for VoiceSession testing.
+
+    Returns valid SynthesizedAudio immediately or under controlled delay.
+    Used when testing VoiceSession/WebSocket behavior in isolation.
+    """
+
+    def __init__(
+        self,
+        *,
+        runtime: FakeOmniVoiceRuntime | None = None,
+        synthesize_delay: float = 0.0,
+        fail_on_synthesize_index: int | None = None,
+    ):
+        self._runtime = runtime or FakeOmniVoiceRuntime()
+        self._synthesize_delay = synthesize_delay
+        self._fail_on_synthesize_index = fail_on_synthesize_index
+        self._loaded = False
+        self._voice_handles: dict[str, VoiceHandle] = {}
+        self._synth_counter = 0
+        self._lock = threading.Lock()
+
+    async def load(self) -> None:
+        if self._loaded:
+            return
+        self._runtime.load()
+        self._loaded = True
+
+    async def prepare_voice(self, settings: VoiceSettings) -> VoiceHandle:
+        key = self._voice_key(settings)
+        if key in self._voice_handles:
+            return self._voice_handles[key]
+
+        prepared = self._runtime.prepare_voice(settings, "Hello. I'm ready to help.")
+        handle = VoiceHandle(key=key, settings=settings)
+        self._voice_handles[key] = handle
+        return handle
+
+    async def synthesize_stream(
+        self,
+        text: str,
+        voice: VoiceHandle,
+        on_piece: "Callable[[bytes, int, int], None]",
+    ) -> SynthesizedAudio:
+        """Contract mirror of `TTSService.synthesize_stream`: no pieces from this fake.
+
+        VoiceSession calls `synthesize_stream`, so the shared fake has to carry the method or
+        every voice test breaks. It deliberately never calls `on_piece`: the real callback runs
+        on the model executor thread, and calling it from the event loop would deadlock against
+        the piece backpressure (the callback waits for a send that the blocked loop would have
+        to run). Piece-at-a-time delivery is covered in tests/test_phonon_stream.py, which
+        drives the callback from a worker thread the way the real service does.
+        """
+        return await self.synthesize(text, voice)
+
+    async def synthesize(
+        self,
+        text: str,
+        voice: VoiceHandle,
+    ) -> SynthesizedAudio:
+        if self._synthesize_delay > 0:
+            await asyncio.sleep(self._synthesize_delay)
+
+        with self._lock:
+            idx = self._synth_counter
+            self._synth_counter += 1
+
+        if (
+            self._fail_on_synthesize_index is not None
+            and idx == self._fail_on_synthesize_index
+        ):
+            raise RuntimeError("FakeTTSService: simulated synthesis failure")
+
+        # Generate deterministic PCM
+        sr = self._runtime.sampling_rate
+        frequency = FakeOmniVoiceRuntime.BASE_FREQUENCY + (idx * FakeOmniVoiceRuntime.FREQUENCY_STEP)
+        duration = max(0.1, len(text) * FakeOmniVoiceRuntime.DURATION_PER_CHAR)
+        num_samples = int(duration * sr)
+
+        pcm = bytearray()
+        for i in range(num_samples):
+            t = i / sr
+            value = int(0.7 * 32767 * math.sin(2 * math.pi * frequency * t))
+            pcm.extend(struct.pack("<h", value))
+
+        return SynthesizedAudio(
+            sample_rate=sr,
+            pcm_s16le=bytes(pcm),
+            sample_count=num_samples,
+            generation_seconds=duration,
+        )
+
+    def status(self) -> dict:
+        return {
+            "loaded": self._loaded,
+            "voice_handles": len(self._voice_handles),
+            "synthesizes": self._synth_counter,
+        }
+
+    async def close(self) -> None:
+        self._runtime.close()
+        self._loaded = False
+        self._voice_handles.clear()
+
+    def _voice_key(self, settings: VoiceSettings) -> str:
+        raw = f"{settings.gender}|{settings.age}|{settings.pitch}|{settings.accent}|{settings.style}|{settings.speed}|{settings.language}"
+        return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+# ---------------------------------------------------------------------------
+# Synthetic pi event fixtures
+# ---------------------------------------------------------------------------
+
+def fixture_one_sentence() -> list[dict]:
+    """Single text_delta producing one sentence."""
+    return [
+        {"type": "agent_start"},
+        {"type": "turn_start"},
+        {"type": "message_start", "message": {"role": "assistant"}},
+        {"type": "message_update", "assistantMessageEvent": {"type": "text_start"}},
+        {"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": "Hello there. "}},
+        {"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": "How can I help you today?"}},
+        {"type": "message_update", "assistantMessageEvent": {"type": "text_end", "content": "Hello there. How can I help you today?"}},
+        {"type": "message_end", "message": {"role": "assistant", "content": "Hello there. How can I help you today?"}},
+        {"type": "turn_end"},
+        {"type": "agent_end", "messages": []},
+        {"type": "agent_settled"},
+    ]
+
+
+def fixture_multiple_text_blocks() -> list[dict]:
+    """Multiple text_start/text_end blocks in one run."""
+    return [
+        {"type": "agent_start"},
+        {"type": "turn_start"},
+        {"type": "message_start", "message": {"role": "assistant"}},
+        {"type": "message_update", "assistantMessageEvent": {"type": "text_start"}},
+        {"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": "First block. "}},
+        {"type": "message_update", "assistantMessageEvent": {"type": "text_end", "content": "First block."}},
+        {"type": "message_update", "assistantMessageEvent": {"type": "text_start"}},
+        {"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": "Second block here. "}},
+        {"type": "message_update", "assistantMessageEvent": {"type": "text_end", "content": "Second block here."}},
+        {"type": "message_end", "message": {"role": "assistant", "content": "First block. Second block here."}},
+        {"type": "turn_end"},
+        {"type": "agent_end", "messages": []},
+        {"type": "agent_settled"},
+    ]
+
+
+def fixture_tool_gap() -> list[dict]:
+    """Text, then tool call, then more text."""
+    return [
+        {"type": "agent_start"},
+        {"type": "turn_start"},
+        {"type": "message_start", "message": {"role": "assistant"}},
+        {"type": "message_update", "assistantMessageEvent": {"type": "text_start"}},
+        {"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": "Let me check that for you. "}},
+        {"type": "message_update", "assistantMessageEvent": {"type": "toolcall_start", "toolCall": {"id": "call_1"}}},
+        {"type": "message_update", "assistantMessageEvent": {"type": "toolcall_end", "toolCall": {"id": "call_1", "name": "read", "arguments": "{}"}}},
+        {"type": "message_end", "message": {"role": "assistant", "content": "Let me check that for you."}},
+        {"type": "tool_execution_start", "toolCallId": "call_1", "toolName": "read"},
+        {"type": "tool_execution_end", "toolCallId": "call_1", "result": {"content": "file content"}},
+        {"type": "message_start", "message": {"role": "toolResult", "content": "file content"}},
+        {"type": "message_end", "message": {"role": "toolResult", "content": "file content"}},
+        {"type": "turn_end"},
+        {"type": "turn_start"},
+        {"type": "message_start", "message": {"role": "assistant"}},
+        {"type": "message_update", "assistantMessageEvent": {"type": "text_start"}},
+        {"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": "Here's what I found. It looks good."}},
+        {"type": "message_update", "assistantMessageEvent": {"type": "text_end", "content": "Here's what I found. It looks good."}},
+        {"type": "message_end", "message": {"role": "assistant", "content": "Here's what I found. It looks good."}},
+        {"type": "turn_end"},
+        {"type": "agent_end", "messages": []},
+        {"type": "agent_settled"},
+    ]
+
+
+def fixture_retry() -> list[dict]:
+    """agent_start, agent_end, then another agent_start before settled."""
+    return [
+        {"type": "agent_start"},
+        {"type": "turn_start"},
+        {"type": "message_start", "message": {"role": "assistant"}},
+        {"type": "message_update", "assistantMessageEvent": {"type": "text_start"}},
+        {"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": "First attempt. "}},
+        {"type": "message_update", "assistantMessageEvent": {"type": "text_end", "content": "First attempt."}},
+        {"type": "message_end", "message": {"role": "assistant", "content": "First attempt."}},
+        {"type": "turn_end"},
+        {"type": "agent_end", "messages": []},
+        {"type": "agent_start"},
+        {"type": "turn_start"},
+        {"type": "message_start", "message": {"role": "assistant"}},
+        {"type": "message_update", "assistantMessageEvent": {"type": "text_start"}},
+        {"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": "Retry attempt. Done."}},
+        {"type": "message_update", "assistantMessageEvent": {"type": "text_end", "content": "Retry attempt. Done."}},
+        {"type": "message_end", "message": {"role": "assistant", "content": "Retry attempt. Done."}},
+        {"type": "turn_end"},
+        {"type": "agent_end", "messages": []},
+        {"type": "agent_settled"},
+    ]
+
+
+def fixture_long_unpunctuated() -> list[dict]:
+    """Long unpunctuated text that should trigger max-hold chunking."""
+    text = "this is a very long response without any punctuation at all and it keeps going and going and going without stopping to take a breath or pause for effect because the model just keeps generating tokens without any sentence boundaries"
+    return [
+        {"type": "agent_start"},
+        {"type": "turn_start"},
+        {"type": "message_start", "message": {"role": "assistant"}},
+        {"type": "message_update", "assistantMessageEvent": {"type": "text_start"}},
+        {"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": text}},
+        {"type": "message_update", "assistantMessageEvent": {"type": "text_end", "content": text}},
+        {"type": "message_end", "message": {"role": "assistant", "content": text}},
+        {"type": "turn_end"},
+        {"type": "agent_end", "messages": []},
+        {"type": "agent_settled"},
+    ]
+
+
+def fixture_markdown() -> list[dict]:
+    """Text with Markdown formatting."""
+    return [
+        {"type": "agent_start"},
+        {"type": "turn_start"},
+        {"type": "message_start", "message": {"role": "assistant"}},
+        {"type": "message_update", "assistantMessageEvent": {"type": "text_start"}},
+        {"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": "# Heading\n\n"}},
+        {"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": "**Bold text** and *italic text*. "}},
+        {"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": "[Link label](https://example.com). "}},
+        {"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": "Here is some `inline code` too."}},
+        {"type": "message_update", "assistantMessageEvent": {"type": "text_end", "content": "# Heading\n\n**Bold text** and *italic text*. [Link label](https://example.com). Here is some `inline code` too."}},
+        {"type": "message_end", "message": {"role": "assistant", "content": "# Heading\n\n**Bold text** and *italic text*. [Link label](https://example.com). Here is some `inline code` too."}},
+        {"type": "turn_end"},
+        {"type": "agent_end", "messages": []},
+        {"type": "agent_settled"},
+    ]
+
+
+def fixture_code_block() -> list[dict]:
+    """Text with fenced code block that should be omitted."""
+    return [
+        {"type": "agent_start"},
+        {"type": "turn_start"},
+        {"type": "message_start", "message": {"role": "assistant"}},
+        {"type": "message_update", "assistantMessageEvent": {"type": "text_start"}},
+        {"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": "Here is some code:\n\n```python\n"}},
+        {"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": "def hello():\n    print('world')\n```"}},
+        {"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": "\n\nThat should work."}},
+        {"type": "message_update", "assistantMessageEvent": {"type": "text_end", "content": "Here is some code:\n\n```python\ndef hello():\n    print('world')\n```\n\nThat should work."}},
+        {"type": "message_end", "message": {"role": "assistant", "content": "Here is some code:\n\n```python\ndef hello():\n    print('world')\n```\n\nThat should work."}},
+        {"type": "turn_end"},
+        {"type": "agent_end", "messages": []},
+        {"type": "agent_settled"},
+    ]
+
+
+def fixture_cancellation() -> list[dict]:
+    """Events that should trigger cancellation (response failure)."""
+    return [
+        {"type": "response", "command": "prompt", "success": False},
+    ]
+
+
+def fixture_all_fixtures() -> dict[str, list[dict]]:
+    """All fixtures by name."""
+    return {
+        "one_sentence": fixture_one_sentence(),
+        "multiple_text_blocks": fixture_multiple_text_blocks(),
+        "tool_gap": fixture_tool_gap(),
+        "retry": fixture_retry(),
+        "long_unpunctuated": fixture_long_unpunctuated(),
+        "markdown": fixture_markdown(),
+        "code_block": fixture_code_block(),
+        "cancellation": fixture_cancellation(),
+    }

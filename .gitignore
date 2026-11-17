@@ -1,0 +1,79 @@
+.DS_Store
+__pycache__/
+*.pyc
+.venv/
+*.jsonl
+sessions/
+
+# Documents the preview pane serves. They are conversation output, sometimes private, and
+# regenerable only by re-running the assistant, so they are never committed.
+previews/
+node_modules/
+tests/output_*.html
+
+# Scratch workspace tools/capture.py runs its scenarios in. It is what the captured session reads,
+# writes and edits, so it is conversation output and never committed.
+data-samples/capture-workspace/
+
+# Local third-party checkouts that this repository path-depends on but cannot publish: the
+# RealtimeSTT fork behind the `audio`/`voice` extra and the OmniVoice source. A path dependency on a fork
+# that lives on no registry cannot be installed by anyone who cloned this repository, so the directory is
+# local-only by decision (audit PK-01) and `pyproject.toml` says so next to the dependency. A fresh clone
+# gets the default engine, Phonon, from `uv sync` alone; the extra needs the fork placed here by hand.
+experiments/
+
+# Voice validation artifacts
+voice-validation/
+
+# TTS audition renders from tools/phonon_probe.py. Regenerable, and they carry the text we
+# feed the engine, so they stay local.
+voice-samples/
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+graft/
+
+# setuptools build artifact
+pi_chat.egg-info/
+
+# Profile password hashes and local overrides. Credentials that gate two private chats must never be
+# committed. There is no committed template file any more: `docs/configuration.md` lists every name with its
+# default, and `python -m pi_chat.auth --account b` writes the one value you actually have to set. The
+# `.env.*` pattern is here so a future `env.backup` cannot be committed by accident either.
+.env
+.env.*
+
+# Sweep 2 (2026-11-17, RH-03/RH-04): these hold personal audio and derived local state.
+# They were untracked but not ignored, so any `git add -A` would have committed real voice
+# recordings. Ignore first, decide retention separately.
+voices/
+voice-clone-samples/
+voice-debug-audio/
+screenshots/
+.pytest_cache/
+
+# Sweep 2 follow-up (2026-11-17): `example_files/` held the preview pane's fixtures, and they were not
+# fixtures: one was a household member's profile text printed to PDF, one a utility bill remittance stub with
+# a name and address on it, one local model-launch flags. All three stayed on disk for anyone who wants them;
+# `tools/screenshot_ui.mjs` now generates the bytes its stages need, so nothing here is load-bearing any more.
+# They were tracked on three branch tips until that commit, and the audit note that names them is local only.
+example_files/
+
+# Personal literals for `tools/scrub_captures.py`: `literal = replacement` pairs naming this machine and the
+# people who use it. Committing this file would publish the exact strings the scrubber exists to remove, so it
+# is read from here or from $PI_CHAT_SCRUB_LITERALS and never from the repository.
+.scrub-literals
+
+# Windows alternate-data-stream leftovers. The names contain `:`, which NTFS cannot hold,
+# so they made every index operation need `-c core.protectNTFS=false` (see 1e0ad62).
+*.Zone.Identifier
+
+# RealtimeSTT's own module logger writes `realtimesst.log` into the process working directory the first time
+# the package is imported, so every voice run drops a ~90 KB log at the repo root. The path is the library's
+# choice, not ours, and pi-chat does not configure it, so the honest fix is to ignore it rather than to
+# pretend the file is meaningful state.
+realtimesst.log
+
+# The quarterly audit registry: dated finding rows and fix writeups. Kept in the working tree because it is
+# the memory of what was found, and never committed because it describes real documents and real people on
+# this machine, in more detail than a public repository should carry. AGENTS.md says where it lives.
+docs/audit/

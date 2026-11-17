@@ -1,0 +1,1400 @@
+/**
+ * Voice mode controller for pi-chat.
+ *
+ * Handles:
+ * - Backend voice state (enable/disable/settings)
+ * - Binary PCM frame parsing and validation
+ * - Web Audio scheduled playback
+ * - Settings persistence per account
+ * - Custom voice upload, recording, and management
+ * - Accessible UI state management
+ */
+
+const PCM_HEADER_LENGTH = 24;
+const PCM_MAGIC = 'PIV1';
+const PCM_VERSION = 1;
+const STORAGE_KEY_PREFIX = 'pi_chat_voice_settings_v1_';
+
+// Allowed OmniVoice settings values
+const ALLOWED_GENDERS = ['male', 'female'];
+const ALLOWED_AGES = ['child', 'teenager', 'young adult', 'middle-aged', 'elderly'];
+const ALLOWED_PITCHES = ['very low pitch', 'low pitch', 'moderate pitch', 'high pitch', 'very high pitch'];
+const ALLOWED_ACCENTS = [
+  'american accent', 'british accent', 'australian accent', 'canadian accent',
+  'indian accent', 'chinese accent', 'korean accent', 'japanese accent',
+  'portuguese accent', 'russian accent',
+];
+const ALLOWED_STYLES = [null, 'whisper'];
+const ALLOWED_LANGUAGES = ['English', 'Spanish', 'French', 'German'];
+const SPEED_MIN = 0.8;
+const SPEED_MAX = 1.25;
+
+export function createVoiceController({
+  sendCommand,
+  onError,
+  audioContextFactory,
+}) {
+  // Internal state
+  let enabled = false;
+  let backendState = 'disabled'; // disabled | loading | ready | error
+  let uiInitialized = false;
+  let settings = loadSavedSettings(null) || defaultSettings();
+  let account = null;
+  let audioContext = null;
+  let masterGain = null;
+  let activeStreamId = null;
+  let lastSequence = -1;
+  let scheduledEndTime = 0;
+  let activeSources = new Set();
+  let backendStreamEnded = false;
+  let speaking = false;
+  let pendingPrepareResolve = null;
+  let pendingPrepareReject = null;
+
+  // Custom voice state
+  let uploadInProgress = false;
+  let actionInProgress = false;  // Guard against double-clicks on delete/rename
+  let previewAudio = null;
+  let previewVoiceId = null;  // Track which voice is playing for toggle
+  let mediaRecorder = null;
+  let audioChunks = [];
+  let recordingStartTime = 0;
+  let recordingTimer = null;
+  let currentStream = null;
+
+  // UI references (lazy-init)
+  let toggleButton = null;
+  let stopButton = null;
+  let statusElement = null;
+  let settingsDialog = null;
+  let settingsBackdrop = null;
+  let settingsCloseButton = null;
+  let resumeButton = null;
+
+  // Custom voice UI references
+  let voiceTypeSelect = null;
+  let voiceCustomOptgroup = null;
+  let voiceCustomActions = null;
+  let voiceUploadZone = null;
+  let voiceUploadInput = null;
+  let voiceUploadStatus = null;
+  let voiceRecordingZone = null;
+  let voiceNameInput = null;
+  let voiceBootstrapSettings = null;
+  let voiceGuidelinesPopup = null;
+
+  // Audio context factory (defaults to browser AudioContext)
+  const audioCtxFactory = audioContextFactory || (() => new (window.AudioContext || window.webkitAudioContext)());
+
+  function defaultSettings() {
+    return {
+      voiceType: 'bootstrap',
+      gender: 'female',
+      age: 'young adult',
+      pitch: 'moderate pitch',
+      accent: 'american accent',
+      style: null,
+      speed: 1.0,
+      language: 'English',
+      volume: 1.0,
+      // Phonon engine only: a catalog voice name and one of five rate labels. Null means
+      // "use whatever the server started with" (PI_CHAT_TTS_PHONON_VOICE / _RATE).
+      phononVoice: null,
+      phononRate: null,
+    };
+  }
+
+  function loadSavedSettings(acc) {
+    if (!acc) return null;
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY_PREFIX + acc);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      // Validate voiceType on load
+      if (!parsed.voiceType || (!parsed.voiceType.startsWith('custom:') && parsed.voiceType !== 'bootstrap')) {
+        parsed.voiceType = 'bootstrap';
+      }
+      return validateSettings(parsed) || null;
+    } catch {
+      return null;
+    }
+  }
+
+  function saveSettings() {
+    if (!account) return;
+    try {
+      const toSave = { ...settings };
+      delete toSave.volume; // volume is browser-only
+      localStorage.setItem(STORAGE_KEY_PREFIX + account, JSON.stringify(toSave));
+    } catch {
+      // Storage may be unavailable
+    }
+  }
+
+  function validateSettings(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+
+    const s = { ...defaultSettings(), ...raw };
+
+    if (!ALLOWED_GENDERS.includes(s.gender)) return null;
+    if (!ALLOWED_AGES.includes(s.age)) return null;
+    if (!ALLOWED_PITCHES.includes(s.pitch)) return null;
+    if (!ALLOWED_ACCENTS.includes(s.accent)) return null;
+    if (!ALLOWED_STYLES.includes(s.style)) return null;
+    if (!ALLOWED_LANGUAGES.includes(s.language)) return null;
+    if (typeof s.speed !== 'number' || s.speed < SPEED_MIN || s.speed > SPEED_MAX) return null;
+    if (s.phononVoice !== null && s.phononVoice !== undefined && typeof s.phononVoice !== 'string') return null;
+    if (s.phononRate !== null && s.phononRate !== undefined && typeof s.phononRate !== 'string') return null;
+
+    return s;
+  }
+
+  // -----------------------------------------------------------------------
+  // Engine capabilities: what kind of voice this server can actually produce
+  // -----------------------------------------------------------------------
+
+  let capabilities = null;
+
+  // The OmniVoice design controls. A Phonon server ignores every one of them, so showing them
+  // would be a form that lies about what it does.
+  const OMNIVOICE_ONLY_IDS = [
+    'voice-gender', 'voice-age', 'voice-pitch', 'voice-accent',
+    'voice-style', 'voice-language', 'voice-speed',
+  ];
+
+  async function loadCapabilities() {
+    try {
+      const resp = await fetch('/api/tts/capabilities');
+      if (!resp.ok) return null;
+      capabilities = await resp.json();
+      return capabilities;
+    } catch (e) {
+      console.warn('Failed to load TTS capabilities:', e);
+      return null;
+    }
+  }
+
+  function applyEngineToForm() {
+    const phonon = capabilities?.engine === 'phonon';
+    const phononControls = document.getElementById('voice-phonon-controls');
+    if (phononControls) phononControls.hidden = !phonon;
+
+    OMNIVOICE_ONLY_IDS.forEach((id) => {
+      const el = document.getElementById(id);
+      const row = el?.closest('label');
+      if (row) row.hidden = phonon;
+    });
+
+    // Custom (uploaded) voices need a speaker encoder, which the public Phonon checkpoints do
+    // not have, so the whole tab goes away instead of failing on upload.
+    const customTab = settingsDialog?.querySelector('[data-voice-tab="custom"]');
+    const customPanel = settingsDialog?.querySelector('[data-voice-tab-panel="custom"]');
+    const showCustom = !phonon && capabilities?.customVoices !== false;
+    if (customTab) customTab.hidden = !showCustom;
+    if (customPanel) customPanel.style.display = showCustom ? '' : 'none';
+    if (!showCustom && settings.voiceType && settings.voiceType.startsWith('custom:')) {
+      settings.voiceType = 'bootstrap';
+    }
+  }
+
+  function populatePhononControls() {
+    if (capabilities?.engine !== 'phonon') return;
+
+    const voiceSelect = document.getElementById('voice-phonon-name');
+    const rateSelect = document.getElementById('voice-phonon-rate');
+    const description = document.getElementById('voice-phonon-description');
+    if (!voiceSelect || !rateSelect) return;
+
+    voiceSelect.innerHTML = '';
+    const byLanguage = new Map();
+    (capabilities.voices || []).forEach((v) => {
+      if (!v?.name) return;
+      const key = v.language || 'other';
+      if (!byLanguage.has(key)) byLanguage.set(key, []);
+      byLanguage.get(key).push(v);
+    });
+    for (const [language, voices] of byLanguage) {
+      const group = document.createElement('optgroup');
+      group.label = language;
+      voices.forEach((v) => {
+        const opt = document.createElement('option');
+        opt.value = v.name;
+        const tags = [v.gender, v.age].filter(Boolean).join(', ');
+        opt.textContent = tags ? `${v.name} (${tags})` : v.name;
+        group.appendChild(opt);
+      });
+      voiceSelect.appendChild(group);
+    }
+
+    rateSelect.innerHTML = '';
+    (capabilities.rates || []).forEach((r) => {
+      const opt = document.createElement('option');
+      opt.value = r.label;
+      opt.textContent = r.multiplier ? `${r.label} (${r.multiplier}x)` : r.label;
+      rateSelect.appendChild(opt);
+    });
+
+    const savedVoice = settings.phononVoice || capabilities.defaultVoice;
+    if (savedVoice && voiceSelect.querySelector(`option[value="${CSS.escape(savedVoice)}"]`)) {
+      voiceSelect.value = savedVoice;
+    }
+    settings.phononVoice = voiceSelect.value || null;
+
+    const savedRate = settings.phononRate || capabilities.defaultRate;
+    if (savedRate && rateSelect.querySelector(`option[value="${CSS.escape(savedRate)}"]`)) {
+      rateSelect.value = savedRate;
+    }
+    settings.phononRate = rateSelect.value || null;
+
+    if (description) {
+      const voice = (capabilities.voices || []).find((v) => v.name === voiceSelect.value);
+      description.textContent = voice?.description || '';
+    }
+  }
+
+  function onPhononControlChanged() {
+    const voiceSelect = document.getElementById('voice-phonon-name');
+    const rateSelect = document.getElementById('voice-phonon-rate');
+    const description = document.getElementById('voice-phonon-description');
+
+    settings.phononVoice = voiceSelect?.value || null;
+    settings.phononRate = rateSelect?.value || null;
+    saveSettings();
+
+    if (description) {
+      const voice = (capabilities?.voices || []).find((v) => v.name === settings.phononVoice);
+      description.textContent = voice?.description || '';
+    }
+
+    // Rate is a conditioner that ptts applies to a loaded model, and a voice name resolves per
+    // request, so both take effect on the next sentence without reloading anything. Send
+    // immediately rather than waiting for the dialog to close.
+    sendCommand({ type: 'voice_settings', settings: getBackendSettings() });
+  }
+
+  // -----------------------------------------------------------------------
+  // Custom voice API calls
+  // -----------------------------------------------------------------------
+
+  async function loadCustomVoices() {
+    try {
+      const resp = await fetch('/api/voices');
+      if (!resp.ok) return;
+      const data = await resp.json();
+      const voices = data.voices || [];
+
+      if (!voiceCustomOptgroup) return;
+      voiceCustomOptgroup.innerHTML = '';
+
+      voices.forEach(v => {
+        const opt = document.createElement('option');
+        opt.value = 'custom:' + v.voiceId;
+        opt.textContent = v.displayName || v.filename;
+        opt.dataset.voiceId = v.voiceId;
+        voiceCustomOptgroup.appendChild(opt);
+      });
+
+      // Restore saved voice selection. Compared by value rather than looked up with a selector built from
+      // the stored string: `settings.voiceType` comes out of localStorage, so it is whatever a previous
+      // version or a hand-edited entry left there, and a value containing a quote character made
+      // `querySelector` throw an uncaught `SyntaxError` in the middle of restoring the dialog. `CSS.escape`
+      // would fix the throw (the sibling restores at :238 and :244 do that) and would keep the failure mode
+      // one quoting bug away; there is no reason to parse a string when the value is already in hand.
+      if (settings.voiceType && settings.voiceType.startsWith('custom:')) {
+        const targetValue = settings.voiceType;
+        const known = Array.from(voiceCustomOptgroup.options).some((opt) => opt.value === targetValue);
+        if (known) {
+          voiceTypeSelect.value = targetValue;
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to load custom voices:', e);
+    }
+  }
+
+  function showUploadStatus(text, className) {
+    if (!voiceUploadStatus) return;
+    voiceUploadStatus.textContent = text;
+    voiceUploadStatus.className = className
+      ? 'voice-upload-status ' + className
+      : 'voice-upload-status';
+  }
+
+  async function uploadVoiceFile(file) {
+    // Debounce: reject concurrent uploads
+    if (uploadInProgress) {
+      showUploadStatus('Upload already in progress. Please wait.', 'error');
+      return;
+    }
+
+    // Client-side file validation
+    if (file.size > 10 * 1024 * 1024) {
+      showUploadStatus('File too large. Maximum is 10MB.', 'error');
+      return;
+    }
+
+    const allowedTypes = ['audio/wav', 'audio/mpeg', 'audio/flac', 'audio/mp4', 'audio/ogg', 'audio/webm', 'video/webm'];
+    if (!allowedTypes.includes(file.type) && !file.name.match(/\.(wav|mp3|flac|m4a|ogg|webm)$/i)) {
+      showUploadStatus('Unsupported file type.', 'error');
+      return;
+    }
+
+    uploadInProgress = true;
+    showUploadStatus('Uploading...', 'uploading');
+
+    const formData = new FormData();
+    formData.append('file', file);
+    const displayNameEl = document.getElementById('voice-display-name');
+    const displayName = displayNameEl?.value?.trim();
+    if (displayName) {
+      formData.append('display_name', displayName);
+    }
+
+    try {
+      const resp = await fetch('/api/voices', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.detail || 'Upload failed');
+      }
+
+      const data = await resp.json();
+      showUploadStatus(`Voice "${data.displayName}" uploaded!`, 'success');
+
+      await loadCustomVoices();
+
+      // Auto-select the new voice
+      if (voiceTypeSelect) {
+        voiceTypeSelect.value = 'custom:' + data.voiceId;
+        syncSettingsFromForm();
+      }
+
+      // Hide upload/recording zones after success
+      hideUploadControls();
+
+    } catch (err) {
+      showUploadStatus('Error: ' + err.message, 'error');
+      setTimeout(() => {
+        showUploadStatus('', '');
+      }, 5000);
+    } finally {
+      uploadInProgress = false;
+    }
+  }
+
+  async function previewVoice(voiceId) {
+    // If clicking the same voice that's loaded, toggle play/pause
+    if (previewAudio && previewVoiceId === voiceId) {
+      if (previewAudio.paused) {
+        try {
+          await previewAudio.play();
+        } catch (e) {
+          console.warn('Preview playback failed:', e);
+        }
+      } else {
+        previewAudio.pause();
+      }
+      return;
+    }
+
+    // Different voice or nothing loaded — stop current and start new
+    stopPreview();
+
+    try {
+      previewAudio = new Audio('/api/voices/' + voiceId + '/audio');
+      previewVoiceId = voiceId;
+      previewAudio.onended = () => {
+        previewAudio = null;
+        previewVoiceId = null;
+      };
+      await previewAudio.play();
+    } catch (e) {
+      console.warn('Preview playback failed:', e);
+      previewAudio = null;
+      previewVoiceId = null;
+    }
+  }
+
+  function stopPreview() {
+    if (previewAudio) {
+      try {
+        previewAudio.pause();
+      } catch { /* ignore */ }
+      previewAudio.src = '';
+      previewAudio = null;
+      previewVoiceId = null;
+    }
+  }
+
+  async function deleteVoice(voiceId) {
+    if (actionInProgress) return;
+    if (!confirm('Delete this voice sample?')) return;
+
+    actionInProgress = true;
+    // Immediately hide actions to prevent double-click
+    if (voiceCustomActions) voiceCustomActions.style.display = 'none';
+
+    try {
+      const resp = await fetch('/api/voices/' + voiceId, {
+        method: 'DELETE',
+      });
+
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.detail || 'Delete failed');
+      }
+
+      // If this was the selected voice, revert to bootstrap
+      if (settings.voiceType === 'custom:' + voiceId) {
+        settings.voiceType = 'bootstrap';
+        if (voiceTypeSelect) voiceTypeSelect.value = 'bootstrap';
+        saveSettings();
+        updateBootstrapSettingsEnabled();
+      }
+
+      await loadCustomVoices();
+      updateCustomVoiceUI();
+
+    } catch (err) {
+      onError?.('Delete failed: ' + err.message);
+      // Restore actions on failure
+      updateCustomVoiceUI();
+    } finally {
+      actionInProgress = false;
+    }
+  }
+
+  async function renameVoice(voiceId) {
+    if (actionInProgress) return;
+    const currentName = getVoiceDisplayName(voiceId);
+    const newName = prompt('Rename this voice:', currentName);
+    if (!newName || newName.trim() === currentName) return;
+
+    actionInProgress = true;
+    try {
+      const resp = await fetch('/api/voices/' + voiceId, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ displayName: newName.trim() }),
+      });
+
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.detail || 'Rename failed');
+      }
+
+      await loadCustomVoices();
+
+    } catch (err) {
+      onError?.('Rename failed: ' + err.message);
+    } finally {
+      actionInProgress = false;
+    }
+  }
+
+  function getVoiceDisplayName(voiceId) {
+    if (!voiceCustomOptgroup) return '';
+    const opt = voiceCustomOptgroup.querySelector(`option[data-voice-id="${voiceId}"]`);
+    return opt?.textContent || '';
+  }
+
+  function getCurrentCustomVoiceId() {
+    if (settings.voiceType && settings.voiceType.startsWith('custom:')) {
+      return settings.voiceType.slice(7);
+    }
+    return null;
+  }
+
+  function showUploadControls() {
+    if (voiceUploadZone) voiceUploadZone.style.display = 'block';
+    if (voiceRecordingZone) voiceRecordingZone.style.display = 'block';
+    if (voiceNameInput) voiceNameInput.style.display = 'block';
+  }
+
+  function hideUploadControls() {
+    if (voiceUploadZone) voiceUploadZone.style.display = 'none';
+    if (voiceRecordingZone) voiceRecordingZone.style.display = 'none';
+    if (voiceNameInput) voiceNameInput.style.display = 'none';
+  }
+
+  function updateBootstrapSettingsEnabled() {
+    const isCustom = settings.voiceType && settings.voiceType.startsWith('custom:');
+    if (voiceBootstrapSettings) {
+      voiceBootstrapSettings.classList.toggle('disabled', isCustom);
+    }
+    // Also disable individual controls
+    const controls = settingsDialog?.querySelectorAll('.voice-custom-section ~ .voice-setting-label select, .voice-custom-section ~ .voice-setting-label input[type="range"]');
+    if (controls) {
+      controls.forEach(el => {
+        el.disabled = isCustom;
+      });
+    }
+  }
+
+  function updateCustomVoiceUI() {
+    const voiceId = getCurrentCustomVoiceId();
+    if (voiceId) {
+      voiceCustomActions.style.display = 'flex';
+      hideUploadControls();
+    } else if (settings.voiceType === 'bootstrap') {
+      voiceCustomActions.style.display = 'none';
+      showUploadControls();
+    }
+    updateBootstrapSettingsEnabled();
+  }
+
+  // -----------------------------------------------------------------------
+  // Recording
+  // -----------------------------------------------------------------------
+
+  async function startRecording() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      currentStream = stream;
+      mediaRecorder = new MediaRecorder(stream);
+      audioChunks = [];
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunks.push(e.data);
+      };
+
+      mediaRecorder.onstop = async () => {
+        // Stop all tracks
+        if (currentStream) {
+          currentStream.getTracks().forEach(t => t.stop());
+          currentStream = null;
+        }
+
+        const blob = new Blob(audioChunks, { type: 'audio/webm' });
+
+        if (blob.size === 0) {
+          showUploadStatus('Recording failed: no audio captured.', 'error');
+          return;
+        }
+
+        const file = new File([blob], 'recording.webm', { type: 'audio/webm' });
+        await uploadVoiceFile(file);
+      };
+
+      mediaRecorder.onerror = (e) => {
+        console.error('MediaRecorder error:', e);
+        if (currentStream) {
+          currentStream.getTracks().forEach(t => t.stop());
+          currentStream = null;
+        }
+        showUploadStatus('Recording error. Please try again.', 'error');
+      };
+
+      mediaRecorder.start();
+      recordingStartTime = Date.now();
+      startRecordingTimer();
+      updateRecordingUI(true);
+
+    } catch (err) {
+      console.error('Recording error:', err);
+      showUploadStatus('Could not access microphone. Please check permissions.', 'error');
+    }
+  }
+
+  function stopRecording() {
+    if (!mediaRecorder || mediaRecorder.state === 'inactive') return;
+
+    const duration = (Date.now() - recordingStartTime) / 1000;
+    if (duration < 2) {
+      showUploadStatus('Recording too short. Please record at least 2 seconds.', 'error');
+      return;
+    }
+    if (duration > 30) {
+      showUploadStatus('Recording too long. Maximum is 30 seconds.', 'error');
+    }
+
+    mediaRecorder.stop();
+    stopRecordingTimer();
+    updateRecordingUI(false);
+  }
+
+  function startRecordingTimer() {
+    recordingTimer = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - recordingStartTime) / 1000);
+      const timerEl = document.getElementById('recording-timer');
+      if (timerEl) {
+        const mins = String(Math.floor(elapsed / 60)).padStart(2, '0');
+        const secs = String(elapsed % 60).padStart(2, '0');
+        timerEl.textContent = `Recording... ${mins}:${secs}`;
+      }
+      // Visual warning at 25 seconds
+      if (elapsed >= 25) {
+        const activeEl = document.getElementById('voice-recording-active');
+        if (activeEl) activeEl.classList.add('warning');
+      }
+    }, 1000);
+  }
+
+  function stopRecordingTimer() {
+    if (recordingTimer) {
+      clearInterval(recordingTimer);
+      recordingTimer = null;
+    }
+    const activeEl = document.getElementById('voice-recording-active');
+    if (activeEl) activeEl.classList.remove('warning');
+  }
+
+  function updateRecordingUI(isRecording) {
+    const recordBtn = document.getElementById('record-btn');
+    const activeEl = document.getElementById('voice-recording-active');
+    if (recordBtn) recordBtn.style.display = isRecording ? 'none' : 'inline-flex';
+    if (activeEl) activeEl.style.display = isRecording ? 'flex' : 'none';
+  }
+
+  // Cleanup on page unload
+  window.addEventListener('beforeunload', () => {
+    stopRecordingTimer();
+    if (currentStream) {
+      currentStream.getTracks().forEach(t => t.stop());
+    }
+    if (previewAudio) {
+      previewAudio.pause();
+    }
+  });
+
+  // -----------------------------------------------------------------------
+  // UI Initialization
+  // -----------------------------------------------------------------------
+
+  function initUI() {
+    if (uiInitialized) return;
+    uiInitialized = true;
+
+    toggleButton = document.querySelector('#chat-screen [data-voice-toggle]');
+    stopButton = document.querySelector('#chat-screen [data-voice-stop]');
+    statusElement = document.querySelector('#chat-screen [data-voice-status]');
+    settingsDialog = document.getElementById('voice-settings-dialog');
+    // The scrim existed in the markup but was never wired: the dialog opened with
+    // aria-modal="true" over an undimmed page and clicking outside did nothing.
+    settingsBackdrop = document.getElementById('voice-settings-backdrop');
+    settingsCloseButton = document.querySelector('#voice-settings-dialog [data-voice-settings-close]');
+    resumeButton = document.querySelector('#chat-screen [data-voice-resume]');
+    const settingsButton = document.querySelector('#chat-screen [data-voice-settings]');
+
+    // Custom voice UI references
+    voiceTypeSelect = document.getElementById('voice-type');
+    voiceCustomOptgroup = document.getElementById('voice-custom-optgroup');
+    voiceCustomActions = document.getElementById('voice-custom-actions');
+    voiceUploadZone = document.getElementById('voice-upload-zone');
+    voiceUploadInput = document.getElementById('voice-upload-input');
+    voiceUploadStatus = document.getElementById('voice-upload-status');
+    voiceRecordingZone = document.querySelector('.voice-recording-zone');
+    voiceNameInput = document.getElementById('voice-name-input');
+    voiceGuidelinesPopup = document.getElementById('voice-guidelines-popup');
+
+    if (toggleButton) {
+      toggleButton.addEventListener('click', handleToggleClick);
+    }
+
+    if (settingsButton) {
+      settingsButton.addEventListener('click', openSettings);
+    }
+
+    if (stopButton) {
+      stopButton.addEventListener('click', handleStopClick);
+    }
+
+    if (settingsDialog && settingsCloseButton) {
+      settingsCloseButton.addEventListener('click', closeSettings);
+      settingsBackdrop?.addEventListener('click', closeSettings);
+      settingsDialog.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') closeSettings();
+      });
+
+      // Settings form controls
+      const genderSelect = document.getElementById('voice-gender');
+      const ageSelect = document.getElementById('voice-age');
+      const pitchSelect = document.getElementById('voice-pitch');
+      const accentSelect = document.getElementById('voice-accent');
+      const styleSelect = document.getElementById('voice-style');
+      const languageSelect = document.getElementById('voice-language');
+      const speedInput = document.getElementById('voice-speed');
+      const volumeInput = document.getElementById('voice-volume');
+      const applyButton = document.getElementById('voice-apply');
+
+      if (genderSelect) genderSelect.addEventListener('change', () => syncSettingsFromForm());
+      if (ageSelect) ageSelect.addEventListener('change', () => syncSettingsFromForm());
+      if (pitchSelect) pitchSelect.addEventListener('change', () => syncSettingsFromForm());
+      if (accentSelect) accentSelect.addEventListener('change', () => syncSettingsFromForm());
+      if (styleSelect) styleSelect.addEventListener('change', () => syncSettingsFromForm());
+      if (languageSelect) languageSelect.addEventListener('change', () => syncSettingsFromForm());
+      // Phonon controls: the two that exist when the server runs that engine.
+      const phononVoiceSelect = document.getElementById('voice-phonon-name');
+      const phononRateSelect = document.getElementById('voice-phonon-rate');
+      phononVoiceSelect?.addEventListener('change', onPhononControlChanged);
+      phononRateSelect?.addEventListener('change', onPhononControlChanged);
+      if (speedInput) speedInput.addEventListener('input', () => {
+        syncSettingsFromForm();
+        // Re-apply speed to backend if voice is enabled
+        if (enabled && backendState === 'ready') {
+          sendCommand({ type: 'voice_settings', settings: getBackendSettings() });
+        }
+      });
+      if (volumeInput) volumeInput.addEventListener('input', () => {
+        const vol = parseFloat(volumeInput.value);
+        settings.volume = isNaN(vol) ? 1.0 : vol;
+        applyVolume();
+        // Save volume to localStorage too (browser-only but persistent)
+        if (account) {
+          try {
+            const raw = localStorage.getItem(STORAGE_KEY_PREFIX + account);
+            const parsed = raw ? JSON.parse(raw) : {};
+            parsed.volume = vol;
+            localStorage.setItem(STORAGE_KEY_PREFIX + account, JSON.stringify(parsed));
+          } catch { /* ignore */ }
+        }
+      });
+
+      // Custom voice tab speed slider
+      const speedInputCustom = document.getElementById('voice-speed-custom');
+      if (speedInputCustom) {
+        speedInputCustom.addEventListener('input', () => {
+          const speed = parseFloat(speedInputCustom.value);
+          settings.speed = isNaN(speed) ? 1.0 : speed;
+          // Sync with main speed slider
+          if (speedInput) speedInput.value = speed;
+          saveSettings();
+          // Re-apply speed to backend if voice is enabled
+          if (enabled && backendState === 'ready') {
+            sendCommand({ type: 'voice_settings', settings: getBackendSettings() });
+          }
+        });
+      }
+
+      // Tab switching
+      const tabs = settingsDialog.querySelectorAll('.voice-settings-tab');
+      tabs.forEach(tab => {
+        tab.addEventListener('click', () => {
+          const targetTab = tab.dataset.voiceTab;
+          // Update tab buttons
+          tabs.forEach(t => {
+            t.classList.toggle('active', t === tab);
+            t.setAttribute('aria-selected', t === tab ? 'true' : 'false');
+          });
+          // Update panels
+          settingsDialog.querySelectorAll('.voice-settings-tab-panel').forEach(panel => {
+            panel.classList.toggle('active', panel.dataset.voiceTabPanel === targetTab);
+          });
+        });
+      });
+
+      // Voice type selector
+      if (voiceTypeSelect) {
+        voiceTypeSelect.addEventListener('change', () => {
+          const val = voiceTypeSelect.value;
+          if (val === 'bootstrap') {
+            settings.voiceType = 'bootstrap';
+            saveSettings();
+            updateCustomVoiceUI();
+          } else if (val.startsWith('custom:')) {
+            settings.voiceType = val;
+            saveSettings();
+            updateCustomVoiceUI();
+          }
+        });
+      }
+
+      // Custom voice action buttons
+      if (voiceCustomActions) {
+        voiceCustomActions.querySelector('.voice-preview-btn')?.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const voiceId = getCurrentCustomVoiceId();
+          if (voiceId) previewVoice(voiceId);
+        });
+        voiceCustomActions.querySelector('.voice-delete-btn')?.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const voiceId = getCurrentCustomVoiceId();
+          if (voiceId) deleteVoice(voiceId);
+        });
+        voiceCustomActions.querySelector('.voice-rename-btn')?.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const voiceId = getCurrentCustomVoiceId();
+          if (voiceId) renameVoice(voiceId);
+        });
+      }
+
+      // Upload zone
+      setupUploadZone();
+
+      // Recording buttons
+      const recordBtn = document.getElementById('record-btn');
+      const stopRecordBtn = document.getElementById('stop-record-btn');
+      if (recordBtn) recordBtn.addEventListener('click', startRecording);
+      if (stopRecordBtn) stopRecordBtn.addEventListener('click', stopRecording);
+
+      // Guidelines popup
+      const guidelinesBtn = document.getElementById('voice-guidelines-btn');
+      if (guidelinesBtn && voiceGuidelinesPopup) {
+        guidelinesBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const isVisible = voiceGuidelinesPopup.style.display !== 'none';
+          voiceGuidelinesPopup.style.display = isVisible ? 'none' : 'block';
+        });
+        // Close on outside click
+        document.addEventListener('click', () => {
+          voiceGuidelinesPopup.style.display = 'none';
+        });
+        voiceGuidelinesPopup.addEventListener('click', (e) => {
+          e.stopPropagation();
+        });
+      }
+
+      if (applyButton) {
+        applyButton.addEventListener('click', async () => {
+          applyButton.disabled = true;
+          applyButton.textContent = 'Preparing...';
+
+          const backendSettings = getBackendSettings();
+
+          try {
+            await sendVoicePrepare(backendSettings);
+            saveSettings();
+            closeSettings();
+          } catch (err) {
+            onError?.(err.message || 'Failed to prepare voice');
+          } finally {
+            applyButton.disabled = false;
+            applyButton.textContent = 'Apply';
+          }
+        });
+      }
+    }
+
+    if (resumeButton) {
+      resumeButton.addEventListener('click', handleResumeClick);
+    }
+
+    updateUI();
+  }
+
+  function setupUploadZone() {
+    if (!voiceUploadZone || !voiceUploadInput) return;
+
+    const browseBtn = voiceUploadZone.querySelector('.voice-upload-btn');
+
+    browseBtn?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      voiceUploadInput.click();
+    });
+
+    voiceUploadInput.addEventListener('change', (e) => {
+      if (e.target.files?.[0]) {
+        uploadVoiceFile(e.target.files[0]);
+        e.target.value = '';
+      }
+    });
+
+    // Keyboard activation
+    voiceUploadZone.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        voiceUploadInput.click();
+      }
+    });
+
+    // Drag and drop with file validation
+    voiceUploadZone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      voiceUploadZone.classList.add('dragover');
+    });
+    voiceUploadZone.addEventListener('dragleave', () => {
+      voiceUploadZone.classList.remove('dragover');
+    });
+    voiceUploadZone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      voiceUploadZone.classList.remove('dragover');
+      const files = e.dataTransfer.files;
+      if (files && files.length > 0) {
+        uploadVoiceFile(files[0]);
+      }
+    });
+  }
+
+  function syncSettingsFromForm() {
+    const genderSelect = document.getElementById('voice-gender');
+    const ageSelect = document.getElementById('voice-age');
+    const pitchSelect = document.getElementById('voice-pitch');
+    const accentSelect = document.getElementById('voice-accent');
+    const styleSelect = document.getElementById('voice-style');
+    const languageSelect = document.getElementById('voice-language');
+    const speedInput = document.getElementById('voice-speed');
+
+    settings.gender = genderSelect?.value || settings.gender;
+    settings.age = ageSelect?.value || settings.age;
+    settings.pitch = pitchSelect?.value || settings.pitch;
+    settings.accent = accentSelect?.value || settings.accent;
+    settings.style = styleSelect?.value || null;
+    settings.language = languageSelect?.value || 'English';
+    settings.speed = parseFloat(speedInput?.value) || 1.0;
+    settings.phononVoice = document.getElementById('voice-phonon-name')?.value || settings.phononVoice || null;
+    settings.phononRate = document.getElementById('voice-phonon-rate')?.value || settings.phononRate || null;
+
+    saveSettings();
+  }
+
+  function populateSettingsForm() {
+    const genderSelect = document.getElementById('voice-gender');
+    const ageSelect = document.getElementById('voice-age');
+    const pitchSelect = document.getElementById('voice-pitch');
+    const accentSelect = document.getElementById('voice-accent');
+    const styleSelect = document.getElementById('voice-style');
+    const languageSelect = document.getElementById('voice-language');
+    const speedInput = document.getElementById('voice-speed');
+    const volumeInput = document.getElementById('voice-volume');
+
+    if (genderSelect) genderSelect.value = settings.gender;
+    if (ageSelect) ageSelect.value = settings.age;
+    if (pitchSelect) pitchSelect.value = settings.pitch;
+    if (accentSelect) accentSelect.value = settings.accent;
+    if (styleSelect) styleSelect.value = settings.style || '';
+    if (languageSelect) languageSelect.value = settings.language || 'English';
+    if (speedInput) speedInput.value = settings.speed;
+    const speedInputCustom = document.getElementById('voice-speed-custom');
+    if (speedInputCustom) speedInputCustom.value = settings.speed;
+    if (volumeInput) volumeInput.value = settings.volume;
+
+    // Load custom voices and restore selection
+    loadCustomVoices().then(() => {
+      if (voiceTypeSelect) {
+        voiceTypeSelect.value = settings.voiceType || 'bootstrap';
+      }
+      updateCustomVoiceUI();
+    });
+  }
+
+  function closeSettings() {
+    if (!settingsDialog) return;
+    settingsDialog.classList.remove('active');
+    settingsBackdrop?.classList.remove('active');
+    settingsDialog.setAttribute('aria-hidden', 'true');
+    settingsCloseButton?.focus();
+  }
+
+  // -----------------------------------------------------------------------
+  // Backend settings
+  // -----------------------------------------------------------------------
+
+  function getBackendSettings() {
+    const result = {
+      gender: settings.gender,
+      age: settings.age,
+      pitch: settings.pitch,
+      accent: settings.accent,
+      style: settings.style,
+      speed: settings.speed,
+      language: settings.language,
+    };
+
+    // Add voice_id for custom voices
+    if (settings.voiceType && settings.voiceType.startsWith('custom:')) {
+      result.voice_id = settings.voiceType.slice(7);
+    }
+
+    // Phonon: a catalog name and a rate label. Only sent for that engine, so an OmniVoice
+    // install keeps sending exactly the payload it always has.
+    if (capabilities?.engine === 'phonon') {
+      if (settings.phononVoice) result.phonon_voice = settings.phononVoice;
+      if (settings.phononRate) result.phonon_rate = settings.phononRate;
+    }
+
+    return result;
+  }
+
+  // -----------------------------------------------------------------------
+  // Toggle / stop / resume handlers
+  // -----------------------------------------------------------------------
+
+  function handleToggleClick() {
+    if (!toggleButton) return;
+
+    if (enabled) {
+      enabled = false;
+      sendCommand({ type: 'voice_disable' });
+      stopLocalPlayback();
+      updateUI();
+      return;
+    }
+
+    ensureAudioContext(() => {
+      enabled = true;
+      applyBackendSettings();
+      updateUI();
+    });
+  }
+
+  function handleStopClick() {
+    stopLocalPlayback();
+    if (activeStreamId !== null) {
+      sendCommand({ type: 'voice_stop' });
+    }
+    updateUI();
+  }
+
+  function handleResumeClick() {
+    if (!audioContext) return;
+    audioContext.resume().then(() => {
+      if (resumeButton) resumeButton.style.display = 'none';
+    });
+  }
+
+  function ensureAudioContext(callback) {
+    if (!audioContext) {
+      try {
+        audioContext = audioCtxFactory();
+        masterGain = audioContext.createGain();
+        masterGain.gain.value = settings.volume || 1.0;
+        masterGain.connect(audioContext.destination);
+      } catch {
+        onError?.('Audio is not supported in this browser');
+        return;
+      }
+    }
+
+    if (audioContext.state === 'suspended') {
+      audioContext.resume().then(() => {
+        playSilentBufferIfNeeded();
+        callback();
+      }).catch(() => {
+        if (resumeButton) resumeButton.style.display = 'block';
+      });
+    } else {
+      playSilentBufferIfNeeded();
+      callback();
+    }
+  }
+
+  function playSilentBufferIfNeeded() {
+    try {
+      const buffer = audioContext.createBuffer(1, 1, 22050);
+      const source = audioContext.createBufferSource();
+      source.buffer = buffer;
+      source.connect(masterGain);
+      source.start();
+    } catch {
+      // Ignore
+    }
+  }
+
+  function applyVolume() {
+    if (masterGain) {
+      masterGain.gain.value = settings.volume || 1.0;
+    }
+  }
+
+  function applyBackendSettings() {
+    const backendSettings = getBackendSettings();
+    sendCommand({ type: 'voice_enable', settings: backendSettings });
+    saveSettings();
+  }
+
+  function sendVoicePrepare(backendSettings) {
+    return new Promise((resolve, reject) => {
+      pendingPrepareResolve = resolve;
+      pendingPrepareReject = reject;
+      sendCommand({ type: 'voice_prepare', settings: backendSettings });
+      setTimeout(() => {
+        if (pendingPrepareResolve === resolve) {
+          pendingPrepareResolve = null;
+          pendingPrepareReject = null;
+          reject(new Error('Voice preparation timed out'));
+        }
+      }, 65000); // must exceed the server's 60s voice_prepare timeout
+    });
+  }
+
+  // -----------------------------------------------------------------------
+  // Playback
+  // -----------------------------------------------------------------------
+
+  function stopLocalPlayback() {
+    const interruptedStreamId = activeStreamId;
+    for (const source of activeSources) {
+      try { source.stop(); } catch { /* already stopped */ }
+    }
+    activeSources.clear();
+    activeStreamId = null;
+    lastSequence = -1;
+    scheduledEndTime = 0;
+    backendStreamEnded = false;
+    speaking = false;
+    // Playback stopped before it finished (user stop, new prompt, new stream,
+    // disconnect): tell the server so it closes the AEC window for STT and
+    // drops the now-stale reference audio.
+    if (interruptedStreamId !== null) {
+      sendCommand({ type: 'voice_playback_end', streamId: interruptedStreamId });
+    }
+  }
+
+  function updateUI() {
+    if (!toggleButton) return;
+
+    toggleButton.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+    toggleButton.classList.toggle('is-enabled', enabled);
+    toggleButton.classList.toggle('is-loading', backendState === 'loading');
+    toggleButton.classList.toggle('is-ready', backendState === 'ready');
+    toggleButton.classList.toggle('is-error', backendState === 'error');
+
+    if (stopButton) {
+      stopButton.classList.toggle('visible', speaking);
+    }
+
+    if (resumeButton && audioContext?.state === 'suspended') {
+      resumeButton.style.display = 'block';
+    }
+
+    if (statusElement) {
+      if (speaking) {
+        statusElement.textContent = 'speaking';
+      } else if (backendState === 'loading') {
+        statusElement.textContent = 'loading voice...';
+      } else if (backendState === 'ready' && enabled) {
+        statusElement.textContent = 'voice ready';
+      } else if (backendState === 'error') {
+        statusElement.textContent = 'voice error';
+      } else if (enabled) {
+        statusElement.textContent = 'voice enabled';
+      } else {
+        statusElement.textContent = '';
+      }
+    }
+  }
+
+  function setSpeaking(isSpeaking) {
+    if (speaking === isSpeaking) return;
+    speaking = isSpeaking;
+    updateUI();
+  }
+
+  // -----------------------------------------------------------------------
+  // Public API
+  // -----------------------------------------------------------------------
+
+  function setAccount(acc) {
+    account = acc;
+    const saved = loadSavedSettings(acc);
+    if (saved) {
+      settings = saved;
+    }
+    initUI();
+  }
+
+  function toggle() {
+    handleToggleClick();
+  }
+
+  function openSettings() {
+    if (!settingsDialog) return;
+    // The dialog's shape depends on the engine, and the engine is only knowable from the
+    // server. Fetch once per session; a failure leaves the OmniVoice layout, which is the
+    // layout the markup ships with.
+    const ready = capabilities ? Promise.resolve(capabilities) : loadCapabilities();
+    Promise.resolve(ready).then(() => {
+      applyEngineToForm();
+      populatePhononControls();
+    });
+    populateSettingsForm();
+    settingsDialog.classList.add('active');
+    settingsBackdrop?.classList.add('active');
+    settingsDialog.setAttribute('aria-hidden', 'false');
+    const firstControl = settingsDialog.querySelector('select, input');
+    firstControl?.focus();
+  }
+
+  function handleServerMessage(message) {
+    switch (message.type) {
+      case 'voice_state':
+        handleVoiceState(message);
+        break;
+      case 'voice_stream_start':
+        handleVoiceStreamStart(message);
+        break;
+      case 'voice_stream_end':
+        handleVoiceStreamEnd(message);
+        break;
+      case 'voice_prepared':
+        if (pendingPrepareResolve) {
+          pendingPrepareResolve(message);
+          pendingPrepareResolve = null;
+          pendingPrepareReject = null;
+        }
+        break;
+      case 'voice_error':
+        handleVoiceError(message);
+        break;
+    }
+  }
+
+  function handleVoiceState(message) {
+    backendState = message.state || 'disabled';
+    if (message.settings) {
+      settings = { ...settings, ...message.settings };
+    }
+    updateUI();
+  }
+
+  function handleVoiceStreamStart(message) {
+    stopLocalPlayback();
+    activeStreamId = message.streamId;
+    lastSequence = -1;
+    scheduledEndTime = 0;
+    backendStreamEnded = false;
+    setSpeaking(true);
+  }
+
+  function handleVoiceStreamEnd(message) {
+    if (message.streamId === activeStreamId) {
+      backendStreamEnded = true;
+      checkSpeakingDrain();
+    }
+  }
+
+  function handleVoiceError(message) {
+    if (pendingPrepareReject) {
+      pendingPrepareReject(new Error(message.message));
+      pendingPrepareResolve = null;
+      pendingPrepareReject = null;
+    }
+    // Recoverable mid-stream errors (synthesis glitch, backlog) must not
+    // mark the whole voice subsystem as failed; only stick the error state
+    // when unrecoverable, or when nothing is ready yet.
+    if (!message.recoverable || backendState === 'loading') {
+      backendState = 'error';
+    }
+    onError?.(message.message || 'Voice error');
+    updateUI();
+  }
+
+  function handleBinaryFrame(arrayBuffer) {
+    if (!audioContext || !masterGain) return;
+    if (arrayBuffer.byteLength < PCM_HEADER_LENGTH) return;
+
+    const view = new DataView(arrayBuffer);
+
+    const magic = String.fromCharCode(
+      view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3)
+    );
+    if (magic !== PCM_MAGIC) return;
+
+    const version = view.getUint8(4);
+    if (version !== PCM_VERSION) return;
+
+    const headerLength = view.getUint16(6, true);
+    if (headerLength !== PCM_HEADER_LENGTH) return;
+
+    const streamId = view.getUint32(8, true);
+    const sequence = view.getUint32(12, true);
+    const sampleRate = view.getUint32(16, true);
+    const sampleCount = view.getUint32(20, true);
+
+    if (streamId !== activeStreamId) return;
+
+    if (sequence <= lastSequence) return;
+    lastSequence = sequence;
+
+    const expectedPayload = sampleCount * 2;
+    const actualPayload = arrayBuffer.byteLength - PCM_HEADER_LENGTH;
+    if (expectedPayload !== actualPayload) return;
+
+    const audioBuffer = audioContext.createBuffer(1, sampleCount, sampleRate);
+    const channelData = audioBuffer.getChannelData(0);
+
+    const pcmStart = PCM_HEADER_LENGTH;
+    for (let i = 0; i < sampleCount; i++) {
+      const int16 = view.getInt16(pcmStart + i * 2, true);
+      channelData[i] = int16 / 32768.0;
+    }
+
+    scheduleBuffer(audioBuffer);
+  }
+
+  function scheduleBuffer(audioBuffer) {
+    if (!audioContext || !masterGain) return;
+
+    const source = audioContext.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(masterGain);
+
+    const startAt = Math.max(
+      audioContext.currentTime + 0.025,
+      scheduledEndTime,
+    );
+
+    source.onended = () => {
+      activeSources.delete(source);
+      checkSpeakingDrain();
+    };
+
+    source.start(startAt);
+    scheduledEndTime = startAt + audioBuffer.duration;
+    activeSources.add(source);
+
+    setSpeaking(true);
+  }
+
+  function checkSpeakingDrain() {
+    if (!backendStreamEnded) return;
+    if (activeSources.size > 0) return;
+    if (scheduledEndTime > (audioContext?.currentTime || 0)) return;
+    setSpeaking(false);
+    // Natural playback complete: the server only learns the true playback
+    // end here — without this it keeps running AEC on the mic (stale
+    // window) or closes it too early (echo leak into STT).
+    if (activeStreamId !== null) {
+      sendCommand({ type: 'voice_playback_end', streamId: activeStreamId });
+    }
+  }
+
+  function beforePrompt() {
+    stopLocalPlayback();
+  }
+
+  function resetConnection() {
+    stopLocalPlayback();
+    enabled = false;
+    backendState = 'disabled';
+    activeStreamId = null;
+    updateUI();
+  }
+
+  function destroy() {
+    stopLocalPlayback();
+    stopRecordingTimer();
+    if (currentStream) {
+      currentStream.getTracks().forEach(t => t.stop());
+    }
+    if (audioContext && audioContext.state !== 'closed') {
+      audioContext.close().catch(() => {});
+    }
+    audioContext = null;
+    masterGain = null;
+    enabled = false;
+    backendState = 'disabled';
+  }
+
+  // Initialize UI on first call (lazy, after DOM is ready)
+  if (!toggleButton) {
+    initUI();
+  }
+
+  return {
+    setAccount,
+    toggle,
+    openSettings,
+    handleServerMessage,
+    handleBinaryFrame,
+    beforePrompt,
+    resetConnection,
+    destroy,
+  };
+}

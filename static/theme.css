@@ -1,0 +1,268 @@
+/* ============================================================
+   pi-chat theme layer — locked palette
+   Tokens only. Layout and components live in styles.css.
+
+   Two themes switch on <html data-theme="light|dark">. Light is the default.
+   Every value a component needs is here; styles.css should contain no raw colors.
+   Brand primitives come from the impeccable skill's brand-tokens.css.
+   ============================================================ */
+
+/* ── Vendored fonts ──────────────────────────────────────────────
+   No CDN: the app runs on a tailnet where the internet may be down, and it
+   should not phone home while somebody is chatting in it. latin subsets of
+   DM Sans 400/500/700 + italic 400, DM Mono 400/500 (~90 KB total). */
+
+@font-face {
+  font-family: 'DM Sans';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('fonts/dm-sans-400.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'DM Sans';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('fonts/dm-sans-500.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'DM Sans';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('fonts/dm-sans-700.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'DM Sans';
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url('fonts/dm-sans-400-italic.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'DM Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('fonts/dm-mono-400.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'DM Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('fonts/dm-mono-500.woff2') format('woff2');
+}
+
+/* ── Brand primitives (theme independent) ──────────────────────── */
+
+:root {
+  --db-lava-600: #FF3621;
+  --db-navy-900: #0B2026;
+  --db-oat-medium: #EEEDE9;
+  --db-oat-light: #F9F7F4;
+  --db-white: #FFFFFF;
+
+  --db-success: #00A972;
+  --db-warning: #B77F00;        /* FBB300 darkened to pass AA as text on light */
+  --db-info: #4462C9;
+  --db-rose: #98102A;
+
+  --db-font-primary: 'DM Sans', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --db-font-mono: 'DM Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+
+  /* Type scale. Body copy never goes below 16 px; smaller sizes are reserved
+     for chrome (labels, meta, badges), not for reading. */
+  --db-text-h1: 2.25rem;
+  --db-text-h2: 1.75rem;
+  --db-text-h3: 1.25rem;
+  --db-text-h4: 1.0625rem;
+  --db-text-body: 1rem;
+  --db-text-small: 0.875rem;
+  --db-text-mono: 0.875rem;
+
+  /* 8pt grid */
+  --db-space-xs: 4px;
+  --db-space-sm: 8px;
+  --db-space-md: 16px;
+  --db-space-lg: 24px;
+  --db-space-xl: 32px;
+  --db-space-2xl: 48px;
+
+  --db-radius-sm: 4px;
+  --db-radius-md: 8px;
+  --db-radius-lg: 12px;
+  --db-radius-full: 9999px;
+
+  --db-ease-quart: cubic-bezier(0.25, 1, 0.5, 1);
+  --db-ease-quint: cubic-bezier(0.22, 1, 0.36, 1);
+  --db-ease-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --db-duration-fast: 150ms;
+  --db-duration-state: 250ms;
+  --db-duration-layout: 400ms;
+}
+
+/* ── Light (default) ───────────────────────────────────────────── */
+
+:root,
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  /* Surfaces */
+  --bg: #F9F7F4;
+  --bg-elevated: #FFFFFF;
+  --bg-subtle: #EEEDE9;
+
+  /* Lines */
+  --border: #C4CCD6;
+  --border-subtle: #E4E1DA;
+
+  /* Text. All four pairs clear AA on the surfaces above. */
+  --text: #0B2026;
+  --text-muted: #4A5568;
+  --text-subtle: #5F6877;
+
+  /* Accent: Lava carries actions and status, never body text */
+  --accent: #FF3621;
+  --accent-2: #C2261A;          /* pressed/darker step, not a second hue */
+  --accent-hover: #C2261A;
+  --accent-contrast: #FFFFFF;
+  --accent-soft: rgba(255, 54, 33, 0.08);
+  --accent-glow: rgba(255, 54, 33, 0.16);
+
+  /* Status */
+  --success: #00795A;
+  --warning: #B77F00;
+  --error: #C2261A;
+  --error-surface: rgba(194, 38, 26, 0.06);
+  --error-border: rgba(194, 38, 26, 0.3);
+  --success-surface: rgba(0, 121, 90, 0.08);
+
+  /* Radius */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  /* Type */
+  --font-sans: var(--db-font-primary);
+  --font-mono: var(--db-font-mono);
+  --font-size-base: 1rem;
+  --font-size-sm: 0.875rem;
+  --font-size-xs: 0.8125rem;
+  --line-height-base: 1.6;
+
+  /* Code */
+  --code-bg: #F1EFEA;
+  --code-border: var(--border);
+
+  /* Elevation: the light theme is border-driven, shadows stay faint */
+  --shadow-sm: 0 1px 2px rgba(11, 32, 38, 0.06);
+  --shadow-md: 0 4px 12px rgba(11, 32, 38, 0.08);
+  --shadow-lg: 0 16px 40px rgba(11, 32, 38, 0.12);
+  --scrim: rgba(11, 32, 38, 0.42);
+  --glow: transparent;
+  --focus-ring: rgba(255, 54, 33, 0.45);
+  --mascot-shadow: rgba(11, 32, 38, 0.16);
+
+  /* Motion */
+  --ease-out: var(--db-ease-expo);
+
+  /* Legacy aliases: styles.css still speaks these names */
+  --navy: #0B2026;
+  --blush: #F9F7F4;
+  --surface: var(--bg-elevated);
+  --surface2: var(--bg-subtle);
+  --page-text: var(--text);
+  --page-text-dim: var(--text-muted);
+  --page-detail: var(--accent);
+  --surface-text: var(--text);
+  --surface-text-dim: var(--text-muted);
+  --surface-detail: var(--accent);
+  --text-dim: var(--text-muted);
+  --page-accent: var(--accent);
+  --detail: var(--accent);
+  --page-error: var(--error);
+  --neutral: var(--text-subtle);
+  --radius: var(--radius-md);
+  --pre-bg: var(--code-bg);
+  --assistant-bubble-bg: var(--bg-elevated);
+  --user-bubble-bg: var(--bg-subtle);
+  --user-bubble-text: var(--text);
+}
+
+/* ── Dark ──────────────────────────────────────────────────────── */
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* Surfaces: Navy 900 base, one warm-cool ramp up to Teal */
+  --bg: #0B2026;
+  --bg-elevated: #122B33;
+  --bg-subtle: #143D4A;
+
+  /* Lines */
+  --border: #2E4A54;
+  --border-subtle: #1E3841;
+
+  /* Text */
+  --text: #FFFFFF;
+  --text-muted: #C6D3D8;
+  --text-subtle: #94A8AF;
+
+  /* Accent */
+  --accent: #FF5A45;            /* lifted from 600 so small text clears AA on navy */
+  --accent-2: #FF3621;
+  --accent-hover: #FF7A68;
+  --accent-contrast: #0B2026;
+  --accent-soft: rgba(255, 90, 69, 0.14);
+  --accent-glow: rgba(255, 90, 69, 0.2);
+
+  /* Status */
+  --success: #2FBF8F;
+  --warning: #FBB300;
+  --error: #FF7A68;
+  --error-surface: rgba(255, 122, 104, 0.12);
+  --error-border: rgba(255, 122, 104, 0.34);
+  --success-surface: rgba(47, 191, 143, 0.16);
+
+  /* Code */
+  --code-bg: #0A1B21;
+  --code-border: var(--border);
+
+  /* Elevation: shadows barely read on navy, so borders carry the depth */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 6px 18px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 18px 48px rgba(0, 0, 0, 0.55);
+  --scrim: rgba(4, 14, 18, 0.6);
+  --glow: transparent;
+  --focus-ring: rgba(255, 90, 69, 0.5);
+  --mascot-shadow: rgba(0, 0, 0, 0.55);
+
+  /* Legacy aliases */
+  --navy: #0B2026;
+  --blush: #F9F7F4;
+  --surface: var(--bg-elevated);
+  --surface2: var(--bg-subtle);
+  --page-text: var(--text);
+  --page-text-dim: var(--text-muted);
+  --page-detail: var(--accent);
+  --surface-text: var(--text);
+  --surface-text-dim: var(--text-muted);
+  --surface-detail: var(--accent);
+  --text-dim: var(--text-muted);
+  --page-accent: var(--accent);
+  --detail: var(--accent);
+  --page-error: var(--error);
+  --neutral: var(--text-subtle);
+  --radius: var(--radius-md);
+  --pre-bg: var(--code-bg);
+  --assistant-bubble-bg: var(--bg-elevated);
+  --user-bubble-bg: var(--bg-subtle);
+  --user-bubble-text: var(--text);
+}

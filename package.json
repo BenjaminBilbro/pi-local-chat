@@ -1,0 +1,15 @@
+{
+  "name": "pi-local-chat",
+  "private": true,
+  "engines": {
+    "node": "^20.19.0 || ^22.13.0 || >=24.0.0"
+  },
+  "scripts": {
+    "test": "uv run python tests/compare_render.py",
+    "test:py": "uv run python -m pytest -q -m \"not audio_gpu and not audio_cpu\""
+  },
+  "devDependencies": {
+    "jsdom": "^29.1.1"
+  },
+  "type": "module"
+}

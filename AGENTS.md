@@ -1,0 +1,232 @@
+# AGENTS.md — pi-chat
+
+A FastAPI plus WebSocket front end over `pi --mode rpc`, built for a family member to talk to pi outside
+Telegram, and now the everyday way to run a pi session in a browser. Backend about 5k lines of Python,
+frontend about 7.3k of first-party JavaScript, tests about 13.6k.
+
+**This file is a card, not a book.** It holds what you cannot afford to get wrong and the commands you run
+more than once a day. Everything else lives in `docs/`, and the split is deliberate: this card used to be
+1162 lines, the same gotchas lived in three places, and a fix in one became a lie in two.
+
+## Where to look
+
+| You are changing | Read |
+|---|---|
+| Module boundaries, what owns what, where a behavior lives | `docs/architecture.md` |
+| The browser WebSocket, pi's event stream, queue and steer semantics, session file formats | `docs/protocol.md` |
+| The timeline renderer, or anything that could make live and history render differently | `docs/rendering-parity.md` |
+| How to run, test, screenshot, or debug this on a machine | `docs/dev-workflow.md` |
+| What an environment variable does, its default, or which side reads it | `docs/configuration.md` |
+| Voice, STT, TTS engines | `docs/phonon-tts-engine.md`, `docs/system-prompt-composition.md` |
+| Anything about how the app looks: palette, type, themes, the constraints | `docs/design-system.md` |
+| Why a change was made, and what was found broken | `docs/audit/` (dated snapshots, read the newest). Local only: that directory is gitignored, because a fix writeup that names the documents it found is personal data |
+
+## Boundaries
+
+- **Profile, persona and memory do not live in this repository** (Ben, 2026-11-17). They live in the local
+  `~/.pi/agent/extensions/memory.ts`. pi-chat contributes one thing to that: `PI_CHAT_ACCOUNT=<account>` in
+  the child's environment, set only when it differs from `main`. Do not add persona text, memory readers, or
+  prompt injection here.
+- **This repository is public.** Personal data has no place in it, including in test fixtures: a capture
+  records the child's system prompt verbatim, and that prompt can carry injected memory.
+  `tools/scrub_captures.py --check` fails CI over exactly that, and it has already caught a real case. The
+  list of personal strings it removes is never committed either (`.scrub-literals`, or
+  `$PI_CHAT_SCRUB_LITERALS`): committing the cure would publish the disease. What the repository does carry is
+  the half of the rule that needs no names, a pattern that fails any capture holding a real home directory.
+- **The commit history restarted on 2026-11-17.** Earlier SHAs quoted in these docs, in code comments and in
+  commit-message-style citations are from the history before that date, and they are not in this clone: the
+  published tree was republished as one commit to remove personal files that had been tracked on branch tips.
+  Do not go looking for them, and do not "fix" a citation you cannot resolve. The full previous history exists
+  in a bundle on the machine that did the work.
+- **The UI is visually frozen** unless Ben asks otherwise. More UI work is his, and the rendering parity
+  contract below is what makes that safe.
+
+## Status (2026-11-17)
+
+| Workstream | State | Detail |
+|---|---|---|
+| Audit fix pass (2026-11-17) | all 15 work packages shipped, documented or deferred. Open: `SEC-05`, QA-03 re-captures (needs a real `pi` child, so an inference box that is free), WP-07 mobile and WP-08 keyboard a11y, both deferred until after Ben's layout refactor | `docs/audit/sweep-2-2026-11-17.md`, local only |
+| Phonon TTS | **default engine** (`config.DEFAULT_TTS_ENGINE`), `ptts` a base dependency. Real-browser voice test passed 2026-11-17: mic transcribed and sent, reply spoken in real time, playback not picked up at speaker max volume | `docs/phonon-tts-engine.md` |
+| Tool call lifecycle | shipped 2026-11-10, with the `--stage stream-render` and `capture.py --census` guards | `docs/tool-call-lifecycle.md` |
+| Document preview pane | shipped; PDF root handling is open | `docs/preview-pane-handoff.md` |
+| CI | runs on Ubuntu and Windows for pushes to `master`, `main`, `feature/**` and `refactor/**`, for every pull request, and on manual dispatch. A workflow only registers once it exists on the branch being pushed, which is why a brand new default branch has to carry the file in its first commit | `.github/workflows/ci.yml` |
+
+
+## Project Summary
+
+pi-chat is a local web interface for running the `pi` coding agent in RPC mode. It provides:
+
+- Two local profiles (`b` and `r`), each with its own authentication and session history
+- Streaming chat output via WebSocket, with image attachments
+- Session history loaded from pi's native JSONL files
+- Markdown rendering, sub-agent activity cards, and theme toggle
+- One persistent `pi --mode rpc` subprocess per authenticated WebSocket connection
+
+**Tech stack:** FastAPI + Starlette backend, plain ES module frontend (no bundler/framework), one `pi --mode rpc` subprocess per connection.
+
+## Quick Start
+
+```bash
+# Install Python dependencies
+uv sync
+
+# First run only: profile passwords. This writes .env in place, nothing to copy-paste, and it
+# prompts at the terminal (getpass reads the tty, so it will not take piped input).
+uv run python -m pi_chat.auth --account b
+
+# Verify a passphrase against what is configured, without changing anything:
+uv run python -m pi_chat.auth --account b --check
+
+# Start the server
+uv run python server.py
+
+# Open in browser
+# http://localhost:9000
+
+# Run parity tests
+npm test
+```
+
+## Runtime Invariants
+
+- **A `PI_CHAT_*` name means "a setting this application reads"** (`config.log_env_diagnostics`, called
+  from `server.py`). Startup warns about any `PI_CHAT_*` variable nothing reads, with the name it probably
+  meant, and warns when only one of `PI_CHAT_PREVIEW_BASE_DIR` / `PI_CHAT_PREVIEW_DIR` is set (server half
+  versus extension half). Two consequences: do not export scratch shell variables under this prefix, and do
+  not spell out a fake knob name in `pi_chat/`, `tools/` or `server.py`, because the known-name set is
+  scanned from those files and a spelled example becomes a real name.
+- **The child's spawn flags are load bearing** (`pi_chat/process.py`). `--extension preview.ts` and
+  `--no-context-files` are both explicit; `--no-context-files` replaces `--no-ambient`. It disables AGENTS.md
+  and CLAUDE.md **discovery**, not injection: an extension loaded from `~/.pi/agent/extensions/` still runs,
+  which is how the profile reaches the child and why `--append-system-prompt` is never passed here. The
+  profile reaches the child as `PI_CHAT_ACCOUNT`, nothing else.
+These are non-negotiable. Violating any of these will break the application:
+
+1. The HTTP-only cookie identifies the active profile (`b` or `r`).
+2. One browser WebSocket owns one `PiProcess` object.
+3. A `PiProcess` does not spawn `pi` until the first prompt or session load.
+4. `new_session` and `switch_session` reuse the existing subprocess.
+5. Closing the WebSocket terminates its subprocess.
+6. Session ownership is determined by the `cwd` in the pi JSONL header. That is presentation, not
+   isolation: any authored `.jsonl` claiming the account's work dir passes, and a pi child has
+   unrestricted file access anyway. The login password is the boundary.
+7. The server keeps authentication sessions in memory; a restart logs browsers out.
+8. Every message to a browser is enqueued, never sent inline. The stdout reader must not `await` a
+   client send: a tab that stops reading would stall pi's stdout and could wedge the child on a full
+   pipe. One bounded FIFO, one writer task, JSON and bytes sharing it so the voice frame-order
+   contract holds by construction. A browser that overflows or fails to receive is closed with 1011,
+   and invariant 5 tears the child down with it.
+9. A child that exits on its own is a state, not silence. `_notice_child_exit()` clears `proc` (the
+   `if not pi.proc` respawn guards depend on it), releases pending futures, and sends one
+   `{"type":"error","code":"pi_exited"}`. `kill()` sets `_closing` first so an expected teardown is
+   not reported as a crash.
+10. Errors reach the browser through the same FIFO as pi events, so an error can never overtake the
+    events it explains.
+11. One voice worker per stream. It captures its queue at entry and never re-reads the attribute;
+    `_stop_current_internal` cancels and awaits it, and `_on_agent_start` cancels before creating the
+    next. A worker that outlives its stream drops speech, silently.
+12. The TTS waveform is read on the executor thread that produced it. The model executor is
+    single-worker by correctness, not by tuning: the handoff is per-thread, and two profiles talking
+    at once used to be handed each other's audio.
+13. Login is throttled per profile (5 wrong answers per 300 s, `auth.py`). While a profile is in the
+    window its password is not verified at all, because the verification is the only thing a
+    brute-force run receives back per request.
+
+**Reconnect behavior:** An automatic WebSocket reconnect creates a new `PiProcess`. The browser may still display messages from the previous connection, but the replacement process does not have that conversation context. After an unexpected reconnect, load a saved session or start a new conversation.
+
+
+## UI Shell Invariants
+
+- Keep palette values and foreground role-swapping in `static/theme.css`. Colour there is the
+  locked ramp: Lava `#FF3621` accent, Navy 900 `#0B2026` page in dark, Oat `#F9F7F4` page in
+  light (light is the default), DM Sans / DM Mono served from `static/fonts/` with no CDN, and no
+  hex or `rgb()` literals in `styles.css` except inside `@font-face`-adjacent fallbacks.
+- Never reuse `--accent-glow` for a focus state; that token is a 16% tint. Focus rings use
+  `--focus-ring`.
+- Theme and mascot set are both user prefs in localStorage: `pi-chat-theme` (`light`|`dark`, legacy
+  `blush`/`navy` are mapped on read) and `pi-chat-mascot` (`pie` = Buddy-era `/static/pi-mascot-*`,
+  `pi` = `/static/mascots/pi-*`). `static/mascots.js` owns the mapping and updates every
+  `[data-mascot-img]` live, including the randomized landing mascot.
+- Live user bubbles append text before an attached image, matching pi's stored content order.
+- Sub-agent disclosure headers are real buttons with `aria-expanded`.
+- The session drawer is a labelled dialog, closes on Escape, and returns focus to its opener.
+- Keep the mobile media block after base component rules so drawer and timeline overrides win without selector escalation.
+
+## Security Invariants
+
+- Model output is untrusted input. Any HTML built from assistant text goes through
+  `sanitizeRenderedMarkdown()` (`static/timeline.js`) before it reaches `innerHTML`. marked has
+  shipped no sanitizer since v5, so DOMPurify (`static/purify.min.js`) is the only thing between a
+  prompt-injected file and script execution in the page. `npm test` fails if the stripping stops
+  working; `tests/test_security_baseline.py` fails if the headers stop being sent.
+- `Content-Security-Policy` is `script-src 'self'` with no unsafe-eval. Do not add inline script
+  or an `on*=` attribute to `static/index.html` to fix a bug: move the handler into a module. The
+  one deliberate allowance is `style-src 'unsafe-inline'`, because index.html carries a handful of
+  style attributes.
+- No credential may live in the tree. `config.py` reads `PI_CHAT_*_PASSWORD_HASH` (also from an
+  untracked `.env`, loaded by `config.load_dotenv`, real env wins) and `auth.require_configured_accounts()`
+  stops `server.py` from starting when no profile has a scrypt hash. `verify_password()` rejects
+  any format that is not scrypt, so the old unsalted SHA-256 fallback cannot come back.
+- `python -m pi_chat.auth` is the only sanctioned way to change a passphrase: it names the profile,
+  writes `.env` itself (`--print` only if a launcher needs stdout), and `--check` tests a passphrase
+  without writing. Profile names come from `config.ACCOUNT_ENV_VARIABLES`, so the helper and the
+  loader cannot drift apart. Prompts use getpass and therefore need a real terminal.
+- `PI_CHAT_DEV` skips per-profile session ownership checks, so `server.py` refuses to combine it
+  with a non-loopback bind unless `PI_CHAT_ALLOW_DEV_REMOTE=1`.
+- Vendored browser libraries live in `static/` and are committed (the app must run with no
+  internet). Currently: `marked.min.js` v15.0.12 and `purify.min.js` DOMPurify 3.4.17
+  (npm tarball sha512 `B/pSlYVHQ58kqISD/yDjuJ1yfzI34m1gF4lAod2bwSRhiN4K5Cl3H8Af7hqB2PmTL911tdEudnnXn5FnhRoz0w==`,
+  Apache-2.0 and MPL-2.0). Refresh deliberately: check the version, re-verify the digest, run both
+  suites, commit alone.
+
+
+## Where to Make Common Changes
+
+- Browser/server commands: `pi_chat/websocket.py` and `static/app.js`
+- Process lifetime or pi CLI flags: `pi_chat/process.py`
+- Live event rendering: `static/chat.js`
+- Saved-message grouping: `static/history.js`
+- Shared timeline markup/connectors: `static/timeline.js`
+- Shared sub-agent normalization/cards: `static/subagent.js`
+- Session discovery and raw parsing: `pi_chat/sessions.py`
+- Login/session behavior: `pi_chat/auth.py`, `pi_chat/app.py`, `static/auth.js`
+- Colors: `static/theme.css`
+- Buddy mascot visuals/states: `static/buddy.js` (wired in `static/app.js`; dev hook `window.__piChatBuddy`)
+
+## Test commands
+
+- **Never kill a `python.exe` by image name on this box.** `python` here is part of the local inference
+  stack (its launcher sits beside `strata.exe` and `strata-vision.exe`, indistinguishable by image name), and
+  killing it takes the inference server and the agent session down with it. Kill only PIDs you started and
+  recorded, and check a PID's command line before killing it: a `server.py` filter is **not** safe either,
+  because that is also the inference server's filename. Stopping a hung test server once cost a session.
+- **Always pass `--timeout` to pytest.** A voice test deadlocked for 14 m 30 s on 2026-11-17: model work and
+  `prepare_voice` share one executor, so a test that holds a `generate` open while waiting for a prepare can
+  never be scheduled. `npm test` runs `tests/compare_render.py`, which has no timeout of its own.
+
+```bash
+# Everything that runs without a GPU, from the repo root the way CI does
+.venv/Scripts/python.exe -m pytest -q -m "not audio_gpu and not audio_cpu" --timeout=120 -p no:cacheprovider
+
+.venv/Scripts/python.exe -m pytest tests -q -m audio_cpu --timeout=300   # real Phonon, CPU, ~12 s
+npm test                                                                  # jsdom rendering parity
+.venv/Scripts/python.exe tools/smoke_test_ws.py                           # 31 browser-protocol checks
+.venv/Scripts/python.exe tools/capture.py --census "data-samples/*.jsonl" # fixture coverage verdict
+.venv/Scripts/python.exe tools/scrub_captures.py --check                  # no injected memory in fixtures
+sh tools/verify_fresh_clone.sh                                             # clone HEAD, install from nothing, must refuse to start without a hash
+node tools/screenshot_ui.mjs --url http://127.0.0.1:9031 --stage chat \
+  --cdp-port 9344 --out "$TEMP/shots/chat.png" --password test-only        # needs PI_CHAT_PI_BIN=fake_rpc_pi.py
+```
+
+Every stage of `screenshot_ui.mjs`, and the server environment each one needs, is in
+`docs/dev-workflow.md`. Running a stage against the wrong environment fails on a correct app, which is the
+single most common way to lose an hour here.
+
+## About this card
+
+`AGENTS.md` is injected into every agent session on this project, so length is a cost you pay every turn.
+It is about 230 lines: the invariants, the commands and the boundaries, and nothing else. It was 1162. The
+sections that moved out on 2026-11-17 went to `docs/` intact rather than summarized, because the failure this
+card is meant to prevent was the same knowledge living in two places with different contents. If you learn
+something here that belongs in the card, it earns its place by being a rule you would violate unknowingly;
+otherwise it belongs in `docs/`.

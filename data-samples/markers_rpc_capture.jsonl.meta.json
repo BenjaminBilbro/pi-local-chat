@@ -1,0 +1,83 @@
+{
+  "captured_at": "2026-11-10T20:02:26.805-08:00",
+  "tool": "tools/capture.py",
+  "argv": [
+    "node",
+    "C:\\Users\\Local User\\AppData\\Roaming\\npm\\node_modules\\@earendil-works\\pi-coding-agent\\dist\\bundle\\cli.js",
+    "--mode",
+    "rpc",
+    "--approve",
+    "--thinking",
+    "low",
+    "--no-context-files",
+    "--no-skills",
+    "--no-mcp",
+    "--offline",
+    "-e",
+    "C:\\Users\\Local User\\pi-chat\\tests\\fixtures\\capture_probe.ts"
+  ],
+  "scenario": "markers",
+  "cwd": "C:\\Users\\Local User\\pi-chat\\data-samples\\capture-workspace",
+  "workspace_files": [
+    "notes.md",
+    "seed.txt"
+  ],
+  "capture": "C:\\Users\\Local User\\pi-chat\\data-samples\\markers_rpc_capture.jsonl",
+  "raw": "C:\\Users\\Local User\\pi-chat\\data-samples\\markers_rpc_capture.jsonl.gz",
+  "raw_bytes": 70135,
+  "session_file": "C:\\Users\\Local User\\.pi\\agent\\sessions\\--C--Users-Local User-pi-chat-data-samples-capture-workspace--\\2026-11-11T04-01-50-615Z_01a1c8c4-ea17-74ed-80fe-163b97440dd4.jsonl",
+  "session_header": {
+    "type": "session",
+    "version": 3,
+    "id": "01a1c8c4-ea17-74ed-80fe-163b97440dd4",
+    "timestamp": "2026-11-11T04:01:50.615Z",
+    "cwd": "C:\\Users\\Local User\\pi-chat\\data-samples\\capture-workspace"
+  },
+  "result": {
+    "seconds": 36.4,
+    "events": 893,
+    "steps": [
+      {
+        "label": "long write + read back",
+        "settled": true,
+        "aborted_by_us": false,
+        "last_event": "agent_settled",
+        "events": 527
+      },
+      {
+        "label": "rpc commands (no inference)",
+        "settled": true,
+        "aborted_by_us": false,
+        "last_event": "response",
+        "events": 543
+      },
+      {
+        "label": "edit + failing read",
+        "settled": true,
+        "aborted_by_us": false,
+        "last_event": "agent_settled",
+        "events": 789
+      },
+      {
+        "label": "abort during a streaming bash call",
+        "settled": true,
+        "aborted_by_us": true,
+        "last_event": "response",
+        "events": 893
+      }
+    ]
+  },
+  "boundary_notes": [
+    "tool_execution_start write",
+    "tool_execution_start read",
+    "tool_execution_start edit",
+    "tool_execution_start bash",
+    "step long write + read back: {'label': 'long write + read back', 'settled': True, 'aborted_by_us': False, 'last_event': 'agent_settled', 'events': 527}",
+    "step rpc commands (no inference): {'label': 'rpc commands (no inference)', 'settled': True, 'aborted_by_us': False, 'last_event': 'response', 'events': 543}",
+    "tool_execution_start edit",
+    "tool_execution_start read",
+    "step edit + failing read: {'label': 'edit + failing read', 'settled': True, 'aborted_by_us': False, 'last_event': 'agent_settled', 'events': 789}",
+    "tool_execution_start bash",
+    "step abort during a streaming bash call: {'label': 'abort during a streaming bash call', 'settled': True, 'aborted_by_us': True, 'last_event': 'response', 'events': 893}"
+  ]
+}

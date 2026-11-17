@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#F9F7F4">
+<title>pi chat</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%230B2026'/><g transform='translate(32 35) scale(0.6)'><circle cx='0' cy='-55' r='16' fill='%23D38033'/><circle cx='27.5' cy='-47.6' r='16' fill='%23D38033'/><circle cx='47.6' cy='-27.5' r='16' fill='%23D38033'/><circle cx='55' cy='0' r='16' fill='%23D38033'/><circle cx='47.6' cy='27.5' r='16' fill='%23D38033'/><circle cx='27.5' cy='47.6' r='16' fill='%23D38033'/><circle cx='0' cy='55' r='16' fill='%23D38033'/><circle cx='-27.5' cy='47.6' r='16' fill='%23D38033'/><circle cx='-47.6' cy='27.5' r='16' fill='%23D38033'/><circle cx='-55' cy='0' r='16' fill='%23D38033'/><circle cx='-47.6' cy='-27.5' r='16' fill='%23D38033'/><circle cx='-27.5' cy='-47.6' r='16' fill='%23D38033'/><circle r='55' fill='%23D38033'/><circle r='48' fill='%23F4C275'/><circle r='44' fill='%23F8CE8B'/><path d='M -18 -14 L 18 -14' stroke='%234E2F1D' stroke-width='8' stroke-linecap='round'/><path d='M -7 -14 L -7 6 C -7 14 -16 14 -16 14' fill='none' stroke='%234E2F1D' stroke-width='8' stroke-linecap='round' stroke-linejoin='round'/><path d='M 7 -14 L 7 10 C 7 14 11 14 11 14' fill='none' stroke='%234E2F1D' stroke-width='8' stroke-linecap='round' stroke-linejoin='round'/></g></svg>">
+<link rel="stylesheet" href="/static/theme.css">
+<link rel="stylesheet" href="/static/styles.css">
+<!-- Vendored DM Sans / DM Mono. No third-party requests: the app is used on a tailnet that
+     may have no internet, and it should not phone home while someone is chatting in it. -->
+<link rel="preload" as="font" type="font/woff2" crossorigin href="/static/fonts/dm-sans-400.woff2">
+<link rel="preload" as="font" type="font/woff2" crossorigin href="/static/fonts/dm-sans-500.woff2">
+<link rel="preload" as="font" type="font/woff2" crossorigin href="/static/fonts/dm-mono-400.woff2">
+</head>
+<body>
+
+<!-- Login Screen -->
+<div id="login-screen">
+  <div class="login-controls">
+    <button class="mascot-toggle" data-mascot-toggle type="button">
+      <img class="mascot-toggle-preview" src="/static/mascots/pi-greeting.svg" alt="" aria-hidden="true">
+      <span data-mascot-label>Pi</span>
+    </button>
+    <button class="theme-toggle" data-theme-toggle type="button">
+    <svg class="theme-icon theme-icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="4"/>
+      <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>
+    </svg>
+    <svg class="theme-icon theme-icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+    </svg>
+      <span data-theme-label>Theme</span>
+    </button>
+  </div>
+  <img class="login-mascot" data-mascot-img src="/static/pi-mascot-greeting.svg" alt="" aria-hidden="true">
+  <div class="login-title">Pi chat</div>
+  <div class="login-subtitle">Choose a profile</div>
+  <div class="login-icons">
+    <button class="login-icon" id="icon-b" type="button" aria-label="Sign in as Ben">
+      <span class="login-icon-letter">B</span>
+      <span class="login-icon-name">Ben</span>
+    </button>
+    <button class="login-icon" id="icon-r" type="button" aria-label="Sign in as Roxy">
+      <span class="login-icon-letter">R</span>
+      <span class="login-icon-name">Roxy</span>
+    </button>
+  </div>
+  <div class="login-password-area" id="login-password-area">
+    <input type="password" id="passphrase" placeholder="Password" autocomplete="current-password">
+    <button id="login-btn">Sign in</button>
+    <div class="login-error" id="login-error"></div>
+  </div>
+  <p class="login-footer">Runs on this machine. Chats are stored locally.</p>
+</div>
+
+<!-- Chat Screen -->
+<div id="chat-screen">
+  <div class="chat-header">
+    <div class="chat-header-main">
+      <button class="btn-icon" id="session-menu-btn" type="button" aria-label="Open sessions">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
+      </button>
+      <div class="status-dot" id="status-dot"></div>
+      <img class="header-mascot" data-mascot-img src="/static/pi-mascot-greeting.svg" alt="" aria-hidden="true">
+      <h1>Pi chat</h1>
+    </div>
+    <div class="header-actions">
+      <button class="btn-icon mascot-toggle" data-mascot-toggle type="button">
+        <img class="mascot-toggle-preview" src="/static/mascots/pi-greeting.svg" alt="" aria-hidden="true">
+        <span data-mascot-label>Pi</span>
+      </button>
+      <button class="btn-icon theme-toggle" data-theme-toggle type="button">
+        <svg class="theme-icon theme-icon-sun" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="4"/>
+          <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>
+        </svg>
+        <svg class="theme-icon theme-icon-moon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+        </svg>
+        <span data-theme-label>Theme</span>
+      </button>
+      <div class="voice-controls">
+        <button class="btn-icon voice-toggle" data-voice-toggle type="button" aria-pressed="false" aria-label="Enable voice output">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+        </button>
+        <button class="btn-icon voice-settings-btn" data-voice-settings type="button" aria-label="Voice settings">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </button>
+      </div>
+      <button class="btn-icon voice-stop" data-voice-stop type="button" aria-label="Stop speech">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+      </button>
+      <button class="btn-icon" id="doc-toggle-btn" type="button" aria-expanded="false" aria-controls="doc-pane" disabled title="Preview pane (Ctrl+\)" aria-keyshortcuts="Control+Backslash">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8M8 17h5"/></svg>
+        Preview
+      </button>
+      <button class="btn-icon run-stop" id="stop-run-btn" type="button" hidden title="Stop the run and the call it is waiting on. Queued messages come back to the composer.">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+        Stop
+      </button>
+      <button class="btn-icon" id="new-session-btn" type="button" title="New session (Ctrl+K)">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+        New session
+      </button>
+      <button class="btn-icon" id="logout-btn" type="button">Sign out</button>
+    </div>
+    <div class="voice-status" data-voice-status aria-live="polite"></div>
+    <button class="btn-icon voice-resume" data-voice-resume type="button" style="display:none">Tap to resume audio</button>
+  </div>
+  <!-- The conversation column. The preview pane sits beside it, not inside it. -->
+  <div class="chat-column">
+
+    <div class="messages" id="messages">
+      <div class="waiting-indicator" id="waiting-indicator">
+        <div class="waiting-dots"><span></span><span></span><span></span></div>
+        <span>thinking</span>
+      </div>
+    </div>
+
+    <div class="image-preview" id="image-preview">
+      <div class="image-preview-inner">
+        <img id="preview-img" src="" alt="Attached image preview">
+        <button class="remove-image" id="remove-image" type="button" aria-label="Remove attached image">&times;</button>
+      </div>
+    </div>
+
+    <div class="file-attachments" id="file-attachments"></div>
+
+    <!-- pi's own steering/follow-up queues, mirrored from its queue_update events. Each chip can be
+         promoted to the next turn or pulled back; both actions rewrite pi's queue, not a local copy.
+         Owned by static/chat.js. -->
+    <div class="queue-strip" id="queue-strip" role="list" aria-label="Queued messages" hidden></div>
+
+    <div class="input-area">
+      <div class="input-row">
+        <div class="input-wrapper">
+          <textarea id="user-input" placeholder="Message pi..." rows="1"></textarea>
+          <div class="input-actions">
+            <button class="input-btn" id="attach-btn" type="button" aria-label="Attach file">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+            </button>
+          </div>
+        </div>
+        <button class="steer-btn" id="steer-btn" type="button" aria-label="Send now" title="Send now: lands after the current tool calls" hidden>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2 4.5 13.5H11l-1 8.5 8.5-11.5H12l1-8.5Z"/></svg>
+          <span class="steer-btn-label">Send now</span>
+        </button>
+        <button class="send-btn" id="send-btn" type="button" aria-label="Send message" disabled>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <input type="file" id="file-input" accept="image/*,.pdf,.txt">
+  </div>
+
+  <!-- Document preview pane. Owned by static/preview.js and driven by pi preview entries;
+       closed means inert, so nothing in it can be tabbed into or scripted by accident. -->
+  <aside class="doc-pane" id="doc-pane" role="region" aria-labelledby="doc-pane-title" inert>
+    <div class="doc-pane-inner">
+      <div class="doc-pane-bar">
+        <h2 class="doc-pane-title" id="doc-pane-title" data-doc-title>Preview</h2>
+        <div class="doc-pane-tools">
+          <span class="doc-kind" data-doc-kind hidden></span>
+          <button class="btn-icon" data-doc-source type="button" aria-label="Toggle document source" hidden>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 8-4 4 4 4M15 8l4 4-4 4"/></svg>
+            <span data-doc-source-label>Source</span>
+          </button>
+          <button class="btn-icon" data-doc-reload type="button" title="Reload this document" aria-label="Reload this document" hidden>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/></svg>
+          </button>
+          <a class="btn-icon" data-doc-external href hidden target="_blank" rel="noopener noreferrer" aria-label="Open document in a new tab" title="Open in a new tab">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14 21 3"/></svg>
+            Open
+          </a>
+          <button class="btn-icon" data-doc-close type="button" aria-label="Close preview">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="doc-tabs" role="tablist" aria-label="Open documents" data-doc-tabs hidden></div>
+      <div class="doc-pane-body">
+        <div class="doc-empty" data-doc-empty>
+          <p>Nothing to preview yet.</p>
+          <p class="doc-empty-hint">Ask pi to write a document, or point it at a file.</p>
+        </div>
+        <div class="doc-scroll doc-markdown" data-doc-view="markdown" tabindex="0" hidden></div>
+        <div class="doc-scroll doc-source" data-doc-view="source" tabindex="0" hidden><pre></pre></div>
+        <!-- Sandboxed by default so a document that lands here before the pane configures it is
+             still opaque. preview.js removes the attribute for PDF only: the built-in viewer
+             refuses to render a PDF in a sandboxed frame. See FRAME_SANDBOX. -->
+        <iframe class="doc-frame" data-doc-view="frame" title="Document preview" sandbox="allow-scripts" hidden></iframe>
+      </div>
+      <p class="doc-note" data-doc-note hidden></p>
+    </div>
+    <div class="doc-resize" data-doc-resize role="separator" aria-orientation="vertical" tabindex="0"
+         aria-label="Resize preview pane" title="Drag, or use the arrow keys"></div>
+  </aside>
+</div>
+
+<!-- Session Panel (after chat-screen so CSS sibling selector works) -->
+<div class="session-panel" id="session-panel" role="navigation" aria-hidden="false" aria-labelledby="session-panel-title">
+  <div class="session-panel-header">
+    <h2 id="session-panel-title">Sessions</h2>
+    <button class="session-panel-close" id="session-panel-close" type="button" aria-label="Close sessions">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+    </button>
+  </div>
+  <div class="session-panel-body" id="session-panel-body">
+    <div class="session-panel-loading"><span class="session-panel-spinner"></span>Loading sessions...</div>
+  </div>
+</div>
+
+<!-- Session Load Overlay -->
+<div class="session-load-overlay" id="session-load-overlay">
+  <span class="session-panel-spinner"></span>
+  <span>Loading session...</span>
+</div>
+
+<!-- Voice Settings Dialog -->
+<div class="voice-settings-backdrop" id="voice-settings-backdrop"></div>
+<!-- One tool call, opened. Filled from the call record only, and every field is written with
+     textContent: model output is untrusted input and none of it belongs in innerHTML. -->
+<div class="tool-detail-overlay" id="tool-detail-overlay" hidden>
+  <div class="tool-detail-dialog" id="tool-detail-dialog" role="dialog" aria-modal="true" aria-labelledby="tool-detail-title">
+    <div class="tool-detail-head">
+      <h2 class="tool-detail-title" id="tool-detail-title">Tool call</h2>
+      <button class="btn-icon" data-tool-detail-close type="button" aria-label="Close tool details">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <dl class="tool-detail-meta">
+      <div><dt>State</dt><dd data-tool-detail-state></dd></div>
+      <div><dt>Elapsed</dt><dd data-tool-detail-elapsed></dd></div>
+    </dl>
+    <div class="tool-detail-block">
+      <h3 class="tool-detail-heading">Arguments</h3>
+      <pre class="tool-detail-body" data-tool-detail-args></pre>
+    </div>
+    <div class="tool-detail-block" data-tool-detail-result-block hidden>
+      <h3 class="tool-detail-heading">Result</h3>
+      <pre class="tool-detail-body" data-tool-detail-result></pre>
+    </div>
+    <p class="tool-detail-note" data-tool-detail-note hidden></p>
+    <div class="tool-detail-actions">
+      <button class="btn-icon" data-tool-detail-cancel type="button" hidden>Cancel and stop the run</button>
+    </div>
+  </div>
+</div>
+
+<div class="voice-settings-dialog" id="voice-settings-dialog" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="voice-settings-title">
+  <div class="voice-settings-header">
+    <h2 id="voice-settings-title">Voice settings</h2>
+    <button class="voice-settings-close" data-voice-settings-close type="button" aria-label="Close settings">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+    </button>
+  </div>
+  <div class="voice-settings-tabs" role="tablist">
+    <button class="voice-settings-tab active" role="tab" data-voice-tab="settings" aria-selected="true">Settings</button>
+    <button class="voice-settings-tab" role="tab" data-voice-tab="custom" aria-selected="false">Custom Voice</button>
+  </div>
+  <div class="voice-settings-body">
+    <!-- Tab: Settings -->
+    <div class="voice-settings-tab-panel active" data-voice-tab-panel="settings">
+      <!-- Phonon engine controls. A Phonon voice is a named entry in gradium/phonon-voices and
+           its rate is one of five labeled steps, so these replace the design sliders below
+           rather than adding to them. Hidden unless /api/tts/capabilities reports
+           engine=phonon; see applyEngineToForm() in static/voice.js. -->
+      <div class="voice-phonon" id="voice-phonon-controls" hidden>
+        <label class="voice-setting-label">
+          <span>Voice</span>
+          <select id="voice-phonon-name"></select>
+        </label>
+        <label class="voice-setting-label">
+          <span>Speaking rate</span>
+          <select id="voice-phonon-rate"></select>
+        </label>
+        <p class="voice-phonon-description" id="voice-phonon-description"></p>
+      </div>
+      <label class="voice-setting-label">
+        <span>Gender</span>
+        <select id="voice-gender">
+          <option value="female">Female</option>
+          <option value="male">Male</option>
+        </select>
+      </label>
+      <label class="voice-setting-label">
+        <span>Age</span>
+        <select id="voice-age">
+          <option value="young adult">Young adult</option>
+          <option value="child">Child</option>
+          <option value="teenager">Teenager</option>
+          <option value="middle-aged">Middle-aged</option>
+          <option value="elderly">Elderly</option>
+        </select>
+      </label>
+      <label class="voice-setting-label">
+        <span>Pitch</span>
+        <select id="voice-pitch">
+          <option value="very low pitch">Very low</option>
+          <option value="low pitch">Low</option>
+          <option value="moderate pitch" selected>Moderate</option>
+          <option value="high pitch">High</option>
+          <option value="very high pitch">Very high</option>
+        </select>
+      </label>
+      <label class="voice-setting-label">
+        <span>Accent</span>
+        <select id="voice-accent">
+          <option value="american accent" selected>American</option>
+          <option value="british accent">British</option>
+          <option value="australian accent">Australian</option>
+          <option value="canadian accent">Canadian</option>
+          <option value="indian accent">Indian</option>
+          <option value="chinese accent">Chinese</option>
+          <option value="korean accent">Korean</option>
+          <option value="japanese accent">Japanese</option>
+          <option value="portuguese accent">Portuguese</option>
+          <option value="russian accent">Russian</option>
+        </select>
+      </label>
+      <label class="voice-setting-label">
+        <span>Style</span>
+        <select id="voice-style">
+          <option value="">Normal</option>
+          <option value="whisper">Whisper</option>
+        </select>
+      </label>
+      <label class="voice-setting-label">
+        <span>Language</span>
+        <select id="voice-language">
+          <option value="English" selected>English</option>
+          <option value="Spanish">Spanish</option>
+          <option value="French">French</option>
+          <option value="German">German</option>
+        </select>
+      </label>
+      <label class="voice-setting-label">
+        <span>Speed</span>
+        <input type="range" id="voice-speed" min="0.8" max="1.25" step="0.05" value="1.0">
+      </label>
+      <label class="voice-setting-label">
+        <span>Volume</span>
+        <input type="range" id="voice-volume" min="0" max="1" step="0.05" value="1.0">
+      </label>
+    </div>
+
+    <!-- Tab: Custom Voice -->
+    <div class="voice-settings-tab-panel" data-voice-tab-panel="custom">
+      <div class="voice-custom-header">
+        <span>Custom Voice Sample</span>
+        <div class="voice-guidelines-tooltip">
+          <button type="button" class="voice-help-icon" id="voice-guidelines-btn" title="Voice sample guidelines" aria-label="Voice sample guidelines">?</button>
+        </div>
+      </div>
+
+      <!-- Voice type selector -->
+      <label class="voice-setting-label">
+        <span>Voice</span>
+        <select id="voice-type" aria-label="Select voice type">
+          <option value="bootstrap">Upload Voice to Clone</option>
+          <optgroup label="Custom voices" id="voice-custom-optgroup">
+          </optgroup>
+        </select>
+      </label>
+
+      <!-- Speed slider for custom voices -->
+      <label class="voice-setting-label">
+        <span>Speed</span>
+        <input type="range" id="voice-speed-custom" min="0.8" max="1.25" step="0.05" value="1.0">
+      </label>
+
+      <!-- Custom voice actions row -->
+      <div class="voice-custom-actions" id="voice-custom-actions" style="display:none">
+        <button type="button" class="voice-action-btn voice-preview-btn" aria-label="Play voice preview">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
+          Play
+        </button>
+        <button type="button" class="voice-action-btn voice-rename-btn" aria-label="Rename voice">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>
+          Rename
+        </button>
+        <button type="button" class="voice-action-btn voice-delete-btn" aria-label="Delete voice">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+          Delete
+        </button>
+      </div>
+
+      <!-- Upload zone (keyboard accessible) -->
+      <div class="voice-upload-zone" id="voice-upload-zone" tabindex="0" role="button" aria-label="Upload audio file. Drop file here or press Enter to browse.">
+        <div class="voice-upload-prompt">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="17 8 12 3 7 8"/>
+            <line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+          <span>Drop audio file here or <button class="voice-upload-btn" type="button">browse</button></span>
+          <span class="voice-upload-hint">WAV, MP3, FLAC, M4A, OGG, WebM · 2–30 seconds · max 10MB</span>
+        </div>
+        <input type="file" id="voice-upload-input" accept=".wav,.mp3,.flac,.m4a,.ogg,.webm" aria-label="Select audio file to upload" style="display:none">
+        <div class="voice-upload-status" id="voice-upload-status" aria-live="polite"></div>
+      </div>
+
+      <!-- Recording zone -->
+      <div class="voice-recording-zone">
+        <span class="voice-recording-prompt">Or record from microphone:</span>
+        <div class="voice-recording-controls">
+          <button type="button" id="record-btn" class="voice-record-btn" aria-label="Start recording">🎤 Record</button>
+          <div class="voice-recording-active" id="voice-recording-active" style="display:none">
+            <span id="recording-timer" aria-live="polite">Recording... 00:00</span>
+            <button type="button" id="stop-record-btn" class="voice-stop-btn" aria-label="Stop recording">⏹ Stop</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Name input -->
+      <div class="voice-name-input" id="voice-name-input" style="display:none">
+        <label class="voice-setting-label">
+          <span>Name this voice</span>
+          <input type="text" id="voice-display-name" maxlength="40" placeholder="My Voice" aria-label="Voice display name">
+        </label>
+      </div>
+
+      <!-- Guidelines popup -->
+      <div class="voice-guidelines-popup" id="voice-guidelines-popup" role="dialog" aria-label="Voice sample guidelines" style="display:none">
+        <div class="voice-guidelines-title">Voice Sample Guidelines</div>
+        <ul>
+          <li>3–10 seconds of clear speech works best</li>
+          <li>Speak naturally as you would in conversation</li>
+          <li>Avoid loud background noise or music</li>
+          <li>OmniVoice handles accent, language, and tone automatically</li>
+          <li>Samples longer than 20s are truncated</li>
+          <li>Only clone voices you have permission to use</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="voice-settings-actions">
+      <button class="voice-apply-btn" id="voice-apply">Apply</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/purify.min.js"></script>
+<script src="/static/marked.min.js"></script>
+<script type="module" src="/static/app.js"></script>
+</body>
+</html>

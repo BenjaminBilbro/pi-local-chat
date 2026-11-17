@@ -1,0 +1,174 @@
+<svg width="800" height="800" viewBox="0 0 800 800" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Base styling for the document -->
+    <style>
+      .card-bg { fill: #F9FAFB; rx: 20px; }
+      .sheet-title { font-family: system-ui, -apple-system, sans-serif; font-size: 22px; font-weight: 900; fill: #2D3748; letter-spacing: 2px; text-anchor: middle; }
+      .sheet-subtitle { font-family: system-ui, -apple-system, sans-serif; font-size: 11px; font-weight: 600; fill: #718096; letter-spacing: 4px; text-anchor: middle; }
+      .pose-label { font-family: system-ui, -apple-system, sans-serif; font-size: 12px; font-weight: 800; fill: #A0AEC0; letter-spacing: 1.5px; text-anchor: middle; }
+    </style>
+
+    <!-- Base Pie Mascot Template -->
+    <g id="pie-base">
+      <!-- 12-Lobe Scalloped Crust Edge -->
+      <circle cx="0" cy="-55" r="16" fill="#D38033"/>
+      <circle cx="27.5" cy="-47.6" r="16" fill="#D38033"/>
+      <circle cx="47.6" cy="-27.5" r="16" fill="#D38033"/>
+      <circle cx="55" cy="0" r="16" fill="#D38033"/>
+      <circle cx="47.6" cy="27.5" r="16" fill="#D38033"/>
+      <circle cx="27.5" cy="47.6" r="16" fill="#D38033"/>
+      <circle cx="0" cy="55" r="16" fill="#D38033"/>
+      <circle cx="-27.5" cy="47.6" r="16" fill="#D38033"/>
+      <circle cx="-47.6" cy="27.5" r="16" fill="#D38033"/>
+      <circle cx="-55" cy="0" r="16" fill="#D38033"/>
+      <circle cx="-47.6" cy="-27.5" r="16" fill="#D38033"/>
+      <circle cx="-27.5" cy="-47.6" r="16" fill="#D38033"/>
+      <!-- Inner baked face and layers -->
+      <circle cx="0" cy="0" r="55" fill="#D38033"/>
+      <circle cx="0" cy="0" r="48" fill="#F4C275"/>
+      <circle cx="0" cy="0" r="44" fill="#F8CE8B"/>
+    </g>
+
+    <!-- Mathematical Pi Symbol Cutout (Face/Body Feature) -->
+    <g id="pi-symbol">
+      <path d="M -18 -14 L 18 -14" stroke="#4E2F1D" stroke-width="8" stroke-linecap="round"/>
+      <path d="M -7 -14 L -7 6 C -7 14 -16 14 -16 14" fill="none" stroke="#4E2F1D" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M 7 -14 L 7 10 C 7 14 11 14 11 14" fill="none" stroke="#4E2F1D" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+  </defs>
+
+  <!-- Solid White Background -->
+  <rect width="800" height="800" fill="#FFFFFF" />
+
+  <!-- Sheet Title Header -->
+  <text x="400" y="48" class="sheet-title">PI-PIE MASCOT SHEET</text>
+  <text x="400" y="65" class="sheet-subtitle">OFFICIAL VECTOR CHARACTER POSES</text>
+
+  <!-- ================= GRID LAYOUT CARDS ================= -->
+  <rect x="40" y="80" width="340" height="320" class="card-bg" />
+  <rect x="420" y="80" width="340" height="320" class="card-bg" />
+  <rect x="40" y="440" width="340" height="320" class="card-bg" />
+  <rect x="420" y="440" width="340" height="320" class="card-bg" />
+
+  <!-- ================= POSE 1: GREETING (Top-Left) ================= -->
+  <g>
+    <!-- Legs -->
+    <path d="M 190 267 L 188 287" stroke="#4E2F1D" stroke-width="8" stroke-linecap="round"/>
+    <path d="M 230 267 L 232 287" stroke="#4E2F1D" stroke-width="8" stroke-linecap="round"/>
+    
+    <!-- Character Base -->
+    <use href="#pie-base" x="210" y="215" />
+    <use href="#pi-symbol" x="210" y="215" />
+    
+    <!-- Arms (Left arm resting, right arm waving) -->
+    <path d="M 152 225 Q 140 235 148 245" fill="none" stroke="#4E2F1D" stroke-width="6" stroke-linecap="round"/>
+    <path d="M 268 225 Q 285 205 280 190" fill="none" stroke="#4E2F1D" stroke-width="6" stroke-linecap="round"/>
+    
+    <!-- Face details -->
+    <circle cx="184" cy="210" r="5" fill="#4E2F1D"/>
+    <circle cx="236" cy="210" r="5" fill="#4E2F1D"/>
+    <circle cx="178" cy="219" r="6" fill="#F28D8D"/>
+    <circle cx="242" cy="219" r="6" fill="#F28D8D"/>
+    <path d="M 205 218 Q 210 224 215 218" fill="none" stroke="#4E2F1D" stroke-width="3" stroke-linecap="round"/>
+    
+    <!-- Label -->
+    <text x="210" y="375" class="pose-label">01. GREETING</text>
+  </g>
+
+  <!-- ================= POSE 2: SEARCHING / LOADING (Top-Right) ================= -->
+  <g>
+    <!-- Pulse Dotted Ring -->
+    <circle cx="610" cy="215" r="80" fill="none" stroke="#3EC1D3" stroke-width="4" stroke-dasharray="10 15" stroke-linecap="round" opacity="0.6"/>
+    
+    <!-- Legs -->
+    <path d="M 590 267 L 590 287" stroke="#4E2F1D" stroke-width="8" stroke-linecap="round"/>
+    <path d="M 630 267 L 632 287" stroke="#4E2F1D" stroke-width="8" stroke-linecap="round"/>
+    
+    <!-- Character Base -->
+    <use href="#pie-base" x="610" y="215" />
+    <use href="#pi-symbol" x="610" y="215" />
+    
+    <!-- Arms (Left holding magnifying glass, right on hip) -->
+    <path d="M 552 225 Q 556 233 565 229" fill="none" stroke="#4E2F1D" stroke-width="6" stroke-linecap="round"/>
+    <path d="M 668 220 Q 678 230 665 240" fill="none" stroke="#4E2F1D" stroke-width="6" stroke-linecap="round"/>
+    
+    <!-- Magnifying Glass -->
+    <path d="M 574 219 L 555 240" stroke="#4E2F1D" stroke-width="6" stroke-linecap="round"/>
+    <circle cx="582" cy="211" r="14" fill="none" stroke="#4E2F1D" stroke-width="5"/>
+    <circle cx="582" cy="211" r="11" fill="#3EC1D3" fill-opacity="0.2"/>
+    
+    <!-- Face details -->
+    <circle cx="582" cy="211" r="8" fill="#4E2F1D"/>
+    <path d="M 634 211 Q 640 205 644 211" fill="none" stroke="#4E2F1D" stroke-width="4" stroke-linecap="round"/>
+    <circle cx="642" cy="220" r="6" fill="#F28D8D"/>
+    <circle cx="610" cy="221" r="3.5" fill="#4E2F1D"/>
+    
+    <!-- Label -->
+    <text x="610" y="375" class="pose-label">02. SEARCHING</text>
+  </g>
+
+  <!-- ================= POSE 3: SUCCESS / CELEBRATION (Bottom-Left) ================= -->
+  <g>
+    <!-- Legs (Dynamic jump bend) -->
+    <path d="M 192 627 L 185 637 L 195 642" fill="none" stroke="#4E2F1D" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M 228 627 L 235 637 L 225 642" fill="none" stroke="#4E2F1D" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+    
+    <!-- Character Base -->
+    <use href="#pie-base" x="210" y="575" />
+    <use href="#pi-symbol" x="210" y="575" />
+    
+    <!-- Arms raised high -->
+    <path d="M 152 575 Q 135 555 140 540" fill="none" stroke="#4E2F1D" stroke-width="6" stroke-linecap="round"/>
+    <path d="M 268 575 Q 285 555 280 540" fill="none" stroke="#4E2F1D" stroke-width="6" stroke-linecap="round"/>
+    
+    <!-- Face details (Joyful) -->
+    <path d="M 180 570 Q 185 563 190 570" fill="none" stroke="#4E2F1D" stroke-width="4" stroke-linecap="round"/>
+    <path d="M 230 570 Q 235 563 240 570" fill="none" stroke="#4E2F1D" stroke-width="4" stroke-linecap="round"/>
+    <circle cx="178" cy="579" r="6" fill="#F28D8D"/>
+    <circle cx="242" cy="579" r="6" fill="#F28D8D"/>
+    <path d="M 204 579 Q 210 591 216 579 Z" fill="#4E2F1D"/>
+    
+    <!-- Confetti Elements -->
+    <path d="M 130 520 L 133 525 L 138 526 L 134 530 L 135 535 L 130 532 L 125 535 L 126 530 L 122 526 L 127 525 Z" fill="#FFD166"/>
+    <path d="M 290 525 L 293 530 L 298 531 L 294 535 L 295 540 L 290 537 L 285 540 L 286 535 L 282 531 L 287 530 Z" fill="#06D6A0"/>
+    <circle cx="150" cy="515" r="4" fill="#EF476F"/>
+    <circle cx="270" cy="520" r="3.5" fill="#118AB2"/>
+    
+    <!-- Label -->
+    <text x="210" y="735" class="pose-label">03. SUCCESS</text>
+  </g>
+
+  <!-- ================= POSE 4: HELPFUL / GUIDE (Bottom-Right) ================= -->
+  <g>
+    <!-- Legs -->
+    <path d="M 590 627 L 590 647" stroke="#4E2F1D" stroke-width="8" stroke-linecap="round"/>
+    <path d="M 630 627 L 630 647" stroke="#4E2F1D" stroke-width="8" stroke-linecap="round"/>
+    
+    <!-- Character Base -->
+    <use href="#pie-base" x="610" y="575" />
+    <use href="#pi-symbol" x="610" y="575" />
+    
+    <!-- Arms (Presenting / Gesturing) -->
+    <path d="M 552 580 Q 540 590 552 600" fill="none" stroke="#4E2F1D" stroke-width="6" stroke-linecap="round"/>
+    <path d="M 668 580 Q 685 577 690 565" fill="none" stroke="#4E2F1D" stroke-width="6" stroke-linecap="round"/>
+    
+    <!-- Glowing Idea Bulb -->
+    <path d="M 692 537 L 698 537" stroke="#FFD166" stroke-width="4" stroke-linecap="round"/>
+    <circle cx="695" cy="527" r="8" fill="#FFD166"/>
+    <line x1="695" y1="515" x2="695" y2="511" stroke="#FFD166" stroke-width="2" stroke-linecap="round"/>
+    <line x1="683" y1="527" x2="679" y2="527" stroke="#FFD166" stroke-width="2" stroke-linecap="round"/>
+    <line x1="707" y1="527" x2="711" y2="527" stroke="#FFD166" stroke-width="2" stroke-linecap="round"/>
+    
+    <!-- Face details (Friendly) -->
+    <circle cx="584" cy="570" r="5" fill="#4E2F1D"/>
+    <circle cx="636" cy="570" r="5" fill="#4E2F1D"/>
+    <circle cx="582.5" cy="568.5" r="1.5" fill="#FFFFFF"/>
+    <circle cx="634.5" cy="568.5" r="1.5" fill="#FFFFFF"/>
+    <circle cx="578" cy="579" r="6" fill="#F28D8D"/>
+    <circle cx="642" cy="579" r="6" fill="#F28D8D"/>
+    <path d="M 605 578 Q 610 585 615 578" fill="none" stroke="#4E2F1D" stroke-width="3" stroke-linecap="round"/>
+    
+    <!-- Label -->
+    <text x="610" y="735" class="pose-label">04. HELPFUL</text>
+  </g>
+</svg>

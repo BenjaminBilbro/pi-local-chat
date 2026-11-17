@@ -1,0 +1,25 @@
+# This tree is shared between WSL and Windows. Without an EOL policy git stores whatever
+# line ending an editor happened to write, so the same file can show a whole-file diff
+# depending on which side touched it last. Text stays LF everywhere.
+* text=auto
+
+*.py text eol=lf
+*.js text eol=lf
+*.mjs text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.toml text eol=lf
+*.yaml text eol=lf
+*.svg text eol=lf
+
+*.woff2 binary
+*.wav binary
+*.m4a binary
+*.mp3 binary
+*.png binary
+*.jpg binary
+*.pdf binary
+*.pt binary
+*.safetensors binary
