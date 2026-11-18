@@ -345,6 +345,11 @@ export function showChatError(message) {
 }
 
 function startAgentRun() {
+  /* The landing screen means "no conversation has happened yet", and a run starting is exactly that moment.
+   * It used to be hidden by `submitPrompt`, which is the typed path only: entering voice mode starts a session
+   * with a marker turn that is never typed and never drawn, so the session had messages, the person had left
+   * voice mode, and the avatar and the suggestion chips were still sitting above the composer. */
+  hideLanding();
   const isRetry = Boolean(timeline);
   promptAwaitingStart = false;
   cancelInFlight = false;

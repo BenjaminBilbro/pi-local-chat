@@ -664,6 +664,74 @@ async function runSession(chromeChild) {
       if (cover.probe.demo !== VOICE_STATE) {
         throw new Error(`the demo pin did not survive into the controller (${JSON.stringify(cover.probe.demo)})`);
       }
+
+      /* The second leg runs voice mode for real, because what it has to prove cannot happen in a photograph.
+       * Entering voice mode injects a turn that is never typed and never drawn, and the landing screen used to
+       * be cleared by the composer's submit path alone: on a fresh session the marker started the conversation,
+       * the person left voice mode, and the avatar was still sitting above the composer pretending nothing had
+       * happened. `start_message` is what clears it now, so that is what gets watched. */
+      await evaluate(cdp, "window.__piChatVoiceMode.exit('stage'); true");
+      await evaluate(cdp, "document.getElementById('voice-screen').dataset.demo = ''; true");
+      await sleep(200);
+      const before = JSON.parse(await evaluate(
+        cdp,
+        `JSON.stringify({
+          landing: document.querySelector('.input-area').classList.contains('landing-mode'),
+          avatar: Boolean(document.getElementById('landing-page')),
+        })`,
+      ));
+      if (!before.landing) {
+        throw new Error('the landing screen is already gone before the real leg ran, so this leg proves nothing');
+      }
+
+      let stuck = null;
+      await evaluate(cdp, "document.getElementById('voice-mode-btn').click(); true");
+      try {
+        await waitFor(cdp, "!document.querySelector('.input-area').classList.contains('landing-mode')", 25000);
+      } catch (error) {
+        stuck = await evaluate(
+          cdp,
+          `JSON.stringify({
+            probe: window.__piChatVoiceMode ? window.__piChatVoiceMode.probe() : null,
+            caption: document.getElementById('voice-caption')?.textContent,
+            socketOpen: Boolean(window.__piSocket && window.__piSocket.readyState === 1),
+          })`,
+        );
+      }
+      if (stuck) {
+        throw new Error(`the landing screen survived a real voice-mode turn: ${stuck}`);
+      }
+
+      await evaluate(cdp, "window.__piChatVoiceMode.exit('stage'); true");
+      await sleep(400);
+      const after = JSON.parse(await evaluate(
+        cdp,
+        `(() => {
+          const area = document.querySelector('.input-area');
+          return JSON.stringify({
+            landing: area.classList.contains('landing-mode'),
+            avatar: Boolean(document.getElementById('landing-page')),
+            composerVisible: getComputedStyle(area).display !== 'none',
+            screenHidden: document.getElementById('voice-screen').hidden,
+            bubbles: document.querySelectorAll('#chat-screen .message, #chat-screen .assistant-block').length,
+            markerLeaks: [...document.querySelectorAll('#chat-screen .message')]
+              .filter((n) => n.textContent.includes('PI-CHAT-SYSTEM-MESSAGE')).length,
+          });
+        })()`,
+      ));
+      if (after.landing || after.avatar) {
+        throw new Error(`voice mode started a session and the landing screen is still up: ${JSON.stringify(after)}`);
+      }
+      if (!after.composerVisible || !after.screenHidden) {
+        throw new Error(`leaving voice mode did not hand the screen back: ${JSON.stringify(after)}`);
+      }
+      if (after.bubbles === 0) {
+        throw new Error('the conversation is empty after a real voice-mode turn; the turn never reached the page');
+      }
+      if (after.markerLeaks > 0) {
+        throw new Error(`${after.markerLeaks} mode marker(s) rendered as a message after a real turn`);
+      }
+      console.log(`voice-mode real leg: landing cleared by the marker turn, ${after.bubbles} bubbles, no marker leak`);
     }
 
     if (STAGE === 'preview') {
