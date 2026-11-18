@@ -446,8 +446,9 @@ async function runSession(chromeChild) {
 
     if (STAGE === 'voice') {
       // The dialog is opened by class, not by the native dialog API: voice.js toggles
-      // .active on #voice-settings-dialog and mirrors it into aria-hidden.
-      await evaluate(cdp, "document.querySelector('[data-voice-settings]').click(); true");
+      // .active on #voice-settings-dialog and mirrors it into aria-hidden. The trigger is the header's
+      // Settings button; the gear that used to sit beside the voice toggle is gone (S1).
+      await evaluate(cdp, "document.querySelector('[data-open-settings]').click(); true");
       await waitFor(cdp, "document.getElementById('voice-settings-dialog').classList.contains('active')");
       await sleep(400);
     }

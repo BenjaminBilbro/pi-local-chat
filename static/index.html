@@ -67,26 +67,10 @@
       <h1>Pi chat</h1>
     </div>
     <div class="header-actions">
-      <button class="btn-icon mascot-toggle" data-mascot-toggle type="button">
-        <img class="mascot-toggle-preview" src="/static/mascots/pi-greeting.svg" alt="" aria-hidden="true">
-        <span data-mascot-label>Pi</span>
-      </button>
-      <button class="btn-icon theme-toggle" data-theme-toggle type="button">
-        <svg class="theme-icon theme-icon-sun" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
-          <circle cx="12" cy="12" r="4"/>
-          <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>
-        </svg>
-        <svg class="theme-icon theme-icon-moon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
-        </svg>
-        <span data-theme-label>Theme</span>
-      </button>
       <div class="voice-controls">
-        <button class="btn-icon voice-toggle" data-voice-toggle type="button" aria-pressed="false" aria-label="Enable voice output">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
-        </button>
-        <button class="btn-icon voice-settings-btn" data-voice-settings type="button" aria-label="Voice settings">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        <button class="btn-icon voice-toggle" data-voice-toggle type="button" aria-pressed="false" aria-label="Enable voice output" title="Hear the replies out loud">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+          Voice
         </button>
       </div>
       <button class="btn-icon voice-stop" data-voice-stop type="button" aria-label="Stop speech">
@@ -96,11 +80,18 @@
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8M8 17h5"/></svg>
         Preview
       </button>
+      <button class="btn-icon" data-open-settings type="button" aria-controls="voice-settings-dialog" aria-expanded="false" title="Theme, mascot, and voice settings">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.08a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.08a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        Settings
+      </button>
       <button class="btn-icon" id="new-session-btn" type="button" title="New session (Ctrl+K)">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
         New session
       </button>
-      <button class="btn-icon" id="logout-btn" type="button">Sign out</button>
+      <button class="btn-icon" id="logout-btn" type="button" aria-label="Sign out" title="Sign out">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></svg>
+        Sign out
+      </button>
     </div>
     <div class="voice-status" data-voice-status aria-live="polite"></div>
     <button class="btn-icon voice-resume" data-voice-resume type="button" style="display:none">Tap to resume audio</button>
@@ -257,7 +248,7 @@
 
 <div class="voice-settings-dialog" id="voice-settings-dialog" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="voice-settings-title">
   <div class="voice-settings-header">
-    <h2 id="voice-settings-title">Voice settings</h2>
+    <h2 id="voice-settings-title">Settings</h2>
     <button class="voice-settings-close" data-voice-settings-close type="button" aria-label="Close settings">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
     </button>
@@ -269,6 +260,58 @@
   <div class="voice-settings-body">
     <!-- Tab: Settings -->
     <div class="voice-settings-tab-panel active" data-voice-tab-panel="settings">
+      <!-- Appearance. Three of these used to be icon-only buttons in the header: the mascot-set cycler,
+           the theme, and Buddy's visibility. They are rows here because a row can say what it changes, and
+           Ben's complaint about the bar was noise rather than count: nine controls, most of them unlabeled.
+           The header keeps Voice, Preview, Settings, New session, Sign out. The theme and mascot buttons
+           carry the same data attributes the header ones did, so theme.js and mascots.js bind them here
+           without knowing the markup moved.
+      -->
+      <section class="settings-section" data-settings-section="appearance">
+        <h3 class="settings-section-title">Appearance</h3>
+
+        <div class="settings-row">
+          <span class="settings-row-label">Theme
+            <span class="settings-row-hint">Light or dark, remembered on this browser.</span>
+          </span>
+          <button class="btn-icon theme-toggle settings-switch" data-theme-toggle type="button">
+            <svg class="theme-icon theme-icon-sun" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="4"/>
+              <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>
+            </svg>
+            <svg class="theme-icon theme-icon-moon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+            </svg>
+            <span data-theme-label>Light</span>
+          </button>
+        </div>
+
+        <div class="settings-row">
+          <span class="settings-row-label">Mascot
+            <span class="settings-row-hint">Which pie the app draws.</span>
+          </span>
+          <span class="settings-segment" role="group" aria-label="Mascot style">
+            <button class="settings-chip" type="button" data-mascot-set="pie">Pie</button>
+            <button class="settings-chip" type="button" data-mascot-set="pi">Pi</button>
+          </span>
+        </div>
+
+        <div class="settings-row">
+          <span class="settings-row-label">Mascot in the header
+            <span class="settings-row-hint">The one beside the title.</span>
+          </span>
+          <button class="settings-switch" type="button" data-header-mascot-toggle aria-pressed="true">Shown</button>
+        </div>
+
+        <div class="settings-row">
+          <span class="settings-row-label">Buddy
+            <span class="settings-row-hint">The animated pie in the corner of the chat.</span>
+          </span>
+          <span class="settings-row-control" data-buddy-toggle-slot></span>
+        </div>
+      </section>
+
+      <h3 class="settings-section-title" data-settings-section="voice-output">Voice output</h3>
       <!-- Phonon engine controls. A Phonon voice is a named entry in gradium/phonon-voices and
            its rate is one of five labeled steps, so these replace the design sliders below
            rather than adding to them. Hidden unless /api/tts/capabilities reports

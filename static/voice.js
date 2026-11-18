@@ -69,6 +69,10 @@ export function createVoiceController({
   let settingsDialog = null;
   let settingsBackdrop = null;
   let settingsCloseButton = null;
+  // The header's Settings button. Kept as a reference because a dialog that opens from a trigger has to
+  // say so on that trigger (`aria-expanded`) and hand focus back to it on close, or the keyboard user ends
+  // up somewhere in the middle of a page they were not reading.
+  let settingsOpener = null;
   let resumeButton = null;
 
   // Custom voice UI references
@@ -677,7 +681,7 @@ export function createVoiceController({
     settingsBackdrop = document.getElementById('voice-settings-backdrop');
     settingsCloseButton = document.querySelector('#voice-settings-dialog [data-voice-settings-close]');
     resumeButton = document.querySelector('#chat-screen [data-voice-resume]');
-    const settingsButton = document.querySelector('#chat-screen [data-voice-settings]');
+    settingsOpener = document.querySelector('#chat-screen [data-open-settings]');
 
     // Custom voice UI references
     voiceTypeSelect = document.getElementById('voice-type');
@@ -694,8 +698,8 @@ export function createVoiceController({
       toggleButton.addEventListener('click', handleToggleClick);
     }
 
-    if (settingsButton) {
-      settingsButton.addEventListener('click', openSettings);
+    if (settingsOpener) {
+      settingsOpener.addEventListener('click', openSettings);
     }
 
     if (stopButton) {
@@ -978,7 +982,8 @@ export function createVoiceController({
     settingsDialog.classList.remove('active');
     settingsBackdrop?.classList.remove('active');
     settingsDialog.setAttribute('aria-hidden', 'true');
-    settingsCloseButton?.focus();
+    settingsOpener?.setAttribute('aria-expanded', 'false');
+    (settingsOpener || settingsCloseButton)?.focus();
   }
 
   // -----------------------------------------------------------------------
@@ -1207,6 +1212,7 @@ export function createVoiceController({
     settingsDialog.classList.add('active');
     settingsBackdrop?.classList.add('active');
     settingsDialog.setAttribute('aria-hidden', 'false');
+    settingsOpener?.setAttribute('aria-expanded', 'true');
     const firstControl = settingsDialog.querySelector('select, input');
     firstControl?.focus();
   }

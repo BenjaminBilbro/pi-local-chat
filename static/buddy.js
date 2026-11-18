@@ -85,32 +85,27 @@ export function createBuddy({ container = null, sfx = true } = {}) {
   stage.appendChild(canvas);
   host.appendChild(stage);
 
+  // The Buddy switch lives in Settings > Appearance. It used to sit in the header, which meant the bar
+  // carried a control whose entire job was to make one of the bar's other decorations go away. The state
+  // dot is kept because it is the one piece of information that earned its space: it showed what Buddy was
+  // doing even while he was hidden.
   const toggle = document.createElement('button');
   toggle.type = 'button';
-  toggle.className = 'btn-icon buddy-toggle';
+  toggle.className = 'settings-switch buddy-toggle';
   toggle.innerHTML =
-    '<svg width="16" height="16" viewBox="-32 -32 64 64" aria-hidden="true">'
-    + '<circle r="30" fill="' + PIE.mid + '"/>'
-    + '<circle r="25" fill="' + PIE.inner + '"/>'
-    + '<path d="M -13 -10 L 13 -10" stroke="' + PIE.ink + '" stroke-width="6" stroke-linecap="round"/>'
-    + '<path d="M -5 -10 L -5 4 C -5 11 -12 11 -12 11" fill="none" stroke="' + PIE.ink + '" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>'
-    + '<path d="M 5 -10 L 5 6 C 5 11 9 11 9 11" fill="none" stroke="' + PIE.ink + '" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>'
-    + '<circle cx="-17" cy="-2" r="3.4" fill="' + PIE.ink + '"/>'
-    + '<circle cx="17" cy="-2" r="3.4" fill="' + PIE.ink + '"/>'
-    + '</svg>'
-    + '<span class="buddy-state-dot" data-buddy-state-dot></span>'
-    + '<span>Buddy</span>';
+      '<span class="buddy-state-dot" data-buddy-state-dot></span>'
+    + '<span data-buddy-toggle-label>Shown</span>';
   const toggleDot = toggle.querySelector('[data-buddy-state-dot]');
+  const toggleLabel = toggle.querySelector('[data-buddy-toggle-label]');
 
-  const headerActions = document.querySelector('#chat-screen .header-actions');
-  const themeToggle = document.querySelector('#chat-screen .theme-toggle');
-  if (headerActions && themeToggle) headerActions.insertBefore(toggle, themeToggle);
-  else if (headerActions) headerActions.appendChild(toggle);
+  const slot = document.querySelector('[data-buddy-toggle-slot]');
+  if (slot) slot.appendChild(toggle);
 
   const applyHidden = () => {
     stage.style.display = hidden ? 'none' : '';
     toggle.setAttribute('aria-pressed', String(!hidden));
     toggle.title = hidden ? 'Show Buddy' : 'Hide Buddy';
+    if (toggleLabel) toggleLabel.textContent = hidden ? 'Hidden' : 'Shown';
   };
   applyHidden();
 

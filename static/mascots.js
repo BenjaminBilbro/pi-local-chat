@@ -45,6 +45,16 @@ export function randomMascotSrc(set = readSet()) {
   return mascotSrc(STATES[Math.floor(Math.random() * STATES.length)], set);
 }
 
+const HEADER_VISIBILITY_KEY = 'pi-chat-header-mascot';
+
+function readHeaderVisible() {
+  try {
+    return localStorage.getItem(HEADER_VISIBILITY_KEY) !== 'hidden';
+  } catch {
+    return true;
+  }
+}
+
 function applyMascots() {
   const active = readSet();
   const upcoming = nextMascotSet(active);
@@ -55,6 +65,15 @@ function applyMascots() {
     const state = image.dataset.mascotState || 'greeting';
     const src = state === 'landing' ? randomMascotSrc(active) : mascotSrc(state, active);
     if (image.getAttribute('src') !== src) image.setAttribute('src', src);
+  });
+
+  // The Settings dialog picks the set with two chips rather than a header button that cycled between them.
+  // A cycle hides how many options exist and gives no way to name the one you want; `aria-pressed` on each
+  // chip says which one is live, which is the same information the old preview image was trying to carry.
+  document.querySelectorAll('[data-mascot-set]').forEach((chip) => {
+    const on = chip.dataset.mascotSet === active;
+    chip.setAttribute('aria-pressed', String(on));
+    chip.classList.toggle('active', on);
   });
 
   document.querySelectorAll('[data-mascot-toggle]').forEach((button) => {
@@ -68,8 +87,20 @@ function applyMascots() {
   });
 }
 
+/** Hide the pie beside the chat title, for someone who wants a plainer bar. Scoped by CSS to the chat
+ *  header only: the login screen's mascot stays, because that one is the thing you are signing into. */
+function applyHeaderMascotVisibility() {
+  const visible = readHeaderVisible();
+  document.body?.classList.toggle('hide-header-mascot', !visible);
+  document.querySelectorAll('[data-header-mascot-toggle]').forEach((button) => {
+    button.setAttribute('aria-pressed', String(visible));
+    button.textContent = visible ? 'Shown' : 'Hidden';
+  });
+}
+
 export function setupMascots() {
   applyMascots();
+  applyHeaderMascotVisibility();
 
   document.querySelectorAll('[data-mascot-toggle]').forEach((button) => {
     button.addEventListener('click', () => {
@@ -79,6 +110,28 @@ export function setupMascots() {
         // Still switch for this page view even when storage refuses.
       }
       applyMascots();
+    });
+  });
+
+  document.querySelectorAll('[data-mascot-set]').forEach((chip) => {
+    chip.addEventListener('click', () => {
+      try {
+        localStorage.setItem(STORAGE_KEY, chip.dataset.mascotSet);
+      } catch {
+        // Still switch for this page view even when storage refuses.
+      }
+      applyMascots();
+    });
+  });
+
+  document.querySelectorAll('[data-header-mascot-toggle]').forEach((button) => {
+    button.addEventListener('click', () => {
+      try {
+        localStorage.setItem(HEADER_VISIBILITY_KEY, readHeaderVisible() ? 'hidden' : 'shown');
+      } catch {
+        // Storage refused: the class below still changes it for this page view.
+      }
+      applyHeaderMascotVisibility();
     });
   });
 }

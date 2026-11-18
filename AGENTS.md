@@ -147,6 +147,13 @@ These are non-negotiable. Violating any of these will break the application:
   `blush`/`navy` are mapped on read) and `pi-chat-mascot` (`pie` = Buddy-era `/static/pi-mascot-*`,
   `pi` = `/static/mascots/pi-*`). `static/mascots.js` owns the mapping and updates every
   `[data-mascot-img]` live, including the randomized landing mascot.
+  `pi-chat-header-mascot` (`shown`|`hidden`) is the third: it toggles `body.hide-header-mascot`, whose rule
+  is scoped to `#chat-screen` so the login screen keeps its mascot.
+- The chat header carries five actions and nothing else: Voice, Preview, Settings, New session, Sign out
+  (`tools/test_header_settings.mjs` asserts them in order). Theme, mascot style, header-mascot and Buddy
+  visibility live in the Settings dialog, which is `#voice-settings-dialog` with its original voice tab.
+  Under 600 px, `.btn-icon { font-size: 0 }` drops labels, so every bar button needs an SVG and an
+  `aria-label`; the title is hidden there because six icons plus text overflowed 390 px and clipped Sign out.
 - Live user bubbles append text before an attached image, matching pi's stored content order.
 - Sub-agent disclosure headers are real buttons with `aria-expanded`.
 - The session drawer is a labelled dialog, closes on Escape, and returns focus to its opener.

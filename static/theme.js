@@ -51,7 +51,10 @@ function applyTheme(theme) {
   document.querySelectorAll('[data-theme-toggle]').forEach((button) => {
     const label = button.querySelector('[data-theme-label]');
     const description = `Switch to ${upcoming} theme`;
-    if (label) label.textContent = 'Theme';
+    // The button used to read "Theme" because the icon beside it carried the state. In the Settings row the
+    // word "Theme" is already on the left, so repeating it there said nothing; the switch now names the
+    // theme you are in, and the aria-label keeps naming the one the click will give you.
+    if (label) label.textContent = activeTheme === 'dark' ? 'Dark' : 'Light';
     button.title = description;
     button.setAttribute('aria-label', description);
   });
