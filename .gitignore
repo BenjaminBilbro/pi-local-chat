@@ -25,7 +25,12 @@ data-samples/capture-workspace/
 # that lives on no registry cannot be installed by anyone who cloned this repository, so the directory is
 # local-only by decision (audit PK-01) and `pyproject.toml` says so next to the dependency. A fresh clone
 # gets the default engine, Phonon, from `uv sync` alone; the extra needs the fork placed here by hand.
-experiments/
+# Local engine scratch lives in `experiments/`, so the directory is ignored rather than the contents:
+# `experiments/voice-orb` is the Voice Mode prototype (S8), a deliverable that AGENTS.md points at, and
+# the re-include below is what keeps those two intentions from overwriting each other. Its `shots/` stay
+# ignored further down.
+experiments/*
+!experiments/voice-orb/
 
 # Voice validation artifacts
 voice-validation/
@@ -85,3 +90,7 @@ realtimesst.log
 # the memory of what was found, and never committed because it describes real documents and real people on
 # this machine, in more detail than a public repository should carry. AGENTS.md says where it lives.
 docs/audit/
+
+# The orb prototype's screenshots: a few megabytes of an animation that `shot.mjs` regenerates in
+# about a minute, so they are evidence to make, not to version.
+experiments/voice-orb/shots/

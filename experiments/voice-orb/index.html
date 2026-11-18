@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<!--
+  Voice Mode, slice zero: what the orb looks like. Not wired to TTS or STT.
+
+  The point of this file is to answer visual questions before any of them are expensive: how the orb reads
+  while the assistant is talking, how microphone input should look while you talk, whether an interruption is
+  visible enough to invite, and how the wait between your last word and the reply (measured at about 2.5
+  seconds in S7) should be shown rather than merely endured.
+
+  Open it directly from disk (file://), or serve the repository and open
+  http://127.0.0.1:8000/experiments/voice-orb/. No build, no dependencies, no module scripts, so the file URL
+  is a real way to run it. `?drive=simulated&state=speaking` pins a state without asking for the microphone,
+  which is how the screenshots next to it were taken.
+
+  Colours and type come from `orb-tokens.css`, a copy of the handful of `static/theme.css` custom properties
+  this needs. Copied rather than imported because the app's stylesheet drags in the whole shell, and a
+  prototype that needs the app running to open is a prototype nobody opens.
+-->
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>pi-chat voice orb, prototype</title>
+<link rel="stylesheet" href="orb-tokens.css">
+<link rel="stylesheet" href="orb.css">
+</head>
+<body>
+  <main class="stage">
+    <div class="orb-wrap" data-state="idle">
+      <!-- One canvas for the orb, one for the mic waveform strip below it. Canvas rather than SVG or DOM:
+           the bar ring and the blob both redraw every frame from audio data, and 64 SVG nodes at 60 fps is a
+           jank machine on a phone. -->
+      <canvas id="orb" width="360" height="360" role="img"
+              aria-label="Voice state indicator"></canvas>
+      <p class="orb-caption" id="orb-caption">Idle</p>
+      <p class="orb-sub" id="orb-sub">Press the talk button, or hold the space bar.</p>
+    </div>
+
+    <div class="meter-wrap">
+      <canvas id="wave" width="720" height="120" role="img"
+              aria-label="Microphone waveform"></canvas>
+      <div class="meter-labels">
+        <span id="meter-source">microphone</span>
+        <span class="meter-level" id="meter-level">0.00</span>
+      </div>
+    </div>
+  </main>
+
+  <!-- Prototype chrome on purpose. Every control here is a production prop, but laid out for a review
+       rather than for a person holding a phone: the real UI gets one button and one orb. -->
+  <aside class="panel" aria-label="Prototype controls">
+    <h1>Voice orb, prototype</h1>
+
+    <fieldset>
+      <legend>State</legend>
+      <div class="row" data-state-row>
+        <button type="button" class="btn" data-state="idle">Idle</button>
+        <button type="button" class="btn" data-state="listening">Listening</button>
+        <button type="button" class="btn" data-state="thinking">Thinking</button>
+        <button type="button" class="btn" data-state="speaking">Speaking</button>
+        <button type="button" class="btn" data-state="barge">Interrupting</button>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Flow</legend>
+      <button type="button" class="btn btn-accent" id="talk-btn" aria-pressed="false">Hold to talk</button>
+      <p class="hint">Hold the button, or the space bar. Release ends the recording, and the wait before the
+        reply is real time: <span id="think-ms">2500</span> ms, the S7 measurement of last word to text.</p>
+    </fieldset>
+
+    <fieldset>
+      <legend>What drives the speaking animation</legend>
+      <div class="row">
+        <button type="button" class="btn" data-drive="simulated" aria-pressed="true">Synthetic envelope</button>
+        <button type="button" class="btn" data-drive="audio" aria-pressed="false">Live &lt;audio&gt; element</button>
+      </div>
+      <p class="hint">Synthetic needs nothing. Live takes the level off the sample player below, which is the
+        same AnalyserNode path production would use for TTS playback.</p>
+      <div class="row">
+        <button type="button" class="btn btn-ghost" id="sample-play">Play sample</button>
+        <audio id="sample" src="sample-speech.wav" preload="none"></audio>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Size and look</legend>
+      <div class="row">
+        <button type="button" class="btn" data-size="88">88</button>
+        <button type="button" class="btn" data-size="132" aria-pressed="true">132</button>
+        <button type="button" class="btn" data-size="196">196</button>
+      </div>
+      <div class="row">
+        <button type="button" class="btn" id="theme-btn">Dark</button>
+        <button type="button" class="btn" id="motion-btn" aria-pressed="false">Reduce motion</button>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Readout</legend>
+      <dl class="readout">
+        <dt>state</dt><dd id="r-state">idle</dd>
+        <dt>frames</dt><dd id="r-fps">0 fps</dd>
+        <dt>mic</dt><dd id="r-mic">off</dd>
+        <dt>drive</dt><dd id="r-drive">simulated</dd>
+      </dl>
+    </fieldset>
+  </aside>
+
+  <script src="orb.js"></script>
+</body>
+</html>

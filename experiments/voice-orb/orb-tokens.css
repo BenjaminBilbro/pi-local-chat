@@ -1,0 +1,72 @@
+/* A copy of the properties this prototype needs from `../../static/theme.css`, in that file's order and with
+   its values, so the orb is judged against the identity it will actually live in. Copied rather than linked:
+   the app stylesheet brings the whole shell with it, and a prototype that needs the server running is a
+   prototype nobody opens from disk.
+
+   If a value below stops matching theme.css, that is a bug in this file, not a divergence to keep. */
+
+:root {
+  --db-lava-600: #FF3621;
+  --db-navy-900: #0B2026;
+  --db-font-primary: 'DM Sans', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --db-font-mono: 'DM Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+
+  --bg: #F9F7F4;
+  --bg-elevated: #FFFFFF;
+  --bg-subtle: #EEEDE9;
+  --border: #D8D5CE;
+  --border-subtle: #E6E3DC;
+
+  --text: #0B2026;
+  --text-muted: #4A5568;
+  --text-subtle: #5F6877;
+
+  --accent: #FF3621;
+  --accent-2: #C2261A;
+  --accent-hover: #C2261A;
+  --accent-contrast: #FFFFFF;
+  --accent-soft: rgba(255, 54, 33, 0.08);
+  --accent-glow: rgba(255, 54, 33, 0.16);
+
+  --success: #00795A;
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  --font-sans: var(--db-font-primary);
+  --font-mono: var(--db-font-mono);
+  --font-size-sm: 0.875rem;
+  --font-size-xs: 0.8125rem;
+
+  --shadow-sm: 0 1px 2px rgba(11, 32, 38, 0.06);
+  --shadow-md: 0 4px 12px rgba(11, 32, 38, 0.08);
+  --shadow-lg: 0 16px 40px rgba(11, 32, 38, 0.12);
+  --focus-ring: rgba(255, 54, 33, 0.45);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg: #0B2026;
+  --bg-elevated: #122B33;
+  --bg-subtle: #143D4A;
+  --border: #2E4A54;
+  --border-subtle: #1E3841;
+
+  --text: #FFFFFF;
+  --text-muted: #C6D3D8;
+  --text-subtle: #94A8AF;
+
+  --accent: #FF5A45;
+  --accent-2: #FF3621;
+  --accent-hover: #FF7A68;
+  --accent-contrast: #0B2026;
+  --accent-soft: rgba(255, 90, 69, 0.14);
+  --accent-glow: rgba(255, 90, 69, 0.2);
+
+  --success: #2FBF8F;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 6px 18px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 18px 48px rgba(0, 0, 0, 0.55);
+  --focus-ring: rgba(255, 90, 69, 0.5);
+}

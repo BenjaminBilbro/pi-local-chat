@@ -1,0 +1,192 @@
+/* Layout for a review: orb on the left at the size it would be on screen, controls on the right. On a phone
+   the panel goes under the orb, because voice mode is a phone feature and a prototype that only lays out on
+   a desktop is answering the wrong question. */
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: var(--font-sans);
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  min-height: 100svh;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  align-items: stretch;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 28px;
+  padding: 32px 24px 40px;
+  min-height: 100vh;
+  min-height: 100svh;
+}
+
+/* The orb box is one custom property wide so the size chips change the drawing and nothing else. Canvas
+   backing store is resized by orb.js against this value and devicePixelRatio. */
+.orb-wrap {
+  --orb-size: 132px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+}
+
+#orb {
+  width: calc(var(--orb-size) * 2.1);
+  height: calc(var(--orb-size) * 2.1);
+  display: block;
+  /* The canvas draws its own glow; the box stays transparent so it sits on any surface unchanged. */
+  background: transparent;
+}
+
+.orb-caption {
+  font-size: 1.0625rem;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+.orb-sub {
+  font-size: var(--font-size-sm);
+  color: var(--text-subtle);
+  max-width: 34ch;
+  text-align: center;
+  line-height: 1.5;
+  min-height: 2.8em;
+}
+
+.meter-wrap {
+  width: min(560px, 100%);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+  padding: 12px 14px 10px;
+  box-shadow: var(--shadow-sm);
+}
+
+#wave {
+  width: 100%;
+  height: 64px;
+  display: block;
+}
+
+.meter-labels {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-subtle);
+  padding-top: 6px;
+}
+
+/* ── Panel ───────────────────────────────────────────────────────── */
+
+.panel {
+  border-left: 1px solid var(--border);
+  background: var(--bg-elevated);
+  padding: 24px 20px 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  overflow-y: auto;
+}
+
+.panel h1 {
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-subtle);
+}
+
+fieldset {
+  border: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+legend {
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  color: var(--text-muted);
+  padding-bottom: 2px;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.btn {
+  font: inherit;
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 7px 11px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.btn:hover { color: var(--text); border-color: var(--text-subtle); }
+.btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+
+/* `aria-pressed` is the whole selected-state story, in both the state row and the two-choice rows. A
+   prototype that carries the accessibility state correctly from the start is cheaper than one that adds it
+   when the real component is built. */
+.btn[aria-pressed="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.btn-accent {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
+  font-weight: 500;
+}
+
+.btn-accent[aria-pressed="true"] {
+  background: var(--accent-2);
+  border-color: var(--accent-2);
+  color: var(--accent-contrast);
+}
+
+.btn-ghost { background: transparent; }
+
+.hint {
+  font-size: var(--font-size-xs);
+  color: var(--text-subtle);
+  line-height: 1.55;
+}
+
+.readout {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 12px;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+}
+
+.readout dt { color: var(--text-subtle); }
+.readout dd { color: var(--text); }
+
+@media (max-width: 760px) {
+  body { grid-template-columns: minmax(0, 1fr); }
+
+  .stage { min-height: auto; padding: 40px 16px 24px; }
+
+  .panel {
+    border-left: 0;
+    border-top: 1px solid var(--border);
+  }
+}
