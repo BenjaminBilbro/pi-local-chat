@@ -154,6 +154,15 @@ These are non-negotiable. Violating any of these will break the application:
   visibility live in the Settings dialog, which is `#voice-settings-dialog` with its original voice tab.
   Under 600 px, `.btn-icon { font-size: 0 }` drops labels, so every bar button needs an SVG and an
   `aria-label`; the title is hidden there because six icons plus text overflowed 390 px and clipped Sign out.
+- `[hidden]` means hidden: one global `[hidden] { display: none !important }` rule at the top of `styles.css`
+  does it. Do not add another `X[hidden] { display: none }` patch. An author `display` rule beats the
+  browser's `[hidden]` rule at any specificity, which is why five elements carried private patches while
+  everything else leaked: a Phonon install rendered OmniVoice's whole design form with `.hidden` set on every
+  row, and the preview tab strip stayed up for a single document. Both are in
+  `tools/test_voice_engine_gating.mjs`.
+- A control only one TTS engine honours carries `data-voice-field="design"` (OmniVoice's form) or sits inside
+  `[data-voice-field="phonon"]` (the catalog picker); `voice.js applyEngineToForm()` reads the markup, so a new
+  row cannot escape the gate by missing an id list. Volume is in neither group: it is a client-side gain.
 - Live user bubbles append text before an attached image, matching pi's stored content order.
 - Sub-agent disclosure headers are real buttons with `aria-expanded`.
 - The session drawer is a labelled dialog, closes on Escape, and returns focus to its opener.

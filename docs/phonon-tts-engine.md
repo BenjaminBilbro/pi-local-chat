@@ -142,6 +142,18 @@ reference audio be used), the five rate labels with their measured multipliers, 
 voices. The settings dialog asks once per session and renders to match, so a Phonon server shows a
 voice picker and a rate picker instead of a form whose controls do nothing.
 
+That last sentence was aspirational until S2. The gate read a list of OmniVoice ids, and the panel had
+outgrown it; worse, `hidden` was not hiding, because `.voice-setting-label { display: flex }` beats the
+browser's `[hidden]` rule at any specificity. `voice.js` set the attribute on all seven design rows and
+rendered all seven. The gate is now a property of the markup: a row only one engine honours carries
+`data-voice-field="design"` (OmniVoice's form) or sits inside `[data-voice-field="phonon"]` (the catalog
+picker), and `applyEngineToForm()` hides whichever group the running engine cannot service. `styles.css`
+carries one `[hidden] { display: none !important }` rule where five elements each had a private patch.
+Under Phonon, Voice output is the voice picker, the rate picker, that voice's description, and Volume; volume
+is a client-side gain, so both engines honour it and it is tagged neither. Cloning is still OmniVoice-only
+and its tab is removed rather than disabled, because the refusal happens on upload and an upload zone that
+cannot upload is a worse answer than no zone. `tools/test_voice_engine_gating.mjs` pins both directions.
+
 - Voice picker: every catalog voice, grouped by language, labelled with gender and age, and Gradium's
   own one-line description shown underneath. Choosing one takes effect on the next sentence.
 - Rate picker: the five labels below. `set_conditions` is model-level state, so it is applied once per

@@ -451,6 +451,42 @@ async function runSession(chromeChild) {
       await evaluate(cdp, "document.querySelector('[data-open-settings]').click(); true");
       await waitFor(cdp, "document.getElementById('voice-settings-dialog').classList.contains('active')");
       await sleep(400);
+
+      // Computed styles, because jsdom cannot do this half and this half is the bug. `hidden` lost to
+      // `.voice-setting-label { display: flex }`, so the gate set the attribute on seven rows and rendered
+      // seven: a DOM-only test could see the attribute and be wrong. Whatever the server reports as the
+      // engine is what has to be on screen, in this browser, right now.
+      const shown = await evaluate(
+        cdp,
+        `(async () => {
+          const caps = await fetch('/api/tts/capabilities').then((r) => r.json());
+          const dialog = document.getElementById('voice-settings-dialog');
+          const rendered = (sel) => Array.from(dialog.querySelectorAll(sel))
+            .filter((el) => getComputedStyle(el).display !== 'none')
+            .map((el) => (el.querySelector('span') || el).textContent.trim().split('\\n')[0]);
+          return JSON.stringify({
+            engine: caps.engine,
+            design: caps.design === true,
+            customVoices: caps.customVoices === true,
+            designShown: rendered('[data-voice-field="design"]'),
+            pickerShown: rendered('[data-voice-field="phonon"]'),
+            customTabShown: rendered('[data-voice-tab="custom"]'),
+          });
+        })()`,
+      );
+      const gate = JSON.parse(shown);
+      if (gate.design === false && gate.designShown.length > 0) {
+        throw new Error(`${gate.engine} rendered controls it cannot honour: ${gate.designShown.join(', ')}`);
+      }
+      if (gate.design === true && gate.designShown.length === 0) {
+        throw new Error('the server reports a design engine but no design controls are rendered');
+      }
+      if (gate.engine === 'phonon' && gate.pickerShown.length === 0) {
+        throw new Error('Phonon is running and the catalog picker is not on screen');
+      }
+      if (gate.customVoices === false && gate.customTabShown.length > 0) {
+        throw new Error('cloning is unavailable and the Custom Voice tab is still on screen');
+      }
     }
 
     if (STAGE === 'preview') {

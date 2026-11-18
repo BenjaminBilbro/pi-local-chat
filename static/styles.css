@@ -1,5 +1,20 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
+/* `hidden` means hidden, everywhere, once. An author `display` rule beats the browser's `[hidden]` rule no
+   matter the specificity, so any `.thing { display: flex }` in this file silently defeated the attribute.
+   Five elements each carried their own `X[hidden] { display: none }` patch, and everything else leaked:
+
+     - `.voice-setting-label` and `.voice-phonon` are flex, so a Phonon install rendered OmniVoice's Gender /
+       Age / Pitch / Accent / Style / Language / Speed form while voice.js set `.hidden` on every row and
+       looked entirely correct from the JS side (S2).
+     - `.doc-tabs` is flex, so the preview pane's document tab strip stayed up with one document open even
+       though preview.js asked for `hidden` whenever `docs.size < 2`.
+
+   Both are the same bug, so the fix is one rule rather than one more patch. An element that genuinely needs
+   to override this sets `display` on itself and drops the attribute.
+*/
+[hidden] { display: none !important; }
+
 html, body {
   width: 100%;
   max-width: 100vw;
@@ -763,7 +778,6 @@ html[data-mascot="pi"] .header-mascot {
   transition: background 0.15s var(--ease-out), color 0.15s var(--ease-out);
 }
 
-.stop-btn[hidden] { display: none; }
 
 .stop-btn:hover:not([disabled]) {
   background: var(--error);
@@ -808,9 +822,6 @@ html[data-mascot="pi"] .header-mascot {
   backdrop-filter: blur(2px);
 }
 
-.tool-detail-overlay[hidden] {
-  display: none;
-}
 
 .tool-detail-dialog {
   display: flex;
@@ -1431,7 +1442,6 @@ body.tool-detail-open {
   width: 100%;
 }
 
-.queue-strip[hidden] { display: none; }
 
 .queue-chip {
   display: inline-flex;
@@ -1515,7 +1525,6 @@ body.tool-detail-open {
   transition: background 0.15s var(--ease-out), color 0.15s var(--ease-out);
 }
 
-.steer-btn[hidden] { display: none; }
 
 .steer-btn:hover {
   background: var(--accent);
@@ -2671,9 +2680,6 @@ body.hide-header-mascot #chat-screen .header-mascot {
   gap: 10px;
 }
 
-.voice-phonon[hidden] {
-  display: none;
-}
 
 .voice-phonon-description {
   margin: 0;

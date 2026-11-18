@@ -316,7 +316,7 @@
            its rate is one of five labeled steps, so these replace the design sliders below
            rather than adding to them. Hidden unless /api/tts/capabilities reports
            engine=phonon; see applyEngineToForm() in static/voice.js. -->
-      <div class="voice-phonon" id="voice-phonon-controls" hidden>
+      <div class="voice-phonon" id="voice-phonon-controls" data-voice-field="phonon" hidden>
         <label class="voice-setting-label">
           <span>Voice</span>
           <select id="voice-phonon-name"></select>
@@ -327,14 +327,14 @@
         </label>
         <p class="voice-phonon-description" id="voice-phonon-description"></p>
       </div>
-      <label class="voice-setting-label">
+      <label class="voice-setting-label" data-voice-field="design">
         <span>Gender</span>
         <select id="voice-gender">
           <option value="female">Female</option>
           <option value="male">Male</option>
         </select>
       </label>
-      <label class="voice-setting-label">
+      <label class="voice-setting-label" data-voice-field="design">
         <span>Age</span>
         <select id="voice-age">
           <option value="young adult">Young adult</option>
@@ -344,7 +344,7 @@
           <option value="elderly">Elderly</option>
         </select>
       </label>
-      <label class="voice-setting-label">
+      <label class="voice-setting-label" data-voice-field="design">
         <span>Pitch</span>
         <select id="voice-pitch">
           <option value="very low pitch">Very low</option>
@@ -354,7 +354,7 @@
           <option value="very high pitch">Very high</option>
         </select>
       </label>
-      <label class="voice-setting-label">
+      <label class="voice-setting-label" data-voice-field="design">
         <span>Accent</span>
         <select id="voice-accent">
           <option value="american accent" selected>American</option>
@@ -369,14 +369,14 @@
           <option value="russian accent">Russian</option>
         </select>
       </label>
-      <label class="voice-setting-label">
+      <label class="voice-setting-label" data-voice-field="design">
         <span>Style</span>
         <select id="voice-style">
           <option value="">Normal</option>
           <option value="whisper">Whisper</option>
         </select>
       </label>
-      <label class="voice-setting-label">
+      <label class="voice-setting-label" data-voice-field="design">
         <span>Language</span>
         <select id="voice-language">
           <option value="English" selected>English</option>
@@ -385,7 +385,7 @@
           <option value="German">German</option>
         </select>
       </label>
-      <label class="voice-setting-label">
+      <label class="voice-setting-label" data-voice-field="design">
         <span>Speed</span>
         <input type="range" id="voice-speed" min="0.8" max="1.25" step="0.05" value="1.0">
       </label>

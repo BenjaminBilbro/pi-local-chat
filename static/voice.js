@@ -159,13 +159,6 @@ export function createVoiceController({
 
   let capabilities = null;
 
-  // The OmniVoice design controls. A Phonon server ignores every one of them, so showing them
-  // would be a form that lies about what it does.
-  const OMNIVOICE_ONLY_IDS = [
-    'voice-gender', 'voice-age', 'voice-pitch', 'voice-accent',
-    'voice-style', 'voice-language', 'voice-speed',
-  ];
-
   async function loadCapabilities() {
     try {
       const resp = await fetch('/api/tts/capabilities');
@@ -178,22 +171,30 @@ export function createVoiceController({
     }
   }
 
+  // Which controls the running engine can honour is stated by the markup: a row carries
+  // `data-voice-field="design"` (OmniVoice's voice-design form) or sits inside
+  // `[data-voice-field="phonon"]` (the catalog picker). The list of OmniVoice ids this replaces was a
+  // second place to remember, and rows were already in the DOM that it did not name. Volume is in neither
+  // group because it is a client-side gain, so both engines honour it.
   function applyEngineToForm() {
-    const phonon = capabilities?.engine === 'phonon';
-    const phononControls = document.getElementById('voice-phonon-controls');
-    if (phononControls) phononControls.hidden = !phonon;
+    if (!settingsDialog) return;
+    // Unknown engine: leave the layout the markup ships with, which is the OmniVoice one.
+    if (!capabilities) return;
 
-    OMNIVOICE_ONLY_IDS.forEach((id) => {
-      const el = document.getElementById(id);
-      const row = el?.closest('label');
-      if (row) row.hidden = phonon;
+    const phonon = capabilities.engine === 'phonon';
+    const design = capabilities.design === true;
+
+    settingsDialog.querySelectorAll('[data-voice-field]').forEach((row) => {
+      const field = row.dataset.voiceField;
+      if (field === 'phonon') row.hidden = !phonon;
+      else if (field === 'design') row.hidden = !design;
     });
 
     // Custom (uploaded) voices need a speaker encoder, which the public Phonon checkpoints do
     // not have, so the whole tab goes away instead of failing on upload.
-    const customTab = settingsDialog?.querySelector('[data-voice-tab="custom"]');
-    const customPanel = settingsDialog?.querySelector('[data-voice-tab-panel="custom"]');
-    const showCustom = !phonon && capabilities?.customVoices !== false;
+    const customTab = settingsDialog.querySelector('[data-voice-tab="custom"]');
+    const customPanel = settingsDialog.querySelector('[data-voice-tab-panel="custom"]');
+    const showCustom = !phonon && capabilities.customVoices !== false;
     if (customTab) customTab.hidden = !showCustom;
     if (customPanel) customPanel.style.display = showCustom ? '' : 'none';
     if (!showCustom && settings.voiceType && settings.voiceType.startsWith('custom:')) {
@@ -238,16 +239,18 @@ export function createVoiceController({
       rateSelect.appendChild(opt);
     });
 
-    const savedVoice = settings.phononVoice || capabilities.defaultVoice;
-    if (savedVoice && voiceSelect.querySelector(`option[value="${CSS.escape(savedVoice)}"]`)) {
-      voiceSelect.value = savedVoice;
-    }
+    // Value comparison rather than an attribute selector. `CSS.escape` is what stopped a name containing a
+    // quote from throwing SyntaxError, but comparing `option.value` needs no escaping, does not depend on a
+    // browser global, and says what it means.
+    const selectValue = (select, wanted) => {
+      if (!wanted) return;
+      if (Array.from(select.options).some((option) => option.value === wanted)) select.value = wanted;
+    };
+
+    selectValue(voiceSelect, settings.phononVoice || capabilities.defaultVoice);
     settings.phononVoice = voiceSelect.value || null;
 
-    const savedRate = settings.phononRate || capabilities.defaultRate;
-    if (savedRate && rateSelect.querySelector(`option[value="${CSS.escape(savedRate)}"]`)) {
-      rateSelect.value = savedRate;
-    }
+    selectValue(rateSelect, settings.phononRate || capabilities.defaultRate);
     settings.phononRate = rateSelect.value || null;
 
     if (description) {
@@ -1204,10 +1207,7 @@ export function createVoiceController({
     // server. Fetch once per session; a failure leaves the OmniVoice layout, which is the
     // layout the markup ships with.
     const ready = capabilities ? Promise.resolve(capabilities) : loadCapabilities();
-    Promise.resolve(ready).then(() => {
-      applyEngineToForm();
-      populatePhononControls();
-    });
+    Promise.resolve(ready).then(() => applyCapabilities(capabilities));
     populateSettingsForm();
     settingsDialog.classList.add('active');
     settingsBackdrop?.classList.add('active');
@@ -1393,10 +1393,23 @@ export function createVoiceController({
     initUI();
   }
 
+  /**
+   * Point the dialog at an engine and reshape it. `openSettings` calls this with whatever the server
+   * reported; it is public because the gate has two directions and one install can only ever report one
+   * engine, so pinning both halves means being able to hand the dialog the other server's answer.
+   */
+  function applyCapabilities(next) {
+    capabilities = next || null;
+    applyEngineToForm();
+    populatePhononControls();
+    return capabilities;
+  }
+
   return {
     setAccount,
     toggle,
     openSettings,
+    applyCapabilities,
     handleServerMessage,
     handleBinaryFrame,
     beforePrompt,
