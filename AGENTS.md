@@ -169,6 +169,12 @@ These are non-negotiable. Violating any of these will break the application:
   because there it is the full-screen sheet rather than a column. `--doc-pane-room` in `styles.css` keeps
   520 px of conversation after the session drawer, and `clampWidth()` reads `--sidebar-width` for the same
   floor on a drag. `tools/test_preview_pane_state.mjs` and `--pane open|closed` hold this.
+- Header icons are Feather 4.29.2 paths taken verbatim from upstream
+  (`cdn.jsdelivr.net/npm/feather-icons@4.29.2/dist/icons/<name>.svg`). Do not retype or compress one: the
+  Settings gear written in S1 had its four corner arcs rewritten as single `a2 2 0 1 1 ...` sweeps, and
+  large-arc-flag 1 sends each of them the long way round, which drew the squiggle Ben photographed on
+  2026-11-18. A mangled icon parses and passes every jsdom claim; only the screenshot shows it, so look at the
+  header in a shot before saying an icon change is done.
 - Under 600 px the composer is one card: the field on the first line, the controls on the line under it
   (attach left, Stop / Send now / microphone / Send right). The desktop keeps the controls beside the field.
   The group is `.input-buttons` in the markup and `chat.js` appends `#mic-toggle` to it through
