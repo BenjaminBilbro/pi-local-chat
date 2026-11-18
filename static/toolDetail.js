@@ -22,13 +22,24 @@ const STATE_LABELS = {
 
 const OPEN_STATES = new Set(['pending', 'running']);
 
+const STATUS_CANCELLED = 'cancelled';
+
+/* The cancel control's three faces, and the middle one is only allowed to exist for as long as the run
+ * takes to settle. "Cancel and stop the run" was the old first label: accurate about pi's protocol, and
+ * it read like an instruction to kill the assistant, which is not what `abort` does (the child stays alive
+ * and the next prompt runs on the same session). "Stop this turn" is the true scope. */
+const CANCEL_LABEL = 'Stop this turn';
+const CANCEL_ARMED_LABEL = 'Stopping...';
+const CANCELLED_LABEL = 'Cancelled';
+const ENDED_LABEL = 'Ended before the stop';
+
 /* A 20-minute bash run can return megabytes, and a textarea-sized pre is not a reader's friend. The
  * head and tail together are what you actually scan for "why did that fail". */
 const MAX_SHOWN = 12_000;
 
-const CANCEL_NOTE = 'Cancelling stops the whole run, not just this call: pi kills the tool and ends '
-  + 'the turn, and anything already written to disk stays written. Queued messages are pulled out of '
-  + 'the queue and handed back to the composer.';
+const CANCEL_NOTE = 'Stopping ends the whole turn, not just this call: pi kills the tool and ends the '
+  + 'run, and anything already written to disk stays written. Queued messages are pulled out of the '
+  + 'queue and handed back to the composer. The pi session itself is not restarted.';
 
 function formatElapsed(record, now) {
   const from = record.executionStartedAt || record.startedAt;
@@ -90,10 +101,37 @@ export function createToolDetail({ sendCommand }) {
   let cancelSent = false;
   let ticker = null;
 
+  /* The row this dialog was opened from may no longer be in the document: settlement re-renders the run
+   * from the message content, so the node `open()` cached gets dropped and a new one takes its place. The
+   * call id is the only thing that survives that, so follow it. */
+  function liveElement() {
+    if (record?.element?.isConnected) return record.element;
+    if (!openId) return record?.element || null;
+
+    const found = document.querySelector(`[data-tool-call-id="${openId}"]`);
+    if (found && found !== record?.element) record.element = found;
+    return found || record?.element || null;
+  }
+
+  /* The record is the store and the DOM is its mirror, so the record answers first.
+   *
+   * Reading the row instead was the bug Ben found on 2026-11-17: after a cancel, the cached row had left
+   * the document with `data-tool-status="running"` frozen on it, so this returned "running" for the rest
+   * of the page's life, the button stayed disabled and labelled "Stopping the run", and the ticker kept
+   * faithfully re-rendering a node that no longer existed. The row is still the fallback, because a record
+   * built from a session file may carry no status of its own. */
+  function currentStatus() {
+    /* `liveElement()` is called for its side effect: the dialog has to adopt the rebuilt row whether or not
+     * the record already knows the status, or a dialog opened on a live call keeps pointing at the node
+     * settlement threw away and stops following anything. */
+    const element = liveElement();
+    return record?.status || element?.dataset?.toolStatus || 'unknown';
+  }
+
   function render() {
     if (!record) return;
 
-    const status = record.element?.dataset.toolStatus || record.status || 'unknown';
+    const status = currentStatus();
     stateValue.textContent = STATE_LABELS[status] || status;
     elapsedValue.textContent = formatElapsed(record, Date.now());
 
@@ -107,13 +145,29 @@ export function createToolDetail({ sendCommand }) {
     resultBlock.hidden = false;
 
     const cancellable = OPEN_STATES.has(status);
-    cancelButton.hidden = !cancellable;
-    note.hidden = !cancellable;
     if (cancellable) {
+      cancelButton.hidden = false;
+      note.hidden = false;
       note.textContent = CANCEL_NOTE;
       cancelButton.disabled = cancelSent;
-      cancelButton.textContent = cancelSent ? 'Stopping the run' : 'Cancel and stop the run';
+      cancelButton.textContent = cancelSent ? CANCEL_ARMED_LABEL : CANCEL_LABEL;
+      return;
     }
+
+    /* Nothing from here down can change again, so nothing here is allowed to keep ticking or to imply it
+     * is still working. A reader who pressed stop gets a terminal word for what happened; a reader who did
+     * not press anything gets no control. */
+    stopTicking();
+    note.hidden = true;
+
+    if (!cancelSent) {
+      cancelButton.hidden = true;
+      return;
+    }
+
+    cancelButton.hidden = false;
+    cancelButton.disabled = true;
+    cancelButton.textContent = status === STATUS_CANCELLED ? CANCELLED_LABEL : ENDED_LABEL;
   }
 
   function stopTicking() {

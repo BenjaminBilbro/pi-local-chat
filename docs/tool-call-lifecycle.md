@@ -121,8 +121,16 @@ Two details that are easy to get wrong:
   after it reintroduces the wait the reader is trying to escape.
 - **Cleared text is restored to the composer, never resent.** A message pi already delivered must not
   appear twice, and the reader may only want part of it back. `handleCancelResult` in `chat.js` puts
-  the text in `#user-input` and deliberately does not clear `cancelInFlight`: the dialog keeps showing
-  `Stopping the run...` until the run really settles.
+  the text in `#user-input` and deliberately does not clear `cancelInFlight`: both controls stay armed
+  until the run really settles.
+- **The tool record is the store; the row in the timeline is its mirror.** Settlement re-renders the run
+  from the message content, so a dialog that holds on to the row it was opened from is holding a node that
+  left the document, and that node's `data-tool-status` is frozen at whatever it said when it was dropped.
+  `static/toolDetail.js` therefore reads the status from the record and re-points its row by
+  `data-tool-call-id` on every pass. Getting this backwards shipped a button stuck on "stopping" forever
+  (Ben, 2026-11-17): the transcript row beside it was updating, which is what made it look like the cancel
+  had half-worked. Once the call is terminal the dialog shows `Cancelled`, or `Ended before the stop` when
+  the turn finished first, and the one-second ticker stops.
 
 `cancelInFlight` is set by both entry points (header Stop, dialog Cancel) and cleared when the run
 settles, so the two controls cannot disagree.
