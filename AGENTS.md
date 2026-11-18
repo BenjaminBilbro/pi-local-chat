@@ -206,7 +206,7 @@ These are non-negotiable. Violating any of these will break the application:
 
 ```bash
 # Everything that runs without a GPU, from the repo root the way CI does
-.venv/Scripts/python.exe -m pytest -q -m "not audio_gpu and not audio_cpu" --timeout=120 -p no:cacheprovider
+.venv/Scripts/python.exe -m pytest -q -m "not audio_cpu" --timeout=120 -p no:cacheprovider
 
 .venv/Scripts/python.exe -m pytest tests -q -m audio_cpu --timeout=300   # real Phonon, CPU, ~12 s
 npm test                                                                  # jsdom rendering parity

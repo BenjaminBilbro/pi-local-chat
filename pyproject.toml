@@ -70,7 +70,6 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
     "audio_cpu: slow real-checkpoint CPU tests (deselect with '-m \"not audio_cpu\"')",
-    "audio_gpu: slow real-model GPU tests (deselect with '-m \"not audio_gpu\"')",
 ]
 
 [project.optional-dependencies]

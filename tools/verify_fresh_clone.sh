@@ -89,7 +89,7 @@ step "uv sync --group dev (no extras, nothing vendored)" uv sync --group dev
 
 step "python version" "$PY" -c "import sys; print(sys.version)"
 
-step "pytest (default markers)" "$PY" -m pytest -q -m "not audio_gpu and not audio_cpu" \
+step "pytest (default markers)" "$PY" -m pytest -q -m "not audio_cpu" \
     --timeout=120 -p no:cacheprovider
 
 step "config reference is current" "$PY" tools/config_reference.py --check

@@ -125,7 +125,7 @@ computation before hearing any of it.
 ## Testing
 
 ```bash
-.venv\Scripts\python.exe -m pytest tests -q -m "not audio_gpu and not audio_cpu"   # default, fake runtime
+.venv\Scripts\python.exe -m pytest tests -q -m "not audio_cpu"   # default, fake runtime
 .venv\Scripts\python.exe -m pytest tests -q -m audio_cpu -s                        # real ptts on CPU
 ```
 

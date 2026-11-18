@@ -1,6 +1,6 @@
 """Real-engine Phonon tests. Marked `audio_cpu`: they run the actual ptts runtime on the
 CPU, so they are excluded from the default run by
-    pytest -m "not audio_gpu and not audio_cpu"
+    pytest -m "not audio_cpu"
 and selected by
     pytest -m audio_cpu
 

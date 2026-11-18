@@ -56,7 +56,7 @@ jobs:
       - name: Python tests
         env:
           PYTHONIOENCODING: utf-8
-        run: python -m pytest -q -m "not audio_gpu and not audio_cpu" -p no:cacheprovider
+        run: python -m pytest -q -m "not audio_cpu" -p no:cacheprovider
 
       - name: WebSocket smoke test
         env:

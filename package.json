@@ -6,7 +6,7 @@
   },
   "scripts": {
     "test": "uv run python tests/compare_render.py",
-    "test:py": "uv run python -m pytest -q -m \"not audio_gpu and not audio_cpu\""
+    "test:py": "uv run python -m pytest -q -m \"not audio_cpu\""
   },
   "devDependencies": {
     "jsdom": "^29.1.1"
