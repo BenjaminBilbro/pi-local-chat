@@ -1,6 +1,7 @@
 import { setupAuth } from './auth.js';
 import {
   focusComposer,
+  getLastAssistantText,
   handleCancelResult,
   handlePiEvent,
   handleQueueState,
@@ -19,6 +20,7 @@ import { setupTheme } from './theme.js';
 import { setupMascots } from './mascots.js';
 import { createVoiceController } from './voice.js';
 import { createSTTController } from './stt.js';
+import { createVoiceModeController } from './voice-mode.js';
 import { createBuddy } from './buddy.js';
 
 marked.setOptions({
@@ -31,6 +33,8 @@ setupMascots();
 let socket;
 let voice;
 let stt;
+let voiceMode;
+let connected = false;
 let authenticatedAccount = null;
 let isAgentRunning = false;
 const sendCommand = (message) => socket?.send(message) ?? false;
@@ -124,11 +128,15 @@ const sessions = createSessionPanel({
 
 socket = createSocket({
   onOpen: () => {
+    connected = true;
     setConnectionStatus(true);
     buddy?.setConnected(true);
     // Re-enable STT if it was on before an unexpected disconnect (the server
     // created a fresh STTSession for the new connection).
-    if (stt) stt.reconnect(socket);
+    // The facade again: `stt.reconnect` re-checks `readyState` before it restarts the capture graph, and the
+    // facade does not expose one, so after a dropped connection the microphone came back "enabled" while
+    // sending nothing at all.
+    if (stt) stt.reconnect(window.__piSocket);
     try {
       sessions.refresh();
     } catch (e) {
@@ -136,6 +144,10 @@ socket = createSocket({
     }
   },
   onClose: () => {
+    connected = false;
+    // The overlay over a dead socket is a machine that looks at you and hears nothing. Take it down and let
+    // the normal reconnect path put the conversation back.
+    voiceMode?.exit('socket-closed');
     setConnectionStatus(false);
     buddy?.setConnected(false);
     voice?.resetConnection();
@@ -158,6 +170,21 @@ window.__piChatDocPane = docPane;
 // The header toggle is wired inside `createDocPane`, with the pane's other controls. Wiring it here
 // as well makes one click toggle twice, which reads as a dead button: it happened on 2026-11-09 when
 // the pane's own wiring block became reachable again. `--stage doc-replay` clicks it for real.
+
+/* The one Voice Mode control. It lives in the composer because that is where the hands already are, and it is
+ * the only way in: everything the mode needs (microphone, speech synthesis, the injected mode marker) is
+ * turned on by the controller, not by the button. */
+document.getElementById('voice-mode-btn')?.addEventListener('click', (event) => {
+  if (!voiceMode) return;
+  if (!voiceMode.active && !connected) {
+    // The one failure that is certain before you press, so it is worth saying before the orb covers the
+    // screen and there is nowhere left for an error to go.
+    showChatError('Not connected yet, so voice mode has nothing to talk to.');
+    return;
+  }
+  voiceMode.toggle();
+  event.currentTarget?.setAttribute('aria-pressed', String(voiceMode.active));
+});
 
 document.getElementById('new-session-btn').addEventListener('click', () => {
   voice?.resetConnection();
@@ -333,6 +360,14 @@ setupAuth((account) => {
   stt = createSTTController({
     sendCommand,
     onFinalTranscript: (text) => {
+      /* In voice mode a finished recording IS the message: it goes to the model and onto the orb's own
+         transcript, and nothing touches the composer, which is under the overlay and would be absurd to fill
+         with text nobody can see. The server has already endpoints the recording, and a barge-in abort (if any)
+         is sent by the orb's gate by the time this runs, so this only submits. */
+      if (voiceMode?.active) {
+        voiceMode.onTranscript(text);
+        return;
+      }
       // Interruption flow: abort if agent is running or voice is speaking
       if (isAgentRunning) {
         // Barge-in during an active run: abort, then submit the prompt when
@@ -347,7 +382,10 @@ setupAuth((account) => {
             submitPendingVoicePrompt();
           }, 5000);
         }
-      } else if (voice?.speaking) {
+      } else if (voice?.speakingState) {
+        // This branch used to read `voice?.speaking`, a property voice.js never exposed, so "only TTS tail
+        // audio is playing" was always falsy and a spoken interruption during the tail fell through to the
+        // composer instead of interrupting.
         // Only TTS tail audio is playing (agent already settled): stop the
         // voice and submit after a short grace for the abort to land.
         sendCommand({ type: 'abort' });
@@ -380,9 +418,24 @@ setupAuth((account) => {
     onRecordingChange: (recording) => {
       updateSTTRecording(recording);
     },
+    // Live partials are the only early warning that a mishearing is happening, and behind the overlay the
+    // composer that used to show them is not on screen.
+    onRealtimeTextChange: (text) => voiceMode?.onPartial(text),
     onError: (message) => {
       showChatError(message);
+      voiceMode?.reportError(message);
     },
+  });
+
+  // Voice Mode: the orb, the injected mode markers, and the level sources for both sides of the conversation.
+  voiceMode = createVoiceModeController({
+    sendCommand,
+    // The raw WebSocket, the same one the microphone streams binary audio frames over. `socket` is the
+    // facade, whose `readyState` is undefined, so nothing that has to check the connection can use it.
+    getSocket: () => window.__piSocket,
+    stt,
+    voice,
+    onError: showChatError,
   });
 
   socket.connect();
@@ -406,6 +459,9 @@ function updateSTTUI(state) {
 }
 
 function updateSTTRecording(recording) {
+  // The server's voice-activity gate is the only thing that knows a recording is open, so the orb's
+  // "listening" state has to come from here rather than from a click handler.
+  voiceMode?.onRecordingChange(recording);
   const micButton = document.getElementById('mic-toggle');
   if (micButton) {
     micButton.classList.toggle('recording', recording);
@@ -424,9 +480,13 @@ function applyPreviewEntry(entry) {
 
 function routeServerMessage(message) {
   if (message.type === 'session_started') {
+    connected = true;
     setConnectionStatus(true);
+    // A fresh conversation does not remember the instruction that said "answer as speech".
+    voiceMode?.reinject();
   } else if (message.type === 'session_loaded') {
     sessions.handleSessionLoaded(message);
+    voiceMode?.reinject();
   } else if (message.type === 'messages_retrieved') {
     sessions.handleMessagesRetrieved(message);
   } else if (message.type === 'error') {
@@ -455,6 +515,8 @@ function routeServerMessage(message) {
     } else if (message.event.type === 'agent_settled') {
       isAgentRunning = false;
       stt?.setAgentActive(false);
+      // What was just spoken, on the orb's own transcript, so a spoken exchange can be read afterwards.
+      voiceMode?.noteAssistantTurn(getLastAssistantText());
       // Abort from a voice barge-in has settled — submit the spoken prompt.
       submitPendingVoicePrompt();
       drainAfterSettle();

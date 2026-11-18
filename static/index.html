@@ -138,6 +138,16 @@
             the field, so they have to be one thing that moves. `chat.js` appends the microphone to 
             this wrapper by way of `sendButton.parentElement`. -->
         <div class="input-buttons">
+          <!-- Voice Mode: one button, and when it is on this composer, the history and every tool call are
+               gone until it is turned off again. Kept in the markup rather than built in JS the way the
+               microphone button is, because it has a pressed state worth asserting in a screenshot.
+               The icon is Feather's `mic` path verbatim; it is the filled circle that tells it apart from the
+               dictation microphone next to it, which puts words in this field instead of holding a
+               conversation. -->
+          <button class="voice-mode-btn" id="voice-mode-btn" type="button" aria-pressed="false"
+                  aria-label="Voice mode" title="Voice mode: talk and listen. The conversation and every tool call are hidden while it is on, and everything the model says is spoken aloud.">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+          </button>
           <button class="stop-btn" id="stop-run-btn" type="button" hidden
                   title="Stop this turn: the running tool is killed and queued messages come back here. The pi session keeps running.">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
@@ -500,6 +510,38 @@
       <button class="voice-apply-btn" id="voice-apply">Apply</button>
     </div>
   </div>
+</div>
+
+<!-- Voice Mode surface (static/voice-mode.js). Covers the whole app while it is on, including the composer
+     and the preview pane: in this mode nothing is read and nothing is typed, so everything that expects to be
+     read or typed is out of the way rather than merely dimmed. The history is still there underneath, and
+     exiting puts it back exactly as it was.
+
+     The two canvases are aria-hidden because they are state rendered as motion; the `role="status"` caption is
+     the version of that state that a screen reader and a test can both read. `data-demo` pins the orb to
+     whatever the draw code was asked to show, which is how the screenshot harness proves the orb is still
+     being drawn on real audio rather than on a scripted sequence. -->
+<div class="voice-screen" id="voice-screen" role="region" aria-label="Voice mode" tabindex="-1" hidden data-phase="idle">
+  <div class="voice-stage">
+    <canvas id="voice-orb" class="voice-orb" aria-hidden="true"></canvas>
+    <p class="voice-phase" id="voice-phase" aria-hidden="true">idle</p>
+  </div>
+  <p class="voice-caption" id="voice-caption" role="status" aria-live="polite"></p>
+  <canvas id="voice-wave" class="voice-wave" aria-hidden="true"></canvas>
+  <div class="voice-log" id="voice-log" aria-label="What was said in this session"></div>
+  <p class="voice-hint" id="voice-hint">Say something</p>
+  <div class="voice-actions">
+    <button class="voice-action" id="voice-mute" type="button" title="Stop the assistant mid-sentence (M)">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>
+      <span>Mute</span>
+    </button>
+    <button class="voice-action is-primary" id="voice-exit" type="button" title="Back to the conversation (Esc)">
+      Exit voice mode
+    </button>
+  </div>
+  <!-- An AudioContext suspended by autoplay policy is normal on a phone, and here the gesture that would have
+       unlocked it was a button in a surface this one covers. -->
+  <button class="voice-resume" id="voice-audio-resume" type="button" hidden>Tap to resume audio</button>
 </div>
 
 <script src="/static/purify.min.js"></script>

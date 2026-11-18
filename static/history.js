@@ -13,6 +13,17 @@ import {
   resetTimeline,
   toolStatusFromResult,
 } from './timeline.js';
+import { isSystemEnvelope } from './utils.js';
+
+/** The plain text of a stored message, whether pi recorded it as a string or as content blocks. */
+function messageTextOf(message) {
+  const content = message && message.content;
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content.filter((item) => item && item.type === 'text').map((item) => item.text || '').join('\n');
+  }
+  return '';
+}
 
 /**
  * Render saved messages as user messages plus one assistant timeline per run.
@@ -57,6 +68,11 @@ export function renderAssistantRun(messages, timeline, options = {}) {
 }
 
 function renderUserMessage(message, messagesElement) {
+  // A voice-mode marker is a user turn the person did not type, and a reloaded session would otherwise
+  // print the whole instruction about speaking style as if it were something he said. The tag is the
+  // contract; `systemEnvelope` in utils.js writes it and this is where the replay path drops it.
+  if (isSystemEnvelope(messageTextOf(message))) return;
+
   removeWelcome(messagesElement);
 
   const container = document.createElement('div');

@@ -28,6 +28,10 @@ export function createSTTController({
   let silentGain = null;
   let ws = null;
   let actualSampleRate = null;
+  // Reused every animation frame; allocating two typed arrays at 60 fps is how a visualizer becomes the
+  // thing that makes the frame rate jitter.
+  let levelScratch = null;
+  let levelFreqScratch = null;
   // Whether STT was enabled before the last destroy() — used to re-enable
   // automatically after an unexpected WebSocket reconnect.
   let wasEnabled = false;
@@ -89,7 +93,10 @@ export function createSTTController({
       // browser's AEC. Route the processor output through a zeroed gain so
       // the capture graph stays live without any audible output.
       analyser = audioContext.createAnalyser();
-      analyser.fftSize = 256;
+      // 512 rather than 256: the voice-mode ring has 56 bars and log-spaces them across these bins, and at
+      // 128 bins the top of the ring was being driven by two bins of fricatives.
+      analyser.fftSize = 512;
+      analyser.smoothingTimeConstant = 0.6;
       source.connect(analyser);
       analyser.connect(processor);
       silentGain = audioContext.createGain();
@@ -168,6 +175,55 @@ export function createSTTController({
     const dataArray = new Uint8Array(analyser.frequencyBinCount);
     analyser.getByteFrequencyData(dataArray);
     return dataArray;
+  }
+
+  /**
+   * What the browser says it actually applied to the capture, which is not what was asked for.
+   *
+   * `echoCancellation: true` in the constraint is a request. Whether the audio pipeline really cancelled the
+   * loudspeaker is on `getSettings()`, and the difference decides whether the interrupt gate can be trusted:
+   * measured with the assistant's own voice fed back as the microphone (`tools/barge_in_echo.mjs`), the echo
+   * sits at p95 0.12 with cancellation applied and 0.49 without it, against a gate at 0.22.
+   *
+   * @returns {{echoCancellation: boolean, applied: boolean}|null}
+   */
+  function getInputSettings() {
+    const track = mediaStream && mediaStream.getAudioTracks ? mediaStream.getAudioTracks()[0] : null;
+    if (!track || !track.getSettings) return null;
+    const settings = track.getSettings();
+    return {
+      echoCancellation: settings.echoCancellation === true,
+      applied: settings.echoCancellation !== false,
+    };
+  }
+
+  /**
+   * Level and spectrum of the microphone, for the orb and for the interrupt gate.
+   *
+   * The level is RMS of the time-domain signal: peak amplitude is what a meter shows and RMS is what a person
+   * hears as loudness, and a gate built on peak fires on plosives.
+   *
+   * @returns {{rms: number, freq: Uint8Array, sampleRate: number}|null} null while there is no capture graph
+   *   (never enabled, or permission refused). Both arrays are reused on every call.
+   */
+  function getInputLevels() {
+    if (!analyser || !audioContext) return null;
+    if (!levelScratch || levelScratch.length !== analyser.fftSize) {
+      levelScratch = new Float32Array(analyser.fftSize);
+      levelFreqScratch = new Uint8Array(analyser.frequencyBinCount);
+    }
+    analyser.getFloatTimeDomainData(levelScratch);
+    analyser.getByteFrequencyData(levelFreqScratch);
+    let sum = 0;
+    for (let i = 0; i < levelScratch.length; i += 1) {
+      const s = levelScratch[i];
+      sum += s * s;
+    }
+    return {
+      rms: Math.sqrt(sum / levelScratch.length),
+      freq: levelFreqScratch,
+      sampleRate: audioContext.sampleRate,
+    };
   }
 
   // -----------------------------------------------------------------------
@@ -309,6 +365,8 @@ export function createSTTController({
     setAgentActive,
     setCallbacks,
     getWaveformData,
+    getInputLevels,
+    getInputSettings,
     destroy,
     // Read-only state for UI
     get enabledState() { return enabled; },

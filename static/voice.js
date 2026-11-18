@@ -48,6 +48,11 @@ export function createVoiceController({
   let activeSources = new Set();
   let backendStreamEnded = false;
   let speaking = false;
+  // Voice mode needs the orb to move on the audio that is actually leaving this machine, not on a
+  // description of it, so the playback graph gets one analyser tapped off the master gain.
+  let speechAnalyser = null;
+  let speechTimeScratch = null;
+  let speechFreqScratch = null;
   let pendingPrepareResolve = null;
   let pendingPrepareReject = null;
 
@@ -1023,22 +1028,32 @@ export function createVoiceController({
   // Toggle / stop / resume handlers
   // -----------------------------------------------------------------------
 
-  function handleToggleClick() {
-    if (!toggleButton) return;
-
-    if (enabled) {
+  /**
+   * The toggle, as an operation rather than a click handler.
+   *
+   * Voice mode turns speech synthesis on for the duration of a session and hands back whatever it found, and
+   * clicking a button to achieve that meant reading the button's pressed state, which is UI, not intent. Idempotent
+   * by design: entering voice mode twice must not send two enables, and `toggle()` is now the same call.
+   */
+  function setEnabled(next) {
+    if (next === enabled) return;
+    if (!next) {
       enabled = false;
       sendCommand({ type: 'voice_disable' });
       stopLocalPlayback();
       updateUI();
       return;
     }
-
     ensureAudioContext(() => {
       enabled = true;
       applyBackendSettings();
       updateUI();
     });
+  }
+
+  function handleToggleClick() {
+    if (!toggleButton) return;
+    setEnabled(!enabled);
   }
 
   function handleStopClick() {
@@ -1056,6 +1071,35 @@ export function createVoiceController({
     });
   }
 
+  /** The same unlock, for the surface that covers the header button: voice mode's own resume control. */
+  function resumeAudio() {
+    handleResumeClick();
+  }
+
+  /**
+   * Level and spectrum of the assistant's own audio.
+   *
+   * @returns {{rms: number, freq: Uint8Array, sampleRate: number}|null} null until there is a running audio
+   *   context, because there is genuinely nothing to measure before then. The arrays are reused on every
+   *   call: hold onto the numbers, not the buffers.
+   */
+  function getSpeechLevels() {
+    if (!speechAnalyser || !audioContext) return null;
+    if (audioContext.state !== 'running') return null;
+    speechAnalyser.getFloatTimeDomainData(speechTimeScratch);
+    speechAnalyser.getByteFrequencyData(speechFreqScratch);
+    let sum = 0;
+    for (let i = 0; i < speechTimeScratch.length; i += 1) {
+      const s = speechTimeScratch[i];
+      sum += s * s;
+    }
+    return {
+      rms: Math.sqrt(sum / speechTimeScratch.length),
+      freq: speechFreqScratch,
+      sampleRate: audioContext.sampleRate,
+    };
+  }
+
   function ensureAudioContext(callback) {
     if (!audioContext) {
       try {
@@ -1063,6 +1107,19 @@ export function createVoiceController({
         masterGain = audioContext.createGain();
         masterGain.gain.value = settings.volume || 1.0;
         masterGain.connect(audioContext.destination);
+        // Tapped after the volume setting, because what a person reacts to is what they hear. An
+        // AnalyserNode with no output connection still observes its input, so this cannot create a
+        // feedback path, which is the thing the microphone graph in stt.js had to be careful about.
+        try {
+          speechAnalyser = audioContext.createAnalyser();
+          speechAnalyser.fftSize = 512;
+          speechAnalyser.smoothingTimeConstant = 0.6;
+          masterGain.connect(speechAnalyser);
+          speechTimeScratch = new Float32Array(speechAnalyser.fftSize);
+          speechFreqScratch = new Uint8Array(speechAnalyser.frequencyBinCount);
+        } catch {
+          speechAnalyser = null;
+        }
       } catch {
         onError?.('Audio is not supported in this browser');
         return;
@@ -1408,6 +1465,12 @@ export function createVoiceController({
   return {
     setAccount,
     toggle,
+    setEnabled,
+    resumeAudio,
+    getSpeechLevels,
+    get enabledState() { return enabled; },
+    get speakingState() { return speaking; },
+    get audioContextState() { return audioContext ? audioContext.state : null; },
     openSettings,
     applyCapabilities,
     handleServerMessage,

@@ -3706,3 +3706,171 @@ body:has(#chat-screen[data-doc-open="true"]) .buddy-stage {
     display: none;
   }
 }
+
+/* ── Voice Mode ───────────────────────────────────────────────────────
+   The surface that replaces everything while voice mode is on. The orb is 196 px, which is the size Ben
+   picked from the prototype: below about 130 px the ring stops carrying information and only the halo reads,
+   and the whole point of the ring is that it shows your own voice while you are talking.
+
+   The canvas box is 2.1x the orb because the halo has to fade to nothing INSIDE the canvas. A radial gradient
+   that reaches the canvas edge draws a soft square, which is a clipping artifact that looks like a design
+   choice in a thumbnail and is not one. */
+.voice-mode-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  border: none;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.1s ease;
+}
+
+.voice-mode-btn:hover { background: var(--accent-hover); }
+.voice-mode-btn:active { transform: scale(0.96); }
+.voice-mode-btn[aria-pressed="true"] { background: var(--accent-2); box-shadow: 0 0 0 3px var(--accent-glow); }
+
+.voice-screen {
+  position: fixed;
+  inset: 0;
+  /* Above the 200 the dialogs and toasts use, on purpose: in this mode there is nothing to click behind the
+     orb, and a toast that cannot be read is worse than an error that is said out loud. Voice mode reports its
+     own failures in its caption instead. */
+  z-index: 300;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  padding: 24px;
+  background: var(--bg);
+  color: var(--text);
+  outline: none;
+}
+
+.voice-stage {
+  display: grid;
+  place-items: center;
+  /* One grid, two rows on top of each other, so the phase word sits in the middle of the orb's halo without
+     the canvas having to know where its own glow ends. */
+  position: relative;
+}
+
+.voice-orb {
+  --voice-orb-size: 196px;
+  width: calc(var(--voice-orb-size) * 2.1);
+  height: calc(var(--voice-orb-size) * 2.1);
+  display: block;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.voice-phase {
+  position: absolute;
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-subtle);
+  pointer-events: none;
+}
+
+.voice-caption {
+  min-height: 1.5em;
+  max-width: min(560px, 90vw);
+  margin: 0;
+  text-align: center;
+  font-size: 1.05rem;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.voice-wave {
+  width: min(520px, 88vw);
+  height: 56px;
+  display: block;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+}
+
+.voice-log {
+  width: min(560px, 92vw);
+  max-height: 108px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+}
+
+.voice-log-line {
+  display: flex;
+  gap: 8px;
+  line-height: 1.4;
+}
+
+.voice-log-who {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  color: var(--text-subtle);
+}
+
+.voice-log-line.is-you .voice-log-who { color: var(--accent); }
+
+.voice-hint {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--text-subtle);
+  text-align: center;
+}
+
+.voice-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.voice-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 15px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+
+.voice-action:hover { border-color: var(--accent); color: var(--accent); }
+.voice-action.is-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-contrast); }
+.voice-action.is-primary:hover { background: var(--accent-hover); color: var(--accent-contrast); }
+
+.voice-resume {
+  position: absolute;
+  bottom: 26px;
+  padding: 10px 16px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  cursor: pointer;
+}
+
+@media (max-width: 700px) {
+  .voice-screen { gap: 14px; padding: 18px; }
+  /* The orb keeps its size on a phone: it is the only thing on this screen, and shrinking it to make room for
+     the strip and the log is the wrong trade, since the strip and the log can wrap. */
+  .voice-orb { --voice-orb-size: 176px; }
+  .voice-caption { font-size: 1rem; }
+  .voice-wave { height: 46px; }
+  .voice-log { max-height: 84px; }
+}

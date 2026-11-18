@@ -22,7 +22,7 @@ import {
   setToolStatus,
   TOOL_STATUS,
 } from './timeline.js';
-import { escapeHtml } from './utils.js';
+import { escapeHtml, isSystemEnvelope } from './utils.js';
 import { randomMascotSrc } from './mascots.js';
 
 const PROMPT_START_GRACE_MS = 2_000;
@@ -419,6 +419,13 @@ function startMessage(message) {
  * its queue in this same event. Drawing it now is what makes the live order match the transcript.
  */
 function renderDeliveredUserMessage(message) {
+  /* A voice-mode marker is a user turn that the person did not type: it is how the model is told to answer in
+     speech, since pi's RPC has no system-prompt lever a client can pull (see `systemEnvelope` in utils.js).
+     pi echoes it back like any other user turn, and neither direction of it is ever drawn. Not `outgoing`
+     bookkeeping either: a marker never enters that FIFO, because it is not typed into the composer, so
+     returning here before the match cannot strand a queued bubble. */
+  if (isSystemEnvelope(userMessageText(message))) return;
+
   const text = userMessageText(message);
   const next = outgoing[0];
   const midRun = Boolean(timeline);
@@ -1053,6 +1060,23 @@ function finalizeSubagentToolItem(toolCallId, event) {
   scrollToBottom();
 }
 
+/**
+ * The prose of the run that just finished, newest first, or an empty string when the run said nothing.
+ *
+ * Voice mode logs what was said into its own surface, and it is also the honest answer to "what did it
+ * actually say" when the TTS dropped a chunk. It reads the finished run rather than the live accumulator,
+ * because by the time a listener hears `agent_settled` the streaming state has been reset.
+ */
+export function getLastAssistantText() {
+  for (let i = completedRunMessages.length - 1; i >= 0; i -= 1) {
+    const message = completedRunMessages[i];
+    if (!message || message.role !== 'assistant') continue;
+    const text = textFromContent(message.content).trim();
+    if (text) return text;
+  }
+  return '';
+}
+
 function reconcileAgentRun(messages) {
   if (!timeline || messages.length === 0) return;
 
@@ -1199,6 +1223,9 @@ function escapeFileName(name) {
 }
 
 function createUserMessage(text, files) {
+  // Same rule as the echo path, at the optimistic path too: the tag is what makes a message a mode marker,
+  // and which code path drew it should not decide whether it shows up.
+  if (isSystemEnvelope(text)) return null;
   removeWelcome();
 
   const container = document.createElement('div');
