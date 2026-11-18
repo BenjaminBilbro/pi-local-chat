@@ -50,7 +50,7 @@ more than once a day. Everything else lives in `docs/`, and the split is deliber
 | Tool call lifecycle | shipped 2026-11-10, with the `--stage stream-render` and `capture.py --census` guards | `docs/tool-call-lifecycle.md` |
 | Document preview pane | shipped, and a permanent right column since S6; PDF root handling is open | `docs/preview-pane-handoff.md` |
 | STT latency defaults | measured 2026-11-18 with `tools/stt_probe.py`, defaults set from the table; re-measure before changing a model or a silence window | `docs/stt-latency.md` |
-| Voice Mode orb (S8) | prototype in `experiments/voice-orb/`, visual decisions open with Ben; nothing wired to Phonon or whisper | `experiments/voice-orb/README.md` |
+| Voice Mode (S9) | shipped: composer button, full-screen orb surface, mode markers both directions, barge-in armed only on an echo-cancelled mic. The `<PI-CHAT-SYSTEM-MESSAGE>` tag is what keeps the markers from rendering, on echo AND on reload | `docs/voice-mode.md` |
 | CI | runs on Ubuntu and Windows for pushes to `master`, `main`, `feature/**` and `refactor/**`, for every pull request, and on manual dispatch. A workflow only registers once it exists on the branch being pushed, which is why a brand new default branch has to carry the file in its first commit | `.github/workflows/ci.yml` |
 
 
@@ -254,6 +254,9 @@ npm test                                                                  # jsdo
 sh tools/verify_fresh_clone.sh                                             # clone HEAD, install from nothing, must refuse to start without a hash
 node tools/screenshot_ui.mjs --url http://127.0.0.1:9031 --stage chat \
   --cdp-port 9344 --out "$TEMP/shots/chat.png" --password test-only        # needs PI_CHAT_PI_BIN=fake_rpc_pi.py
+node tools/screenshot_ui.mjs --stage voice-mode --voice-state barge ...  # orb pinned, no mic, no turn spent
+node tools/test_voice_mode_surface.mjs                                    # 30 jsdom claims, pytest-wrapped
+node tools/barge_in_echo.mjs --ec on --expect silent   # Phonon fed back as the mic; needs Chrome, not CI
 ```
 
 Every stage of `screenshot_ui.mjs`, and the server environment each one needs, is in
