@@ -170,6 +170,33 @@ opens no microphone and speaks nothing. `probe()` reports the phase, frames draw
 `echoCancelled`, what each engine reported (`ready.mic`, `ready.voice`), and the last refused transcript with its reason, which is the difference between debugging a
 voice bug and guessing at one: everything it reports is audio and almost none of it is on screen.
 
+## When the room wins, and what would fix it
+
+Measured on this machine 2026-11-18, production speech settings (`small.en`, int8, beam 1), fixtures
+synthesized with the app's own voice, `tools/stt_probe.py`:
+
+| setting | short turns | two-sentence turn | chair creaks after you stop |
+|---|---|---|---|
+| as shipped: silence 0.6, energy VAD ends speech | 2212-2487 ms | word error **0.0** | **no message at all** (nothing inside 20 s) |
+| silence 0.5 | 2165-2365 ms | word error **0.80** | no message at all |
+| silence 0.6 + `silero_deactivity_detection` | 1877-2350 ms | word error **0.80** | sent, 2520 ms, word error 0.0 |
+| same, sensitivity 0.3 / 0.2 / 0.1 | 1878-2346 ms | word error **0.80** | sent, 2520 ms |
+| silence 0.6 + `early_transcription_on_silence 0.3` | 2269-2490 ms | word error 0.0 | not measured |
+
+Read the table as one decision seen twice. The recorder ends a turn by counting silence, and three different
+things look identical to it: a person thinking mid-sentence, the gap between two sentences, and a hinge. The
+knobs available trade one of those against the other, which is why the shipped numbers stay where they are:
+cutting a two-sentence request in half is a worse failure than a slow one, because the surviving words are
+flawless and nothing downstream can tell that the rest was never said.
+
+What would actually fix the chair, and does not exist yet: **a watchdog that closes a recording when the words
+stop changing**, rather than one that closes it when the room goes quiet. RealtimeSTT exposes
+`recorder.perform_final_transcription()`, so the primitive is there in `pi_chat/stt_session.py`; the policy is
+the part that needs thought, because the same 0.6 s of silence that strands a turn under a creaking chair is
+what lets someone speak two sentences as one turn. The trigger has to be "the realtime partial has not grown
+for a while while the gate is still open", with a hard cap behind it, and the measurement that justifies it is
+a fixture that pauses to think and a fixture that creaks, both of which the probe can now build.
+
 ## Known gaps
 
 - While the assistant is talking you see its level, not its words. The transcript list gets the sentence when

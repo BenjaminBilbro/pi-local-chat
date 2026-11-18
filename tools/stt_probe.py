@@ -91,6 +91,49 @@ NOISY_FIXTURES = {"speech-noisy.wav": 8.0}
 PHONE_FIXTURES = {"speech-phone.wav"}
 
 
+def tail_noise(kind: str, n: int, rms: float) -> "np.ndarray":
+    """The sound that stops a message being sent: noise in the SILENCE after you stop talking.
+
+    Ben's chair creaked while he spoke and the turn never sent. That is not a transcription failure and the
+    accuracy numbers cannot see it: the recorder is waiting for `post_speech_silence_duration` of not-speech,
+    and a bed that the VAD calls speech extends that wait indefinitely, so the final text never arrives.
+    Clean fixtures and a noise-mixed speech track both miss it, because the noise has to live in the tail.
+
+    `room` is a band-limited bed, roughly a fan or an air handler. `creaks` adds short rising transients on a
+    irregular interval, which is what a chair sounds like: brief, broadband, and nothing like a vowel.
+    """
+    import numpy as np
+
+    rng = np.random.default_rng(20261118)
+    frames = rng.standard_normal(n)
+    # Band-limit rather than white: a microphone in a room does not carry equal energy at 7 kHz, and white
+    # noise would make this harder to pass than anything Ben has actually got in the background.
+    spectrum = np.fft.rfft(frames)
+    freqs = np.fft.rfftfreq(n, 1 / SAMPLE_RATE)
+    band = (freqs >= 90) & (freqs <= 3200)
+    spectrum[~band] = 0.0
+    bed = np.fft.irfft(spectrum, n=n)
+    peak = float(np.max(np.abs(bed))) or 1.0
+    bed = bed / peak * min(0.9, rms * 4)
+
+    if kind == "creaks":
+        # 40-70 ms chirps sweeping up, which is a chair's signature, and none of it looks like speech to a
+        # model trained on speech. Peaks sit near a conversational level, because the complaint was that it
+        # beat the microphone out, not that it was barely audible.
+        at = 0
+        while at < n - 4096:
+            at += int(rng.integers(int(SAMPLE_RATE * 0.28), int(SAMPLE_RATE * 0.75)))
+            length = int(rng.integers(int(SAMPLE_RATE * 0.04), int(SAMPLE_RATE * 0.07)))
+            if at + length >= n:
+                break
+            phase = np.cumsum(np.linspace(280.0, 1500.0, length) * 2 * np.pi / SAMPLE_RATE)
+            envelope = np.hanning(length) ** 1.5
+            bed[at : at + length] += np.sin(phase) * envelope * 0.42
+
+    out = bed * (32767.0 / max(0.05, float(np.max(np.abs(bed))) or 1.0)) * rms / 0.1
+    return np.clip(out, -32768, 32767).astype(np.int16)
+
+
 def telephone_channel(pcm: "np.ndarray") -> "np.ndarray":
     """Band-limit to 300 Hz - 3.4 kHz and clamp, by FFT. No scipy: this box does not carry it by default."""
     import numpy as np
@@ -412,6 +455,14 @@ def recorder_kwargs(cfg: dict) -> dict:
         #                 per utterance, and an ONNX runtime may beat onnxruntime-python's default path.
         "batch_size": int(cfg.get("batch") if cfg.get("batch") is not None else 16),
         "early_transcription_on_silence": float(cfg.get("early_silence") or 0),
+        # Which VAD decides that speech has ENDED. The library's default is the energy VAD, which is the one
+        # that calls a creaking chair speech and keeps the silence window open; Silero is a speech model, so
+        # it should hold the gate open for a voice and not for a hinge. Measured, not assumed.
+        "silero_deactivity_detection": bool(cfg.get("silero_deactivity", False)),
+        # With the speech model deciding when speech ended, THIS is the dial that says how long a pause a
+        # voice may take before it counts as finished. The library default is 0.4, and at 0.4 it cuts a
+        # two-sentence request in half. Lower means it holds the gate open longer.
+        "silero_sensitivity": float(cfg.get("silero_sens") or 0.4),
     }
 
 
@@ -486,10 +537,18 @@ def run_realtime_config(cfg: dict, args: argparse.Namespace) -> dict:
                     sleep_until(speech_start + fed / SAMPLE_RATE)
                 last_speech = speech_start + len(audio) / SAMPLE_RATE
 
-                silence = np.zeros(chunk, dtype=np.int16)
+                # The tail is the measurement. Feeding zeros there measures a quiet room, which is the one
+                # condition nobody complains about.
+                if args.tail_noise == "none":
+                    silence = np.zeros(tail, dtype=np.int16)
+                else:
+                    silence = tail_noise(args.tail_noise, tail, args.tail_noise_rms)
                 fed_tail = 0
                 while fed_tail < tail:
-                    recorder.feed_audio(silence, original_sample_rate=SAMPLE_RATE)
+                    piece_tail = silence[fed_tail : fed_tail + chunk]
+                    if len(piece_tail) < chunk:
+                        piece_tail = np.pad(piece_tail, (0, chunk - len(piece_tail)))
+                    recorder.feed_audio(piece_tail, original_sample_rate=SAMPLE_RATE)
                     fed_tail += chunk
                     sleep_until(last_speech + fed_tail / SAMPLE_RATE)
 
@@ -612,6 +671,18 @@ def grid(kind: str) -> list[dict]:
             # does starting the final pass inside the silence wait hide its cost behind the wait?
             {**base, "label": "int8+beam1+batch0", "compute_type": "int8", "beam": 1, "batch": 0},
             {**base, "label": "int8+beam1+early0.2", "compute_type": "int8", "beam": 1, "early_silence": 0.2},
+            # The two knobs that answer a noisy room without touching the silence window: end-of-speech
+            # decided by the speech model, and the same thing plus a stricter activation threshold.
+            {**base, "label": "int8+beam1+deact", "compute_type": "int8", "beam": 1,
+             "silero_deactivity": True},
+            {**base, "label": "int8+beam1+deact+s0.3", "compute_type": "int8", "beam": 1,
+             "silero_deactivity": True, "silero_sens": 0.3},
+            {**base, "label": "int8+beam1+deact+s0.2", "compute_type": "int8", "beam": 1,
+             "silero_deactivity": True, "silero_sens": 0.2},
+            {**base, "label": "int8+beam1+deact+s0.1", "compute_type": "int8", "beam": 1,
+             "silero_deactivity": True, "silero_sens": 0.1},
+            {**base, "label": "int8+beam1+early0.3", "compute_type": "int8", "beam": 1,
+             "early_silence": 0.3},
             {**base, "label": "int8+beam1+batch0+early0.2", "compute_type": "int8", "beam": 1, "batch": 0,
              "early_silence": 0.2},
             {**base, "label": "int8+beam1+onnxvad", "compute_type": "int8", "beam": 1, "onnx_vad": True},
@@ -638,6 +709,10 @@ def run_sweep(kind: str, args: argparse.Namespace) -> int:
             args.fixture,
             "--repeat",
             str(args.repeat),
+            "--tail-noise",
+            args.tail_noise,
+            "--tail-noise-rms",
+            str(args.tail_noise_rms),
             "--tail-silence",
             str(args.tail_silence),
             "--timeout",
@@ -714,7 +789,9 @@ def print_table(kind: str, results: list[dict], args: argparse.Namespace) -> Non
         print(line)
     # Per-fixture detail: the aggregate hides the one thing that decides a default, which is that a
     # 15-second utterance costs several times what a 2-second one does on the same settings.
-    names = sorted({r["fixture"] for row in results for r in row["runs"]})
+    # A config that failed has no runs, and this used to raise KeyError out of the reporting path: the table
+    # that exists to show which config failed was itself taken out by the first failure.
+    names = sorted({r["fixture"] for row in results if "runs" in row for r in row["runs"]})
     label_kind = "final ms by fixture" if kind == "realtime" else "wall ms by fixture"
     print(f"\n{label_kind}")
     print(f"{'config':<22}" + "".join(f"{n.replace('speech-', ''):<16}" for n in names))
@@ -761,6 +838,14 @@ def main() -> int:
     parser.add_argument("command", choices=["make-fixtures", "model", "realtime"])
     parser.add_argument("--fixture", default="all", help="fixture name, stem, or 'all'")
     parser.add_argument("--repeat", type=int, default=3, help="measured iterations per fixture (plus one warmup)")
+    parser.add_argument(
+        "--tail-noise",
+        choices=["none", "room", "creaks"],
+        default="none",
+        help="what plays after the last spoken sample: silence, a room bed, or a room bed with chair creaks",
+    )
+    parser.add_argument("--tail-noise-rms", type=float, default=0.06,
+                        help="rms of that tail noise, on the int16 scale where speech sits near 0.3")
     parser.add_argument("--tail-silence", type=float, default=1.6, help="silence fed after the speech, seconds")
     parser.add_argument("--timeout", type=float, default=25.0, help="seconds to wait for a final transcription")
     parser.add_argument("--sweep", action="store_true", help="run the grid, one subprocess per configuration")

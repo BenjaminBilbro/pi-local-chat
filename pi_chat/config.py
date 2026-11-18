@@ -300,6 +300,24 @@ STT_BEAM_SIZE = int(os.environ.get("PI_CHAT_STT_BEAM_SIZE", "1"))
 # to 80% of its words, because Phonon's own between-sentence pause is longer than 0.5 s and so is a person
 # thinking mid-sentence. Whisper's own transcription of what survives is fine, which is the trap: the tail is
 # simply gone, and no amount of LLM context infers an argument that was never transcribed.
+#
+# Re-measured 2026-11-18 after voice mode shipped, because Ben asked for about 0.1 s less and the number was
+# worth checking rather than repeating (`tools/stt_probe.py realtime --sweep`, production config: small.en,
+# int8, beam 1, this machine). 0.5 s does exactly what he asked and exactly what the note above says: it takes
+# 70-165 ms off every short turn and puts `speech-story.wav` from word error 0.0 to 0.80. A request with two
+# sentences comes back with one of them. Nothing about the echo work changed that.
+#
+# The alternative that looked right is also a no. `silero_deactivity_detection=True` fixes the OTHER complaint
+# from the same live run - a creaking chair holding the gate open so the message never sent, which reproduces
+# exactly once the probe puts noise in the trailing silence (`--tail-noise creaks`: production returns no final
+# text within 20 s; silero returns it at 2520 ms with every word right) - and it puts `speech-story.wav` back to
+# word error 0.80 at every sensitivity from 0.4 down to 0.1. `early_transcription_on_silence=0.3` bought no
+# latency at all (2436 ms against 2454) and is not worth a knob.
+#
+# Both failures are the same judgement made from silence alone: a pause where someone is thinking, a pause
+# where they have finished, and a hinge that is neither. These knobs trade one against the other, so the fix
+# for the chair is not one of them - it is a watchdog that forces the pending audio through after the words
+# stop changing, which is written up in `docs/voice-mode.md`.
 STT_SILENCE_DURATION = float(os.environ.get("PI_CHAT_STT_POST_SPEECH_SILENCE", "0.6"))
 STT_MIN_RECORDING_LENGTH = float(os.environ.get("PI_CHAT_STT_MIN_RECORDING_LENGTH", "0.3"))
 STT_MIN_GAP_BETWEEN_RECORDINGS = float(os.environ.get("PI_CHAT_STT_MIN_GAP_BETWEEN_RECORDINGS", "0.3"))
