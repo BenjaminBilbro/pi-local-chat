@@ -13,6 +13,7 @@ from .preview import describe_preview_entries
 from .sessions import (
     parse_jsonl_messages,
     parse_jsonl_preview_entries,
+    resolve_session_path,
     session_belongs_to_account,
 )
 from .stt_session import AudioPacketError, STTSession, decode_audio_packet
@@ -454,6 +455,16 @@ async def _load_session(pi: PiProcess, account: str, session_path: str) -> None:
     if not session_path:
         await _send_error(pi, "No session path provided")
         return
+
+    # Same containment the HTTP routes apply, for the same reason: the ownership check underneath reads a
+    # `cwd` header that lives inside the file it is vetting, so the path has to be inside pi's own sessions
+    # directory before anything in the file is trusted.
+    session_file = resolve_session_path(session_path)
+    if session_file is None:
+        await _send_error(pi, "Session not found")
+        return
+    session_path = str(session_file)
+
     if not session_belongs_to_account(
         session_path,
         pi.project_root,

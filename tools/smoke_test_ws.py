@@ -27,6 +27,9 @@ from pathlib import Path
 import websockets
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from pi_chat.sessions import _derived_session_dir, pi_sessions_dir  # noqa: E402
 FAKE_PI = ROOT / "tools" / "fake_rpc_pi.py"
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("PI_CHAT_SMOKE_PORT", "9011"))
@@ -62,7 +65,15 @@ SMOKE_PREVIEW_BASE = Path(os.environ.get("TEMP", "/tmp")) / "pi-chat-smoke-previ
 
 
 def write_smoke_session() -> Path:
-    """Create a session file carrying two recorded previews, and the one document still on disk."""
+    """Create a session file carrying two recorded previews, and the one document still on disk.
+
+    The file goes where pi puts sessions: `~/.pi/agent/sessions`, under the `--slug--` directory named after
+    the work directory. It used to be written inside `sessions/b/` among the account's own files, which was
+    convenient and wrong, and the difference became load-bearing when `load_session` gained a containment
+    guard: it refuses any path outside pi's store, so a fixture in the old location would have quietly turned
+    the replay checks into checks of nothing. The file is removed afterwards, and its directory only when
+    this was the last thing in it.
+    """
     work_dir = ROOT / "sessions" / SMOKE_ACCOUNT
     work_dir.mkdir(parents=True, exist_ok=True)
     store = SMOKE_PREVIEW_BASE / SMOKE_ACCOUNT / SMOKE_SCOPE
@@ -82,20 +93,33 @@ def write_smoke_session() -> Path:
         entry({"v": 1, "op": "open", "docId": SMOKE_GONE_DOC, "kind": "html", "title": "Cleaned up",
                "revision": 1, "file": f"{SMOKE_GONE_DOC}.html"}, "e2"),
     ]
-    path = work_dir / f"{time.strftime('%Y-%m-%dT%H-%M-%S', time.gmtime())}_smoke-preview-replay.jsonl"
+    store = _derived_session_dir(work_dir.resolve(), pi_sessions_dir())
+    store.mkdir(parents=True, exist_ok=True)
+    name = time.strftime("%Y-%m-%dT%H-%M-%S", time.gmtime()) + "_smoke-preview-replay.jsonl"
+    path = store / name
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
 
 
 def remove_smoke_session(path: Path | None) -> None:
-    for target in (path, SMOKE_PREVIEW_BASE):
-        if target is None:
-            continue
+    """Delete the fixture, and nothing that was not the fixture.
+
+    The session file now shares a directory with real sessions, so this must never recurse: the file is
+    unlinked, and the directory goes only when this was the last thing in it. `rmtree` here would be a way
+    for a test run to eat somebody's session history.
+    """
+    if path is not None:
         try:
-            if target.is_dir():
-                shutil.rmtree(target, ignore_errors=True)
-            else:
-                target.unlink(missing_ok=True)
+            path.unlink(missing_ok=True)
+            parent = path.parent
+            if parent.is_dir() and not any(parent.iterdir()):
+                parent.rmdir()
+        except OSError:
+            pass
+
+    if SMOKE_PREVIEW_BASE is not None:
+        try:
+            shutil.rmtree(SMOKE_PREVIEW_BASE, ignore_errors=True)
         except OSError:
             pass
 

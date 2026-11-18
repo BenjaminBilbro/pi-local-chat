@@ -62,6 +62,23 @@ const clearPendingVoicePrompt = () => {
   pendingVoicePrompt = null;
 };
 
+/* Work that may only start once the turn has ended, for the same reason a spoken prompt waits: an abort is
+ * acknowledged only after pi goes idle, so a command that opens a new session sent immediately after the
+ * stop would be refused (`new_session` answers with `cancelled: true` while it is busy). Waiting on the
+ * settle event rather than a delay keeps this correct on a machine doing other things.
+ */
+let afterSettleActions = [];
+
+const runAfterSettle = (action) => {
+  afterSettleActions.push(action);
+};
+
+const drainAfterSettle = () => {
+  const actions = afterSettleActions;
+  afterSettleActions = [];
+  for (const action of actions) action();
+};
+
 /* The tool detail dialog is app.js's to own, like the preview pane: chat.js hands it a call record
    and never reaches in, so a control exists in exactly one place. */
 const toolDetail = createToolDetail({ sendCommand });
@@ -92,6 +109,17 @@ const sessions = createSessionPanel({
   },
   onError: showChatError,
   onBeforeSessionLoad: () => voice?.resetConnection(),
+  /* Deleting the session that is on screen ends the conversation it belongs to: stop first, then open the
+     clean session, and the landing page takes the space back. Stopping comes first because pi refuses
+     `new_session` while a turn is running, so the reset waits for the settle that stop causes. */
+  onCurrentDeleted: () => {
+    if (isAgentRunning) {
+      runAfterSettle(() => sendCommand({ type: 'new_session' }));
+      sendCommand({ type: 'cancel_tool' });
+    } else {
+      sendCommand({ type: 'new_session' });
+    }
+  },
 });
 
 socket = createSocket({
@@ -138,6 +166,8 @@ document.getElementById('new-session-btn').addEventListener('click', () => {
   docPane.closeAll();
   if (sendCommand({ type: 'new_session' })) {
     resetConversation();
+    // A new conversation is not a file in the list, so no row may keep claiming to be what is on screen.
+    sessions.clearCurrent();
   }
 });
 
@@ -427,6 +457,7 @@ function routeServerMessage(message) {
       stt?.setAgentActive(false);
       // Abort from a voice barge-in has settled — submit the spoken prompt.
       submitPendingVoicePrompt();
+      drainAfterSettle();
     }
   } else if (
     message.type === 'voice_state'

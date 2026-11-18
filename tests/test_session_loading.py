@@ -56,9 +56,26 @@ def test_a_session_whose_cwd_will_not_resolve_is_skipped_out_loudly(tmp_path, mo
     assert "unreadable cwd" in caplog.text
 
 
-def write_session(work_dir: Path, marker: str, name: str = "s.jsonl") -> str:
+@pytest.fixture()
+def sessions_store(tmp_path, monkeypatch):
+    """A sessions directory of our own, for tests that drive `load_session`.
+
+    Containment and ownership are two different questions (S3): where the file sits is what the guard checks,
+    and the header `cwd` inside it is what ownership checks. A session opened from the browser therefore has
+    to live inside this store while still claiming `work_dir` as its working directory, which is exactly what
+    a real session looks like. Tests about listing or about the real store leave it alone.
+    """
+    root = tmp_path / "pi-sessions"
+    root.mkdir()
+    monkeypatch.setattr(session_tools, "pi_sessions_dir", lambda: root)
+    return root
+
+
+def write_session(
+    work_dir: Path, marker: str, name: str = "s.jsonl", store: Path | None = None
+) -> str:
     work_dir.mkdir(parents=True, exist_ok=True)
-    path = work_dir / name
+    path = (store or work_dir) / name
     path.write_text("\n".join(session_lines(work_dir, marker)) + "\n", encoding="utf-8")
     return str(path)
 
@@ -121,8 +138,10 @@ def owned(monkeypatch):
 
 
 class TestLoadSessionOrdering:
-    async def test_the_conversation_is_sent_before_the_child_is_asked(self, tmp_path, owned):
-        path = write_session(tmp_path, "render me first")
+    async def test_the_conversation_is_sent_before_the_child_is_asked(
+        self, tmp_path, owned, sessions_store
+    ):
+        path = write_session(tmp_path, "render me first", store=sessions_store)
         pi = StubPi(tmp_path, switch_delay=0.4)
 
         started = time.perf_counter()
@@ -138,8 +157,10 @@ class TestLoadSessionOrdering:
         assert loaded["messageCount"] == 2
         assert "previews" in loaded
 
-    async def test_a_switch_failure_still_leaves_the_conversation_on_screen(self, tmp_path, owned):
-        path = write_session(tmp_path, "shown even when pi will not switch")
+    async def test_a_switch_failure_still_leaves_the_conversation_on_screen(
+        self, tmp_path, owned, sessions_store
+    ):
+        path = write_session(tmp_path, "shown even when pi will not switch", store=sessions_store)
         pi = StubPi(tmp_path, switch_ok=False)
         websocket = StubWebSocket()
 
@@ -151,10 +172,10 @@ class TestLoadSessionOrdering:
         # The message has to say which half worked: the text is real, pi is pointed somewhere else.
         assert "disk" in pi.browser[-1]["message"]
 
-    async def test_a_capture_file_still_waits_for_the_child(self, tmp_path, owned):
+    async def test_a_capture_file_still_waits_for_the_child(self, tmp_path, owned, sessions_store):
         # An RPC capture has no session header, so `parse_jsonl_messages` returns None and only pi can
         # produce a history. Losing that path would show an empty conversation instead of slowing down.
-        capture = tmp_path / "capture.jsonl"
+        capture = sessions_store / "capture.jsonl"
         capture.write_text(json.dumps({"type": "response", "success": True}) + "\n", encoding="utf-8")
         pi = StubPi(tmp_path, capture_messages=[{"role": "user", "content": []}])
 

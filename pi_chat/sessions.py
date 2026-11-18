@@ -28,18 +28,91 @@ def _derived_session_dir(work_dir: Path, pi_sessions_dir: Path) -> Path:
     return pi_sessions_dir / f"--{slug}--"
 
 
+def pi_sessions_dir() -> Path:
+    """Where pi keeps its session files, and so the only directory a browser may name a path inside.
+
+    Every endpoint that takes a session path from the browser resolves through here first. The reason is
+    not suspicion of the keyboard: ownership is read out of the file itself, because
+    `session_belongs_to_account` trusts the `cwd` header inside it, so a `.jsonl` anywhere on this disk that
+    claims an account's work directory would otherwise pass. And delete does not get to read a header before
+    it unlinks: by then the file is what it is.
+    """
+    return Path.home() / ".pi" / "agent" / "sessions"
+
+
+def resolve_session_path(session_path: str) -> Path | None:
+    """The session file a browser-supplied path refers to, or None for anything that is not one.
+
+    None covers the whole refusal set in one place: empty, not `.jsonl`, not a file, and anything that is no
+    longer under the sessions directory once `..` and symlinks are resolved. Callers answer "not found"
+    rather than a reason, because which paths exist is itself information.
+    """
+    if not session_path:
+        return None
+
+    try:
+        candidate = Path(session_path).expanduser().resolve()
+        root = pi_sessions_dir().resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+    if candidate.suffix != ".jsonl" or not candidate.is_file():
+        return None
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return None
+    return candidate
+
+
+def delete_session(session_file: Path, project_root: Path, account_label: str) -> bool:
+    """Unlink one session file, plus the account's derived directory when it is left empty.
+
+    Returns whether the file is gone afterwards. That is True for a file something else had already deleted:
+    what the caller wanted was for the sidebar to stop offering it, and it has.
+    """
+    if not session_belongs_to_account(str(session_file), project_root, account_label):
+        return False
+
+    try:
+        session_file.unlink()
+    except FileNotFoundError:
+        return True
+    except OSError:
+        # Windows holds a file open in a reader (`type`, an editor, a pi child mid-write) and returns a
+        # sharing violation rather than a permission error. Neither is retried: the sidebar keeps the row,
+        # and the reader can close and try again.
+        return False
+
+    if _SUMMARY_CACHE.pop(str(session_file), None) is None:
+        # The cache is keyed on the path `list_sessions` saw while walking the tree, which on Windows can
+        # differ in case or separator from the path a browser echoed back. A missed key must not resurrect a
+        # deleted session in the sidebar, so the whole cache goes rather than a spelling being guessed.
+        clear_summary_cache()
+
+    derived = _derived_session_dir(
+        (project_root / "sessions" / account_label).resolve(), pi_sessions_dir()
+    )
+    if derived.is_dir():
+        try:
+            derived.rmdir()
+        except OSError:
+            pass  # It still holds other sessions, which is the normal case.
+    return True
+
+
 def list_sessions(project_root: Path, account_label: str | None) -> list[dict]:
     """Return pi sessions associated with one local account."""
     if not account_label:
         return []
 
     work_dir = (project_root / "sessions" / account_label).resolve()
-    pi_sessions_dir = Path.home() / ".pi" / "agent" / "sessions"
-    if not pi_sessions_dir.exists():
+    sessions_root = pi_sessions_dir()
+    if not sessions_root.exists():
         return []
 
-    derived = _derived_session_dir(work_dir, pi_sessions_dir)
-    search_root = derived if derived.is_dir() else pi_sessions_dir
+    derived = _derived_session_dir(work_dir, sessions_root)
+    search_root = derived if derived.is_dir() else sessions_root
 
     sessions = [
         summary
@@ -50,7 +123,7 @@ def list_sessions(project_root: Path, account_label: str | None) -> list[dict]:
         if summary
     ]
 
-    if search_root is not pi_sessions_dir and not sessions:
+    if search_root is not sessions_root and not sessions:
         # The derived name is a shortcut, not a promise about where pi writes. Finding nothing there
         # means the assumption stopped holding, so do the full walk once rather than serve an empty
         # sidebar to an account that demonstrably has sessions.
@@ -58,7 +131,7 @@ def list_sessions(project_root: Path, account_label: str | None) -> list[dict]:
             summary
             for summary in (
                 _summarize_session(f, expected_work_dir=work_dir)
-                for f in pi_sessions_dir.rglob("*.jsonl")
+                for f in sessions_root.rglob("*.jsonl")
             )
             if summary
         ]

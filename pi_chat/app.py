@@ -21,9 +21,11 @@ from .auth import AuthManager, COOKIE_NAME
 from .config import DEV_MODE, PROJECT_ROOT, STATIC_DIR
 from .process import PiProcess
 from .sessions import (
+    delete_session,
     list_sessions,
     parse_jsonl_messages,
     preview_session,
+    resolve_session_path,
     session_belongs_to_account,
 )
 import pdfplumber
@@ -233,13 +235,55 @@ def create_app(
     @application.get("/api/sessions/preview")
     async def get_session_preview(request: Request, session_path: str):
         account = _require_account(request, auth)
-        if not session_belongs_to_account(
-            session_path,
+        # Containment first, then ownership: the header this check trusts is inside the file, so a file
+        # outside pi's sessions directory must be refused before anything is read out of it.
+        session_file = resolve_session_path(session_path)
+        if session_file is None or not session_belongs_to_account(
+            str(session_file),
             PROJECT_ROOT,
             account,
         ):
             raise HTTPException(status_code=404, detail="Session not found")
-        return preview_session(session_path)
+        return preview_session(str(session_file))
+
+    @application.delete("/api/sessions")
+    async def delete_session_route(request: Request):
+        """Delete one session, file and all.
+
+        Ben's requirement in his words: a deleted session should delete the literal pi session JSONL. So
+        there is no archive and no soft flag: a row that is marked deleted while the file sits on disk is
+        the half-measure he was asking to get rid of, and pi has no trash to move it to. Which is why the
+        two checks run before the unlink: the path has to resolve to a `.jsonl` inside pi's own sessions
+        directory, and that file's header has to say it belongs to the profile that is asking. Both answers
+        are 404 when they fail, because which session paths exist on this machine is not the browser's
+        business either.
+
+        The sidebar gets the refreshed list back rather than a bare ok, so the row disappears without a
+        second round trip and a list that was rebuilt from disk.
+        """
+        account = _require_account(request, auth)
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            raise HTTPException(status_code=400, detail="Expected a JSON body naming a session path")
+
+        raw = body.get("path") if isinstance(body, dict) else None
+        session_file = resolve_session_path(raw if isinstance(raw, str) else "")
+        if session_file is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        deleted = await run_in_threadpool(delete_session, session_file, PROJECT_ROOT, account)
+        if not deleted:
+            # The header named a different account's work directory, or Windows still has the file open in
+            # something that is reading it. Nothing is retried behind the browser's back.
+            log.warning("session delete refused or failed: %s (account %s)", session_file, account)
+            raise HTTPException(status_code=403, detail="Session could not be deleted")
+
+        log.info("deleted session %s (account %s)", session_file.name, account)
+        sessions = await run_in_threadpool(
+            list_sessions, project_root=PROJECT_ROOT, account_label=account
+        )
+        return {"deleted": True, "sessions": sessions}
 
     @application.post("/api/upload-file")
     async def upload_file(request: Request, file: UploadFile):

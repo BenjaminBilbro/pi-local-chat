@@ -17,6 +17,7 @@ import pytest
 
 from pi_chat import config
 from pi_chat import preview
+from pi_chat import sessions as session_tools
 from pi_chat.sessions import parse_jsonl_preview_entries
 from pi_chat.websocket import _load_session
 
@@ -55,8 +56,26 @@ def preview_root(tmp_path, monkeypatch):
     return root
 
 
-def write_session(tmp_path: Path, lines: list[str], name: str = "session.jsonl") -> str:
-    path = tmp_path / name
+SESSIONS_STORE: Path | None = None
+
+
+@pytest.fixture(autouse=True)
+def sessions_store(tmp_path, monkeypatch):
+    """The same seam `test_session_loading.py` needs: `_load_session` refuses a path outside pi's store (S3).
+
+    The preview entries are what these tests are about, so the fixture only moves where the session file
+    lives. It still has to be a path the guard accepts, or the tests would be proving a refusal.
+    """
+    global SESSIONS_STORE
+    SESSIONS_STORE = tmp_path / "pi-sessions"
+    SESSIONS_STORE.mkdir()
+    monkeypatch.setattr(session_tools, "pi_sessions_dir", lambda: SESSIONS_STORE)
+    return SESSIONS_STORE
+
+
+def write_session(lines: list[str], name: str = "session.jsonl") -> str:
+    assert SESSIONS_STORE is not None, "the `sessions_store` fixture did not run"
+    path = SESSIONS_STORE / name
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return str(path)
 
@@ -64,8 +83,7 @@ def write_session(tmp_path: Path, lines: list[str], name: str = "session.jsonl")
 class TestRecordedEntries:
     def test_entries_come_back_in_transcript_order(self, preview_root, tmp_path):
         path = write_session(
-            tmp_path,
-            [
+                        [
                 json.dumps({"type": "session", "cwd": str(tmp_path)}),
                 message_line("make me a doc"),
                 entry_line({"v": 1, "op": "open", "docId": MD_ID, "kind": "markdown", "title": "One", "revision": 1, "file": f"{MD_ID}.md"}, "e1"),
@@ -86,8 +104,7 @@ class TestRecordedEntries:
 
     def test_another_extensions_entries_are_ignored(self, preview_root, tmp_path):
         path = write_session(
-            tmp_path,
-            [
+                        [
                 json.dumps({"type": "custom", "customType": "memory_rule", "data": {"fired": ["x"]}}),
                 entry_line({"op": "open", "docId": MD_ID, "kind": "markdown", "file": f"{MD_ID}.md"}),
                 json.dumps({"type": "custom", "customType": "pichat_voice", "data": {"op": "open"}}),
@@ -98,8 +115,7 @@ class TestRecordedEntries:
 
     def test_junk_lines_do_not_end_the_replay(self, preview_root, tmp_path):
         path = write_session(
-            tmp_path,
-            [
+                        [
                 entry_line({"op": "open", "docId": MD_ID, "kind": "markdown"}, "e1"),
                 "not json at all",
                 "",
@@ -112,7 +128,7 @@ class TestRecordedEntries:
         assert [entry["op"] for entry in parse_jsonl_preview_entries(path)] == ["open", "close"]
 
     def test_a_session_without_previews_is_an_empty_list(self, preview_root, tmp_path):
-        path = write_session(tmp_path, [message_line("hi"), message_line("hello")])
+        path = write_session([message_line("hi"), message_line("hello")])
 
         assert parse_jsonl_preview_entries(path) == []
 
@@ -122,7 +138,7 @@ class TestRecordedEntries:
 
     def test_a_limit_bounds_a_pathological_session(self, preview_root, tmp_path):
         lines = [entry_line({"op": "open", "docId": f"{i:032x}", "kind": "markdown"}, f"e{i}") for i in range(5)]
-        path = write_session(tmp_path, lines)
+        path = write_session(lines)
 
         assert len(parse_jsonl_preview_entries(path, limit=2)) == 2
 
@@ -135,7 +151,7 @@ class TestAvailability:
 
     def test_a_document_still_on_disk_reports_its_size_and_mtime(self, preview_root, tmp_path):
         self.stored(MD_ID, "markdown", b"# Hello")
-        path = write_session(tmp_path, [entry_line({"op": "open", "docId": MD_ID, "kind": "markdown", "file": f"{MD_ID}.md"})])
+        path = write_session([entry_line({"op": "open", "docId": MD_ID, "kind": "markdown", "file": f"{MD_ID}.md"})])
 
         described = preview.describe_preview_entries("b", parse_jsonl_preview_entries(path))
 
@@ -145,7 +161,7 @@ class TestAvailability:
 
     def test_a_cleaned_up_document_says_so_instead_of_pointing_nowhere(self, preview_root, tmp_path):
         self.stored(MD_ID, "markdown", b"# Hello")
-        path = write_session(tmp_path, [entry_line({"op": "open", "docId": MD_ID, "kind": "markdown", "file": f"{MD_ID}.md"})])
+        path = write_session([entry_line({"op": "open", "docId": MD_ID, "kind": "markdown", "file": f"{MD_ID}.md"})])
         scope = preview.scope_dir("b", "sess1234")
         next(scope.glob(f"{MD_ID}.*")).unlink()
 
@@ -160,8 +176,7 @@ class TestAvailability:
         live = tmp_path / "sessions" / "b" / "report.md"
         live.write_text("# Report", encoding="utf-8")
         path = write_session(
-            tmp_path,
-            [
+                        [
                 entry_line({"op": "open", "docId": MD_ID, "kind": "markdown", "path": str(live)}, "e1"),
                 entry_line({"op": "open", "docId": HTML_ID, "kind": "html", "path": str(tmp_path.parent / "elsewhere.html")}, "e2"),
             ],
@@ -176,8 +191,7 @@ class TestAvailability:
 
     def test_close_and_clear_entries_carry_no_availability(self, preview_root, tmp_path):
         path = write_session(
-            tmp_path,
-            [
+                        [
                 entry_line({"op": "close", "docId": MD_ID}, "e1"),
                 entry_line({"op": "clear"}, "e2"),
             ],
@@ -190,8 +204,7 @@ class TestAvailability:
 
     def test_pi_bookkeeping_stays_out_of_the_browser_payload(self, preview_root, tmp_path):
         path = write_session(
-            tmp_path,
-            [entry_line({"v": 1, "op": "open", "docId": MD_ID, "kind": "markdown", "revision": 1}, "entry-uuid-1")],
+                        [entry_line({"v": 1, "op": "open", "docId": MD_ID, "kind": "markdown", "revision": 1}, "entry-uuid-1")],
         )
         # The persisted record also carries id/parentId/timestamp, which are pi's, and the entry above
         # deliberately has no `file`: a payload must not grow fields the pane cannot use.
@@ -233,8 +246,7 @@ async def test_loading_a_session_hands_the_browser_its_replay_list(preview_root,
         preview.scope_dir("b", "sess1234", create=True), MD_ID, "markdown", b"# Rebuilt"
     )
     path = write_session(
-        tmp_path,
-        [
+                [
             entry_line({"v": 1, "op": "open", "docId": MD_ID, "kind": "markdown", "title": "Rebuilt", "revision": 1, "file": f"{MD_ID}.md"}, "e1"),
             entry_line({"v": 1, "op": "open", "docId": HTML_ID, "kind": "html", "title": "Gone", "revision": 1, "file": f"{HTML_ID}.html"}, "e2"),
         ],
