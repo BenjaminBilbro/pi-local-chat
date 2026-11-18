@@ -121,6 +121,9 @@ const VIEWPORT = flag('viewport', '1440x900');   // WxH
 const OUT = flag('out', 'pi-chat.png');
 const PASSWORD = flag('password', 'test-only');
 const PROMPT = flag('prompt', 'smoke test prompt');
+// `--pane open|closed` drives the header's Preview toggle before the shot. The pane is a permanent column
+// now, so both resting states are things a reader can end up in and both need a picture.
+const PANE = flag('pane', '');
 const CHROME = flag(
   'chrome',
   'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
@@ -441,6 +444,17 @@ async function runSession(chromeChild) {
           "warning: the reply does not look like tools/fake_rpc_pi.py output. Start the server "
           + "with PI_CHAT_PI_BIN=tools/fake_rpc_pi.py or this run drove a real pi against a real model.",
         );
+      }
+    }
+
+    if (PANE) {
+      const want = PANE === 'open' ? 'true' : 'false';
+      if (!['true', 'false'].includes(want)) throw new Error(`--pane takes open or closed, got ${PANE}`);
+      const before = await evaluate(cdp, "document.getElementById('chat-screen').dataset.docOpen || 'false'");
+      if (before !== want) {
+        await evaluate(cdp, "document.getElementById('doc-toggle-btn').click(); true");
+        await waitFor(cdp, `document.getElementById('chat-screen').dataset.docOpen === '${want}'`);
+        await sleep(450);
       }
     }
 

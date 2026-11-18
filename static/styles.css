@@ -318,8 +318,12 @@ html[data-mascot="pi"] .login-mascot {
   grid-template-columns: minmax(0, 1fr) 0px;
   grid-template-rows: auto minmax(0, 1fr);
   /* --doc-pane-width is the one place the open width is decided; the resizer writes here, and
-     both the track and the pane's fixed-width content read from it. */
-  --doc-pane-width: clamp(420px, 52vw, 1100px);
+     both the track and the pane's fixed-width content read from it. The middle term is capped by what is
+     left after the drawer and the conversation's floor (520px, the same floor `clampWidth()` in
+     static/preview.js uses), because a permanently open column has to give way when the drawer opens on top
+     of it rather than squeeze the chat to nothing. */
+  --doc-pane-room: calc(100vw - var(--sidebar-width) - 520px);
+  --doc-pane-width: clamp(420px, min(52vw, var(--doc-pane-room)), 1100px);
   /* Keeps the fixed-position "Latest" pill centred over the conversation rather than over the
      window, with the sidebar's offset and the pane's width both accounted for. */
   --sidebar-shift: 0px;
@@ -3265,6 +3269,17 @@ body.hide-header-mascot #chat-screen .header-mascot {
   color: var(--text-subtle);
 }
 
+/* The empty column names its keyboard shortcut, and a key should look like a key rather than like
+   prose that has lost its spaces. */
+.doc-empty kbd {
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+}
+
 .doc-note {
   flex: none;
   margin: 0;
@@ -3551,6 +3566,11 @@ body:has(#chat-screen[data-doc-open="true"]) .buddy-stage {
 
   .doc-pane-bar {
     padding-left: 10px;
+  }
+
+  /* On a phone the preview is a sheet, not a column, and nobody is reaching for a keyboard. */
+  .doc-empty-keys {
+    display: none;
   }
 
   .voice-controls {

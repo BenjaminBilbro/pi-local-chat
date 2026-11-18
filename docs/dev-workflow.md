@@ -267,7 +267,7 @@ node tools/screenshot_ui.mjs --url http://127.0.0.1:9018 --stage chat \
 
 `--stage login|chat|voice` (voice opens the settings dialog), `--stage queue|queue-landed` (see
 Mid-run Message Delivery), `--stage stream-render` (see below), `--theme light|dark`,
-`--mascot pie|pi`, `--viewport 1440x900`, `--password test-only`. Prefs are seeded through
+`--mascot pie|pi`, `--viewport 1440x900`, `--password test-only`, `--pane open|closed` (drives the preview column's toggle, so both resting states are pinnable). Prefs are seeded through
 localStorage before the second navigation, so theme and mascot apply on load. Always pass
 `PI_CHAT_PI_BIN=tools/fake_rpc_pi.py` to the server: the chat stage spawns a real pi child, and a
 real child on the shared inference engine invalidates its KV cache. The tool now warns when the

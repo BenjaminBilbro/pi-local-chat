@@ -13,11 +13,14 @@
 import { setMarkdownContent } from './timeline.js';
 
 const WIDTH_KEY = 'pi-chat-doc-width';
+const OPEN_KEY = 'pi-chat-doc-open';
 const AUTO_OPEN_KEY = 'pi-chat-doc-auto-open';
 const MIN_WIDTH = 420;
 const MAX_WIDTH = 1100;
 /* The conversation is readable down to this. Past it, the pane stops being the priority. */
 const MIN_CHAT_WIDTH = 520;
+/* Below this total there is no honest two-column layout to open into, so the pane starts closed. */
+const MIN_SPLIT_WIDTH = MIN_WIDTH + MIN_CHAT_WIDTH;
 const RESIZE_STEP = 40;
 
 const KIND_LABELS = { markdown: 'md', html: 'html', pdf: 'pdf' };
@@ -85,6 +88,12 @@ export function createDocPane({ onError } = {}) {
 
   applyStoredWidth();
 
+  /* The column is a fixture of the layout, not a thing that appears when pi first writes a document. The
+     markup ships closed and `inert` so a no-JS load and a narrow screen keep the conversation full width;
+     this is where a reader who wants the column gets it back, before the first paint of anything else. */
+  open = preferredOpen();
+  applyOpenState();
+
   /* ── Public surface ─────────────────────────────────────────── */
 
   /**
@@ -102,7 +111,6 @@ export function createDocPane({ onError } = {}) {
     const wasActive = activeId === doc.id;
     docs.set(doc.id, { ...previous, ...doc });
     if (activate || !activeId) activeId = doc.id;
-    if (toggleBtn) toggleBtn.disabled = false;
 
     renderTabs();
     // A background tab's document changed: the tabs know, the body does not need to re-render.
@@ -130,12 +138,9 @@ export function createDocPane({ onError } = {}) {
     }
     renderTabs();
     renderActive();
-    if (!docs.size) {
-      setOpen(false);
-      if (toggleBtn) toggleBtn.disabled = true;
-      return;
-    }
-    if (activeId === null) setOpen(false);
+    // Closing the last document does not close the column. It used to, and disabled the header button with
+    // it, which is how Preview ended up looking greyed out and unreachable between documents. The empty
+    // state is the column's resting face.
   }
 
   function closeAll() {
@@ -143,39 +148,75 @@ export function createDocPane({ onError } = {}) {
     activeId = null;
     renderTabs();
     renderActive();
-    setOpen(false);
-    if (toggleBtn) toggleBtn.disabled = true;
+    // Leaving the pane open here is deliberate: a new session has nothing to show, and the empty state is
+    // a better answer than a column that vanished on session switch and had to be hunted for.
+  }
+
+  function applyOpenState() {
+    chatScreen.dataset.docOpen = open ? 'true' : 'false';
+    pane.dataset.open = open ? 'true' : 'false';
+    if (toggleBtn) {
+      toggleBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+      toggleBtn.setAttribute('aria-label', open ? 'Hide the preview pane' : 'Show the preview pane');
+    }
+    if (open) pane.removeAttribute('inert');
+    else pane.setAttribute('inert', '');
+  }
+
+  function preferredOpen() {
+    // Below MIN_SPLIT_WIDTH the column is not a column, it is the full-screen sheet the phone stylesheet
+    // makes it. Whatever was remembered, opening a sheet over the conversation on load is not a thing to
+    // do unprompted.
+    if (window.innerWidth < MIN_SPLIT_WIDTH) return false;
+    let stored = null;
+    try {
+      stored = localStorage.getItem(OPEN_KEY);
+    } catch {
+      stored = null;
+    }
+    if (stored !== null) return stored === 'open';
+    return true;
   }
 
   function setOpen(next, { focus = true } = {}) {
     const wanted = Boolean(next);
     if (wanted === open) return;
     open = wanted;
-    chatScreen.dataset.docOpen = open ? 'true' : 'false';
-    pane.dataset.open = open ? 'true' : 'false';
-    if (toggleBtn) toggleBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    applyOpenState();
+    try {
+      localStorage.setItem(OPEN_KEY, open ? 'open' : 'closed');
+    } catch {
+      // Private mode: the pane still opens and closes for this page view.
+    }
 
     if (open) {
-      pane.removeAttribute('inert');
-      if (focus) focusActive();
+      if (focus) {
+        if (docs.size) focusActive();
+        // An empty column still takes focus when a keyboard user asked for it, or the press would land
+        // them back where they were with nothing to do next. The pane is `tabindex="-1"` for this.
+        else pane.focus?.({ preventScroll: true });
+      }
     } else {
       pane.setAttribute('inert', '');
       /* Focus has to leave before the subtree becomes inert, or the browser keeps the focus on a
          node that is no longer reachable and the page loses it entirely. */
       if (lastFocusBeforeOpen && document.body.contains(lastFocusBeforeOpen)) {
         lastFocusBeforeOpen.focus();
-      } else if (toggleBtn && !toggleBtn.disabled) {
+      } else if (toggleBtn) {
         toggleBtn.focus();
       }
     }
   }
 
   function toggleOpen() {
-    if (open) setOpen(false);
-    else if (docs.size) {
-      lastFocusBeforeOpen = document.activeElement;
-      setOpen(true);
+    if (open) {
+      setOpen(false);
+      return;
     }
+    lastFocusBeforeOpen = document.activeElement;
+    // Including the empty case: opening the column before anything exists to show it is how a reader
+    // finds out what the column is for.
+    setOpen(true);
   }
 
   /**
@@ -220,7 +261,6 @@ export function createDocPane({ onError } = {}) {
     if (!docs.size) return;
     renderTabs();
     renderActive();
-    if (toggleBtn) toggleBtn.disabled = false;
   }
 
   const handle = {
@@ -230,7 +270,6 @@ export function createDocPane({ onError } = {}) {
     close: closeDoc,
     closeAll,
     open: () => {
-      if (!docs.size) return;
       lastFocusBeforeOpen = document.activeElement;
       setOpen(true);
     },
@@ -359,7 +398,11 @@ export function createDocPane({ onError } = {}) {
       showView(null);
       if (emptyEl) {
         emptyEl.hidden = false;
-        setEmptyMessage('Nothing to preview yet.', 'Ask pi to write a document, or point it at a file.');
+        // Kept word-for-word in the markup too, so the column says the same thing before this runs as after.
+        setEmptyMessage(
+          'Nothing to preview yet.',
+          'Ask pi to write a document, or point it at a file. Markdown, HTML, and PDF open here.',
+        );
       }
       return;
     }
@@ -523,7 +566,7 @@ export function createDocPane({ onError } = {}) {
   /* ── Width ──────────────────────────────────────────────────── */
 
   function currentWidth() {
-    const raw = getComputedStyle(chatScreen).getPropertyValue('--doc-pane-width').trim();
+    const raw = window.getComputedStyle(chatScreen).getPropertyValue('--doc-pane-width').trim();
     const parsed = Number.parseFloat(raw);
     return Number.isFinite(parsed) ? parsed : clampWidth(Math.round(window.innerWidth * 0.52));
   }
@@ -551,8 +594,18 @@ export function createDocPane({ onError } = {}) {
     if (Number.isFinite(stored)) setWidth(stored, { persist: false });
   }
 
+  /* The session drawer is a fixed overlay the shell pads around, so the room a pane may take is not the
+     window. The shift is already a custom property on the shell and it is the only place the 260 px lives,
+     so it is read rather than repeated. */
+  function sidebarShift() {
+    const raw = window.getComputedStyle(chatScreen).getPropertyValue('--sidebar-width').trim();
+    const px = Number.parseFloat(raw);
+    return Number.isFinite(px) ? px : 0;
+  }
+
   function clampWidth(px) {
-    const ceiling = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, window.innerWidth - MIN_CHAT_WIDTH));
+    const room = window.innerWidth - sidebarShift() - MIN_CHAT_WIDTH;
+    const ceiling = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, room));
     return Math.max(MIN_WIDTH, Math.min(ceiling, Math.round(px)));
   }
 

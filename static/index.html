@@ -76,7 +76,7 @@
       <button class="btn-icon voice-stop" data-voice-stop type="button" aria-label="Stop speech">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
       </button>
-      <button class="btn-icon" id="doc-toggle-btn" type="button" aria-expanded="false" aria-controls="doc-pane" disabled title="Preview pane (Ctrl+\)" aria-keyshortcuts="Control+Backslash">
+      <button class="btn-icon" id="doc-toggle-btn" type="button" aria-expanded="false" aria-controls="doc-pane" title="Preview pane (Ctrl+\)" aria-keyshortcuts="Control+Backslash">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8M8 17h5"/></svg>
         Preview
       </button>
@@ -154,7 +154,7 @@
 
   <!-- Document preview pane. Owned by static/preview.js and driven by pi preview entries;
        closed means inert, so nothing in it can be tabbed into or scripted by accident. -->
-  <aside class="doc-pane" id="doc-pane" role="region" aria-labelledby="doc-pane-title" inert>
+  <aside class="doc-pane" id="doc-pane" role="region" aria-labelledby="doc-pane-title" tabindex="-1" inert>
     <div class="doc-pane-inner">
       <div class="doc-pane-bar">
         <h2 class="doc-pane-title" id="doc-pane-title" data-doc-title>Preview</h2>
@@ -180,7 +180,10 @@
       <div class="doc-pane-body">
         <div class="doc-empty" data-doc-empty>
           <p>Nothing to preview yet.</p>
-          <p class="doc-empty-hint">Ask pi to write a document, or point it at a file.</p>
+          <p class="doc-empty-hint">
+            Ask pi to write a document, or point it at a file. Markdown, HTML, and PDF open here.
+          </p>
+          <p class="doc-empty-hint doc-empty-keys">Use Preview or <kbd>Ctrl</kbd> + <kbd>\</kbd> to put this column away.</p>
         </div>
         <div class="doc-scroll doc-markdown" data-doc-view="markdown" tabindex="0" hidden></div>
         <div class="doc-scroll doc-source" data-doc-view="source" tabindex="0" hidden><pre></pre></div>

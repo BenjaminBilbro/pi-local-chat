@@ -355,3 +355,23 @@ rewrite rather than growing it again: one line points here today.
    PDF tab is `action=open`, which mints a second tab instead of replacing the first (measured
    2026-11-09: `action=update needs the complete new content`). Fixing the receipt string alone still
    leaves the tool unable to update one of its three kinds.
+
+## S6 (2026-11-18): the pane is a permanent column, `3094837`+
+
+The behaviour changed under everything above, so the parts of this file that describe a pane which appears
+and disappear do not match `static/preview.js` any more. What it does now:
+
+- It opens on load with nothing in it, on any window at least `MIN_SPLIT_WIDTH` (940 px) wide, and the empty
+  state says what lands there. It used to be `disabled` in the header until a document existed, which is how
+  the empty state went untested: nobody could reach it.
+- Closing the last document leaves the column standing and empty. `closeAll()` on a session switch does the
+  same; a new session has nothing to show, which is what the empty state is for.
+- `pi-chat-doc-open` remembers the choice. Below 940 px the remembered value is ignored, because there the
+  pane is the phone stylesheet's full-screen sheet and dropping a sheet over the conversation at load is not
+  a memory, it is an ambush.
+- `inert` follows `data-open`, so a closed column cannot be tabbed into; that was already true and still is.
+- Width: `--doc-pane-room: calc(100vw - var(--sidebar-width) - 520px)` in `styles.css` for the default, and
+  `clampWidth()` reads `--sidebar-width` rather than repeating 260 px, because the session drawer shifts the
+  shell and a column sized against the window used to squeeze the chat to nothing with both open.
+- Guards: `tools/test_preview_pane_state.mjs` (10 claims) with `tests/test_preview_pane_state.py`, and
+  `tools/screenshot_ui.mjs --pane open|closed` for the two states a reader can actually be in.

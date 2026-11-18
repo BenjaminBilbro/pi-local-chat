@@ -48,7 +48,7 @@ more than once a day. Everything else lives in `docs/`, and the split is deliber
 | Audit fix pass (2026-11-17) | all 15 work packages shipped, documented or deferred. Open: `SEC-05`, QA-03 re-captures (needs a real `pi` child, so an inference box that is free), WP-07 mobile and WP-08 keyboard a11y, both deferred until after Ben's layout refactor | `docs/audit/sweep-2-2026-11-17.md`, local only |
 | Phonon TTS | **default engine** (`config.DEFAULT_TTS_ENGINE`), `ptts` a base dependency. Real-browser voice test passed 2026-11-17: mic transcribed and sent, reply spoken in real time, playback not picked up at speaker max volume | `docs/phonon-tts-engine.md` |
 | Tool call lifecycle | shipped 2026-11-10, with the `--stage stream-render` and `capture.py --census` guards | `docs/tool-call-lifecycle.md` |
-| Document preview pane | shipped; PDF root handling is open | `docs/preview-pane-handoff.md` |
+| Document preview pane | shipped, and a permanent right column since S6; PDF root handling is open | `docs/preview-pane-handoff.md` |
 | CI | runs on Ubuntu and Windows for pushes to `master`, `main`, `feature/**` and `refactor/**`, for every pull request, and on manual dispatch. A workflow only registers once it exists on the branch being pushed, which is why a brand new default branch has to carry the file in its first commit | `.github/workflows/ci.yml` |
 
 
@@ -163,6 +163,12 @@ These are non-negotiable. Violating any of these will break the application:
 - A control only one TTS engine honours carries `data-voice-field="design"` (OmniVoice's form) or sits inside
   `[data-voice-field="phonon"]` (the catalog picker); `voice.js applyEngineToForm()` reads the markup, so a new
   row cannot escape the gate by missing an id list. Volume is in neither group: it is a client-side gain.
+- The preview column is part of the layout, not a popover: it opens empty with its empty state, the header
+  toggle is never `disabled`, `inert` tracks `data-open` so a closed column is untabbable, and the choice is
+  remembered in `pi-chat-doc-open`. Below `MIN_SPLIT_WIDTH` (940 px) it starts closed whatever was remembered,
+  because there it is the full-screen sheet rather than a column. `--doc-pane-room` in `styles.css` keeps
+  520 px of conversation after the session drawer, and `clampWidth()` reads `--sidebar-width` for the same
+  floor on a drag. `tools/test_preview_pane_state.mjs` and `--pane open|closed` hold this.
 - Live user bubbles append text before an attached image, matching pi's stored content order.
 - Sub-agent disclosure headers are real buttons with `aria-expanded`.
 - The session drawer is a labelled dialog, closes on Escape, and returns focus to its opener.
