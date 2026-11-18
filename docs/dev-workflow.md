@@ -511,6 +511,19 @@ rather than stopping mid-session and throwing away the part someone was about to
 `PI_CHAT_AUDIT_MAX_ROTATIONS` continuations; past that it stops, because the alternative is a runaway loop
 filling the disk. A live session on 2026-11-18 wrote about 100 KB a minute while streaming.
 
+### The Layout Sampler
+
+The server can see every message and no geometry, and half the reports are about geometry: "the text jumps
+while pi streams, but only when my message wraps in the composer." `static/geometry-watch.js` closes that
+gap in dev mode. It samples the composer field, the conversation's scroll position, and the top edge of the
+last message on animation frames, and sends one `audit_event` only when something actually moved more than
+two pixels, at most ten times a second. It idles out 1.5s after the last movement and re-arms on typing or
+new content, so an open page costs nothing. Read it with `--grep geometry`.
+
+It exists because of what happened on 2026-11-18: reading the source produced three plausible causes for the
+jump and eliminated none of them, and Ben answered the decisive one in about ten seconds by looking. The
+sampler is that, repeated with numbers.
+
 ## Troubleshooting
 
 ### The login screen remains visible

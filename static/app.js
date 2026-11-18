@@ -14,6 +14,7 @@ import {
 } from './chat.js';
 import { createSessionPanel } from './sessions.js';
 import { createDevReload } from './devreload.js';
+import { createGeometryWatch } from './geometry-watch.js';
 import { createSocket } from './socket.js';
 import { createDocPane } from './preview.js';
 import { createToolDetail } from './toolDetail.js';
@@ -132,6 +133,13 @@ const sessions = createSessionPanel({
  * this page load is a reload that owes a conversation back. */
 const devReload = createDevReload({ currentSessionPath: () => sessions.currentSessionPath() });
 window.__piChatDevReload = devReload;
+
+/* The layout sampler behind the debug log (dev mode only, silent otherwise). The server can see every message
+ * and no geometry, and "the text jumps when my message wraps" is a geometry claim. */
+const geometryWatch = createGeometryWatch({
+  sendEvent: (kind, data) => sendCommand({ type: 'audit_event', kind, data }),
+});
+window.__piChatGeometry = geometryWatch;
 
 socket = createSocket({
   onOpen: () => {
