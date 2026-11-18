@@ -10,6 +10,11 @@ __pycache__/
 *.jsonl.meta.json
 sessions/
 
+# Debug-mode audit logs (`PI_CHAT_AUDIT=1`), one JSONL per browser connection. `*.jsonl` above already covers
+# the files themselves; the directory is named so that whatever else a run writes beside them stays untracked
+# too. These are shaped rather than transcribed, but they are still a record of a real conversation.
+logs/
+
 # Documents the preview pane serves. They are conversation output, sometimes private, and
 # regenerable only by re-running the assistant, so they are never committed.
 previews/

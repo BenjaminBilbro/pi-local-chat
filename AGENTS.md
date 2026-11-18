@@ -16,6 +16,7 @@ more than once a day. Everything else lives in `docs/`, and the split is deliber
 | The browser WebSocket, pi's event stream, queue and steer semantics, session file formats | `docs/protocol.md` |
 | The timeline renderer, or anything that could make live and history render differently | `docs/rendering-parity.md` |
 | How to run, test, screenshot, or debug this on a machine | `docs/dev-workflow.md` |
+| "It did something and I cannot reproduce it" | debug-mode audit log: `PI_CHAT_AUDIT=1`, read with `tools/audit.py` | `docs/dev-workflow.md` |
 | What an environment variable does, its default, or which side reads it | `docs/configuration.md` |
 | Voice, STT, TTS engines | `docs/phonon-tts-engine.md`, `docs/system-prompt-composition.md` |
 | Anything about how the app looks: palette, type, themes, the constraints | `docs/design-system.md` |
@@ -51,6 +52,7 @@ more than once a day. Everything else lives in `docs/`, and the split is deliber
 | Document preview pane | shipped, and a permanent right column since S6; PDF root handling is open | `docs/preview-pane-handoff.md` |
 | STT latency defaults | measured 2026-11-18 with `tools/stt_probe.py`, defaults set from the table; re-measure before changing a model or a silence window | `docs/stt-latency.md` |
 | Voice Mode (S9) | shipped: composer button, full-bleed orb surface (previews still open above it), readiness chips for both engines, mode markers both directions, barge-in armed only on an echo-cancelled mic. The `<PI-CHAT-SYSTEM-MESSAGE>` tag is what keeps the markers from rendering, on echo AND on reload | `docs/voice-mode.md` |
+| Open TODO: `questionnaire` over RPC | pi's `questionnaire` tool has no surface in `pi --mode rpc`, so a model that asks a question through pi-chat gets a failure where a person would have got a dialog (hit 2026-11-18 with `Cannot read properties of undefined (reading 'cancelled')`). Needs the request handler on pi's side and an answering dialog on this one, and it is the reason a voice-mode session cannot ask a clarifying question | `~/.pi/agent/memories/projects/pi-chat.md` |
 | CI | runs on Ubuntu and Windows for pushes to `master`, `main`, `feature/**` and `refactor/**`, for every pull request, and on manual dispatch. A workflow only registers once it exists on the branch being pushed, which is why a brand new default branch has to carry the file in its first commit | `.github/workflows/ci.yml` |
 
 

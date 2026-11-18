@@ -8,6 +8,7 @@ import uuid
 from fastapi import WebSocket, WebSocketDisconnect
 
 from .config import DEV_MODE
+from . import audit as audit_log
 from .process import PiProcess, parse_queue_snapshot
 from .preview import describe_preview_entries
 from .sessions import (
@@ -34,6 +35,10 @@ def _make_voice_session(tts_service, pi, config_):
         send_json=pi.send_browser_json,
         send_bytes=pi.send_browser_bytes,
         config_=config_,
+        # Resolved per call rather than captured: the recorder is attached to the process after this factory
+        # runs, so a snapshot of `pi.audit` here would be a permanent None and the voice window events - the
+        # whole reason the hook exists - would never be written.
+        audit=lambda kind, **data: pi.audit.event(kind, **data) if pi.audit is not None else None,
     )
 
 
@@ -60,6 +65,14 @@ async def handle_websocket(
     pi.ws = websocket
     pi.account = account
 
+    # The debug-mode audit log, opened per connection so a report about one tab reads as one file.
+    # None unless PI_CHAT_AUDIT is set, and every call site below is guarded rather than the class being
+    # nullable-by-magic: a disabled audit path should cost nothing and explain itself.
+    audit = audit_log.open_log(account)
+    pi.audit = audit
+    if audit is not None:
+        log.info("Audit log: writing to %s", audit.path)
+
     # Create voice session if TTS service is available
     voice = None
     if tts_service is not None:
@@ -83,6 +96,8 @@ async def handle_websocket(
             raw = await websocket.receive()
             if "bytes" in raw and raw["bytes"] is not None:
                 # Binary audio packet for STT
+                if audit is not None:
+                    audit.bytes_in(len(raw["bytes"]))
                 if stt is not None and stt.enabled:
                     try:
                         packet = decode_audio_packet(raw["bytes"])
@@ -99,12 +114,17 @@ async def handle_websocket(
                 # Text command
                 message = await _parse_text_command(raw)
                 if message is not None:
+                    if audit is not None:
+                        audit.json_in(message)
                     await _dispatch_command(pi, account, message, voice, stt)
     except WebSocketDisconnect:
         log.info("Client disconnected — killing pi subprocess")
     except Exception as error:
         log.error("WebSocket error: %s", error)
     finally:
+        if audit is not None:
+            audit.close("disconnect")
+        pi.audit = None
         pi.event_observer = None
         if voice is not None:
             await voice.close()
@@ -235,13 +255,24 @@ async def _dispatch_command(
         elif command_type == "stt_disable":
             if stt is not None:
                 await stt.disable()
+        elif command_type == "audit_event":
+            # The browser's half of the debug log. It rides the existing socket rather than a new endpoint
+            # because a second way in is a second thing to secure, and because the value of the whole design
+            # is that a click and the wire it caused sit in one file on one clock. A server-side-only log
+            # could never have caught the mute button, which sent a command and never touched the microphone.
+            if pi.audit is not None:
+                pi.audit.client_event(str(message.get("kind") or "event"), message.get("data"))
         else:
             log.warning("WebSocket: unknown command type %r", command_type)
+            if pi.audit is not None:
+                pi.audit.event("unknown_command", command=message)
     except Exception as error:
         # exc_info keeps the traceback: this used to log only the message, which is how a real defect
         # in one command became an unreadable line, and the delivery used the raw socket, which is how
         # an error could arrive before the events it was about.
         log.error("WebSocket: command %r failed: %s", command_type, error, exc_info=True)
+        if pi.audit is not None:
+            pi.audit.event("command_failed", command=str(command_type), error=type(error).__name__)
         await _send_error(pi, f"Command failed: {error}")
 
 

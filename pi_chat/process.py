@@ -158,6 +158,10 @@ class PiProcess:
         self.ws: WebSocket | None = None
         self.session_id = self._new_session_id()
         self.account: str | None = None
+        # Debug-mode audit log (`pi_chat/audit.py`), attached by `websocket.handle_websocket` when
+        # PI_CHAT_AUDIT is set. Everything the browser receives passes through this class, which makes it the
+        # only place that can tell "never synthesized" apart from "synthesized and never delivered".
+        self.audit = None
         self.work_dir: Path | None = None
         self.project_root = project_root
         self._pending_requests: dict[str, asyncio.Future] = {}
@@ -419,11 +423,24 @@ class PiProcess:
         absorbs a slow client up to `_BROWSER_OUT_MAX` messages.
         """
         if self.ws is None or self.browser_dead:
+            # A dropped message is the finding, not the absence of one. This is the branch where TTS bytes
+            # were produced and never reached a tab, which reads to a person as "it went silent".
+            if self.audit is not None and self.browser_dead:
+                self.audit.event("browser_dropped", kind=kind,
+                                 size=len(payload) if isinstance(payload, (bytes, bytearray)) else 0)
             return
 
         if self._browser_out is None:
             self._browser_out = asyncio.Queue(maxsize=_BROWSER_OUT_MAX)
             self._browser_writer_task = asyncio.create_task(self._write_browser_outbox())
+
+        if self.audit is not None:
+            if kind == "json" and isinstance(payload, dict):
+                self.audit.json_out(payload)
+            elif isinstance(payload, (bytes, bytearray)):
+                self.audit.bytes_out(len(payload))
+            else:
+                self.audit.json_out({"type": type(payload).__name__})
 
         try:
             self._browser_out.put_nowait((kind, payload))
@@ -431,6 +448,7 @@ class PiProcess:
             self._note_browser_failure(
                 f"browser outbox full at {_BROWSER_OUT_MAX} messages",
                 level=logging.ERROR,
+                audit_token="outbox_full",
             )
             await self._abandon_browser()
 
@@ -449,24 +467,34 @@ class PiProcess:
             except asyncio.CancelledError:
                 raise
             except Exception as error:
-                self._note_browser_failure(f"send failed: {type(error).__name__}: {error}")
+                self._note_browser_failure(f"send failed: {type(error).__name__}: {error}",
+                                           audit_token=type(error).__name__)
                 await self._abandon_browser()
                 out.task_done()
                 return
             out.task_done()
 
-    def _note_browser_failure(self, reason: str, level: int = logging.WARNING) -> None:
+    def _note_browser_failure(self, reason: str, level: int = logging.WARNING, audit_token: str = "failure") -> None:
         """Say once, loudly, that the browser stopped taking messages.
 
         Both send paths used to be `except Exception: pass`, which made "pi answered but nothing
         appeared" impossible to diagnose. Counting keeps the log honest without turning a dead tab
         into a per-event wall of text.
+
+        The audit record carries `audit_token` rather than `reason`: the audit shapes any string with spaces
+        into a length and a digest, which is the right policy for a transcript and the wrong one for a
+        sentence this file wrote itself. So the caller names the failure in one word, and the log line keeps
+        the full sentence for the console.
         """
         self._browser_send_failures += 1
         if self._browser_send_failures == 1:
             log.log(level, "Browser delivery broke (%s); further failures will only be counted", reason)
+            if self.audit is not None:
+                self.audit.event("browser_send_failed", error=audit_token, failures=self._browser_send_failures)
         elif self._browser_send_failures % 500 == 0:
             log.log(level, "Browser still undeliverable: %d failures", self._browser_send_failures)
+            if self.audit is not None:
+                self.audit.event("browser_send_failed", error=audit_token, failures=self._browser_send_failures)
 
     async def _abandon_browser(self) -> None:
         """Close the socket so the disconnect path tears the connection down properly.

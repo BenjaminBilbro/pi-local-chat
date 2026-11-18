@@ -213,11 +213,17 @@ class VoiceSession:
         send_json: callable,
         send_bytes: callable,
         config_: config | None = None,
+        audit: callable | None = None,
     ):
         self._tts = tts_service
         self._send_json = send_json
         self._send_bytes = send_bytes
         self._config = config_ or config
+        # Debug-mode audit hook (`pi_chat/audit.py`). The AEC speaking window is the one piece of voice state
+        # with no message attached to it: when it sticks open, nothing crosses the wire to say so, and the
+        # symptom is a call that goes deaf part way through. Defaulted to a no-op so a session built without a
+        # recorder - every test, and every run without the flag - pays nothing.
+        self._audit = audit or (lambda kind, **data: None)
 
         # State
         self.enabled: bool = False
@@ -353,6 +359,7 @@ class VoiceSession:
                     and (time.monotonic() - self._last_ref_append) > self._aec_tail_seconds
                 ):
                     self.is_speaking = False
+                    self._audit("aec_window", open=False, why="tail_timeout")
                     logger.info("Voice: AEC window closed via tail timeout")
             if len(self._tts_reference_buffer) == 0:
                 return b""
@@ -375,6 +382,8 @@ class VoiceSession:
             self._tts_reference_buffer.clear()
             self._playback_ended = True
             self._last_ref_append = 0.0
+        if self.is_speaking:
+            self._audit("aec_window", open=False, why="playback_end", streamId=stream_id)
         self.is_speaking = False
 
     def _reset_aec_for_stream(self) -> None:
@@ -428,6 +437,11 @@ class VoiceSession:
         ref = resample_pcm_bytes(pcm_s16le, sample_rate, 16000)
         if not ref:
             return
+        # Recorded on the transition only. This runs once per synthesized chunk, so an unguarded line here
+        # would write hundreds of identical window events and bury the one that matters, which is the absence
+        # of the matching close.
+        if not self.is_speaking:
+            self._audit("aec_window", open=True, why="reference_buffered", streamId=self._stream_id)
         self.is_speaking = True
         now = time.monotonic()
         with self._reference_lock:
@@ -796,6 +810,10 @@ class VoiceSession:
         logger.debug("Voice: [DEBUG] _stop_current_internal() reason=%s stream_id=%d", reason, self._stream_id)
         stream_id = self._stream_id
         self.active_run = False
+        # `is_speaking` is deliberately not cleared here, so record what the window is doing at the moment a
+        # stop is requested. A `voice_stopped` with `open=True` and no matching `aec_window open=False` is the
+        # stuck state, and this line is the only place it becomes visible.
+        self._audit("voice_stopped", reason=reason, streamId=stream_id, window_open=self.is_speaking)
 
         # Cancel hold timer
         if self._hold_timer_task and not self._hold_timer_task.done():

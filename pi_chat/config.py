@@ -363,6 +363,29 @@ if PREVIEW_MAX_MB < PREVIEW_MAX_DOC_MB:
 
 
 # ---------------------------------------------------------------------------
+# Debug-mode audit log
+# ---------------------------------------------------------------------------
+
+# Write one JSONL file per browser connection recording what happened: every command in, every message out,
+# the audio byte totals in both directions, and the voice and browser events that never cross the wire.
+# Deliberately NOT implied by PI_CHAT_DEV: the log is a record of a conversation, so it costs a second
+# variable to start writing one. `pi_chat/audit.py` for the format and the shapes-not-bytes policy.
+AUDIT_ENABLED = os.environ.get("PI_CHAT_AUDIT", "0").lower() in {"1", "true", "yes"}
+# Where the files go. Gitignored, and one file per connection so a report can be read without filtering.
+AUDIT_DIR = os.environ.get(
+    "PI_CHAT_AUDIT_DIR",
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs"),
+)
+# Stop writing past this size. A dogfooding guard against a runaway loop filling the disk, not a rotation
+# policy: past a few megabytes the file has stopped being something a person can read.
+AUDIT_MAX_BYTES = int(os.environ.get("PI_CHAT_AUDIT_MAX_BYTES", str(8 * 1024 * 1024)))
+# Audio packets arrive dozens of times a second, so they are totalled and flushed at this many bytes rather
+# than written one line each. Too small and the interesting lines drown; too large and a silent stream is
+# indistinguishable from a coalesced one.
+AUDIT_COALESCE_BYTES = int(os.environ.get("PI_CHAT_AUDIT_COALESCE_BYTES", "65536"))
+
+
+# ---------------------------------------------------------------------------
 # Environment diagnostics
 # ---------------------------------------------------------------------------
 

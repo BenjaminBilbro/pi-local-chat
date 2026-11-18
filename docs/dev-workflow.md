@@ -414,6 +414,54 @@ uv run python tests/mobile_viewport_test.py --all
 Requires Camoufox running and pi-chat server on port 9000. Captures screenshots and accessibility snapshots for real mobile device viewports.
 
 
+## Debug Mode: The Audit Log
+
+Reports about this app arrive as descriptions of what something *felt* like: "it kept talking, then nothing
+went through", "it flickers while I type". The server's own log cannot answer most of those, because the wire
+carries no message about the state that actually broke. `PI_CHAT_AUDIT=1` writes a record of the session that
+can.
+
+```bash
+cd ~/pi-chat
+PI_CHAT_AUDIT=1 uv run python server.py
+# one file per browser connection, named for the profile and the moment it opened:
+ls logs/
+```
+
+It is **not** implied by `PI_CHAT_DEV`, and does not imply it. The log is a record of a real conversation, so
+it costs a second variable to start writing one, and `logs/` is gitignored.
+
+What one file holds, in order, on one clock:
+
+- every command the browser sent, and every message the server sent back, as shaped payloads
+- microphone bytes in and synthesized audio bytes out, **totalled** rather than one line per packet
+- the state the wire never carries: the AEC speaking window opening and closing, delivery failures, messages
+  dropped because the tab had already died
+- whatever the browser chooses to report (`audit_event`), which is where a click that sent nothing becomes
+  visible at all
+
+The policy is **shapes, not bytes**. Text becomes `str(1834 a1b2c3d4)`; only keys that carry machine state
+(`state`, `reason`, `streamId`, `why`, `delivery`, `id`, and the rest of `audit.SAFE_KEYS`) keep their values,
+and credentials are written as the word `redacted` rather than a digest of them. The denial test is in
+`tests/test_audit.py`: a sentence goes in, and no part of it may come out. That is a real limit rather than a
+first pass, because these profiles are family and the repository is public.
+
+Read it with the companion tool rather than by hand:
+
+```bash
+uv run python tools/audit.py --latest            # newest log, as a timeline
+uv run python tools/audit.py --latest --grep mute
+uv run python tools/audit.py --latest --json     # machine-readable, for diffing two runs
+```
+
+The summary at the bottom of that output is three named fault checks, not statistics: a voice stream that
+opened and ended with zero audio bytes, an echo window that opened and never closed, and messages dropped to a
+dead tab. Those are the difference between "the model never answered" and "the answer existed and never
+arrived", which is not something a person holding a dead microphone can work out for themselves.
+
+When a bug report is hard to reproduce, ask for the file. It is a smaller ask than a step-by-step, and it
+arrives already carrying the timestamps.
+
 ## Troubleshooting
 
 ### The login screen remains visible

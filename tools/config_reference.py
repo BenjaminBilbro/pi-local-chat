@@ -37,6 +37,7 @@ GROUPS = [
     ("Speech synthesis", ("TTS",)),
     ("Speech input", ("STT",)),
     ("Voice storage and cloning", ("VOICE",)),
+    ("Audit and telemetry", ("AUDIT",)),
     ("Server and child process", ("HOST", "PORT", "PI_BIN", "PI_ARGS", "ACCOUNT", "LOG_", "DEV", "SESSION_TTL", "CONTEXT_FILES", "ALLOW_DEV_REMOTE")),
     ("Test harness", ("SMOKE_",)),
 ]
@@ -52,6 +53,7 @@ NOTES = {
     "PI_CHAT_HOST": "`server.py` defaults to `0.0.0.0`, which the tailnet reaches; testing gets `127.0.0.1`",
     "PI_CHAT_PREVIEW_BASE_DIR": "server side; the child gets `PI_CHAT_PREVIEW_DIR`, a different name",
     "PI_CHAT_DEV": "also skips session ownership checks; never set it on a reachable host",
+    "PI_CHAT_AUDIT": "writes an event log of every connection to `logs/`; implies nothing about PI_CHAT_DEV, and is implied by neither",
     "PI_CHAT_CONTEXT_FILES": "`0` spawns pi with `--no-context-files`; see `docs/system-prompt-composition.md`",
     "PI_CHAT_TTS_ENGINE": "default is `phonon`; `omnivoice` needs the extra and a GPU",
     "PI_CHAT_TTS_VRAM_REQUIRED_GB": "OmniVoice path only; Phonon never touches the GPU",
