@@ -106,6 +106,12 @@ def backend_stamp() -> dict:
     return _stamp([*(ROOT / "pi_chat").rglob("*.py"), ROOT / "server.py"])
 
 
+# What this process imported. Taken at import rather than on the first request, because a request-time answer
+# would call files edited in the seconds after startup "already loaded", and a banner that says "all caught
+# up" about a stale process is worse than one that never appears.
+BOOT_BACKEND = backend_stamp()["stamp"]
+
+
 def snapshot(static_dir: Path, dev: bool) -> dict:
     """What `/api/version` answers: two stamps the page compares against, and who is answering."""
     return {
@@ -116,6 +122,9 @@ def snapshot(static_dir: Path, dev: bool) -> dict:
         "restartable": bool(dev) and _server is not None,
         "frontend": frontend_stamp(static_dir),
         "backend": backend_stamp(),
+        # The stamp this process was built from. "Is a restart owed" is that compared against `backend` and
+        # nothing else, so it survives a reload: reloading the page does not reload Python.
+        "bootBackend": BOOT_BACKEND,
     }
 
 

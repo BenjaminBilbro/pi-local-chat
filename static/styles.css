@@ -3997,35 +3997,25 @@ body[data-voice-mode][data-voice-doc="shown"] #chat-screen[data-doc-open="true"]
   }
 }
 
-/* ── Hot-reload banner (injected by devreload.js, dev mode only) ────────────
-   Centered over the conversation on the same axis as the jump-to-bottom pill, because the middle of the
-   conversation is where the person is already looking, and because a corner is where a browser extension
-   puts things.
+/* ── Hot-reload chip (injected by devreload.js, dev mode only) ────────────
+   Lives in the header, inserted right after the mascot, because that corner already carries the state of the
+   assistant and a prompt floating over the conversation covers the thing you are reading. It is a sibling of
+   the mascot rather than a child, so hiding the mascot does not hide it.
 
-   It sits under the voice surface on purpose. Voice mode is a full-bleed screen with one job and no typing;
-   a developer affordance poking through it would be the loudest thing on screen for a phone call. */
+   Voice mode covers the whole surface anyway (`.voice-screen` sits at z-index 300); the rule below keeps the
+   chip from being laid out behind it at all. */
 #dev-reload {
-  position: fixed;
-  top: 12px;
-  left: calc(50% + var(--chat-center-shift));
-  transform: translateX(-50%);
-  z-index: 250;
   display: inline-flex;
   align-items: center;
-  gap: 10px;
-  max-width: min(92vw, 720px);
-  padding: 6px 7px 6px 14px;
+  gap: 8px;
+  max-width: min(40vw, 420px);
+  padding: 3px 4px 3px 10px;
   border: 1px solid var(--border);
   border-radius: 999px;
-  background: var(--bg-elevated);
+  background: var(--accent-soft);
   color: var(--text);
   font-size: var(--font-size-xs);
-  box-shadow: var(--shadow-md);
 }
-
-/* Hiding is the one global `[hidden]` rule's job, not this component's. `styles.css` opens with
-   `[hidden] { display: none !important; }` and a claim in `tools/test_voice_engine_gating.mjs` keeps it the
-   only one, which is the reason a per-element patch is not written here. */
 
 body[data-voice-mode] #dev-reload { display: none; }
 

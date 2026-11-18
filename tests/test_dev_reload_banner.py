@@ -14,7 +14,7 @@ import pytest
 
 SCRIPT = Path(__file__).resolve().parent.parent / "tools" / "test_dev_reload_banner.mjs"
 NODE = shutil.which("node")
-CLAIMS = 11
+CLAIMS = 13
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not on PATH")

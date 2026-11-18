@@ -49,7 +49,24 @@ class El {
   setAttribute() {}
 
   appendChild(node) {
+    node.parentNode = this;
     this.children.push(node);
+    return node;
+  }
+
+  // Enough of the DOM for placement claims: where a node sits in its parent is what the header mount depends
+  // on, and `nextSibling` is how the module says "right after the mascot".
+  get nextSibling() {
+    if (!this.parentNode) return null;
+    const siblings = this.parentNode.children;
+    return siblings[siblings.indexOf(this) + 1] || null;
+  }
+
+  insertBefore(node, reference) {
+    node.parentNode = this;
+    const at = reference ? this.children.indexOf(reference) : -1;
+    if (at < 0) this.children.push(node);
+    else this.children.splice(at, 0, node);
     return node;
   }
 
@@ -66,13 +83,34 @@ class El {
   }
 }
 
-function harness(payload, { sessionPath = 'C:/sessions/b/one.jsonl' } = {}) {
+function harness(payload, { sessionPath = 'C:/sessions/b/one.jsonl', header = false } = {}) {
+  const created = [];
+  const body = new El('body');
   const doc = {
-    body: new El('body'),
+    body,
     hidden: false,
-    createElement: (tag) => new El(tag),
+    createElement: (tag) => {
+      const element = new El(tag);
+      created.push(element);
+      return element;
+    },
     addEventListener: () => {},
+    querySelector: () => null,
   };
+
+  // The chat header, when the page has one: the chip is supposed to be inserted next to the mascot rather
+  // than appended to the document, and that placement is the whole point of the claim below.
+  let mascot = null;
+  if (header) {
+    const chatHeader = new El('div');
+    chatHeader.className = 'chat-header-main';
+    mascot = new El('img');
+    mascot.className = 'header-mascot';
+    chatHeader.appendChild(mascot);
+    chatHeader.appendChild(new El('h1'));
+    body.appendChild(chatHeader);
+    doc.querySelector = (selector) => (selector === '.header-mascot' ? mascot : null);
+  }
   const storage = new Map();
   const win = {
     reloads: 0,
@@ -101,8 +139,9 @@ function harness(payload, { sessionPath = 'C:/sessions/b/one.jsonl' } = {}) {
   const controller = createDevReload({ currentSessionPath: () => sessionPath, doc, win });
   // No element at all is the honest shape of "nothing was shown": the module creates the node lazily, so a
   // test that asked for `.hidden` on a banner that was never built would be asserting about nothing.
-  const banner = () => doc.body.children.at(-1) || { hidden: true, find: () => undefined, children: [] };
-  return { controller, banner, storage, win, calls, doc };
+  const banner = () => created.find((element) => element.id === 'dev-reload')
+    || { hidden: true, find: () => undefined, children: [] };
+  return { controller, banner, storage, win, calls, doc, mascot, created };
 }
 
 const snapshot = (over = {}) => ({
@@ -113,6 +152,9 @@ const snapshot = (over = {}) => ({
   restartable: true,
   frontend: { stamp: 'f-1', files: 3, newest: 'static/styles.css' },
   backend: { stamp: 'b-1', files: 9, newest: 'pi_chat/app.py' },
+  // The stamp the running process was built from. Left out, every snapshot would look stale and every claim
+  // about "no prompt" would fail for the wrong reason.
+  bootBackend: 'b-1',
   ...over,
 });
 
@@ -246,6 +288,34 @@ const snapshot = (over = {}) => ({
     globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => snapshot({ frontend: { stamp: 'f-10', files: 3, newest: 'static/b.js' } }) });
     await h.controller.tick();
     assert.equal(h.banner().hidden, false);
+  });
+}
+
+{
+  const h = harness(snapshot({ backend: { stamp: 'b-9', files: 9, newest: 'pi_chat/audit.py' }, bootBackend: 'b-1' }), { header: true });
+  await h.controller.tick();
+  await h.controller.tick();
+
+  await check('the chip is inserted beside the header mascot, not over the conversation', () => {
+    const host = h.banner().parentNode;
+    assert.ok(host, 'nothing was mounted');
+    assert.equal(host.className, 'chat-header-main');
+    assert.equal(host.children[host.children.indexOf(h.mascot) + 1], h.banner(), 'it has to sit right after the mascot');
+    assert.equal(h.banner().find('dev-reload-action').textContent, 'Restart server');
+  });
+}
+
+{
+  const h = harness(snapshot());
+  await h.controller.tick();
+  h.controller.stop();
+
+  await check('a reload does not clear a restart the process still owes', async () => {
+    // What a reload actually produces: the same stale process, reporting its own boot stamp unchanged.
+    globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => snapshot({ bootBackend: 'b-1' }) });
+    await h.controller.tick();
+    assert.equal(h.banner().hidden, false, 'the chip vanished while the old Python was still loaded');
+    assert.equal(h.banner().find('dev-reload-action').textContent, 'Restart server');
   });
 }
 

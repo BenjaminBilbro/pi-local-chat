@@ -45,8 +45,23 @@ export function createDevReload({ currentSessionPath, doc = document, win = wind
     banner.id = 'dev-reload';
     banner.setAttribute('role', 'status');
     banner.hidden = true;
-    doc.body.appendChild(banner);
+    mount(banner);
     return banner;
+  }
+
+  /**
+   * Next to the header mascot, which is the corner of this app that already means "this is what the assistant
+   * is doing". It used to float centred over the conversation, and a prompt that covers the thing you are
+   * reading is a prompt you dismiss without reading.
+   *
+   * Inserted after the mascot rather than into a wrapper, so it keeps its place when the mascot is hidden by
+   * `body.hide-header-mascot`. Falls back to the body on the login screen, where there is no header yet.
+   */
+  function mount(node) {
+    const mascot = doc.querySelector ? doc.querySelector('.header-mascot') : null;
+    const host = mascot && mascot.parentNode ? mascot.parentNode : doc.body;
+    if (mascot && host === mascot.parentNode) host.insertBefore(node, mascot.nextSibling);
+    else host.appendChild(node);
   }
 
   /** @param {{label: string, action?: {kind: 'reload'|'restart', text: string}}} state */
@@ -160,7 +175,10 @@ export function createDevReload({ currentSessionPath, doc = document, win = wind
     }
 
     const frontendChanged = snapshot.frontend && snapshot.frontend.stamp !== baseline.frontend?.stamp;
-    const backendChanged = snapshot.backend && snapshot.backend.stamp !== baseline.backend?.stamp;
+    /* The back end is compared against what this *process* imported, not against what the page last saw. A
+       reload fetches new JavaScript and leaves the same Python running, so the disk-based comparison used to
+       clear a restart prompt while the old code was still loaded. */
+    const backendChanged = snapshot.backend && snapshot.backend.stamp !== snapshot.bootBackend;
 
     if (frontendChanged && snapshot.frontend.stamp !== baseline.dismissedFrontend) {
       show({
@@ -180,7 +198,7 @@ export function createDevReload({ currentSessionPath, doc = document, win = wind
         // Not running under the dev supervisor: say what is true rather than offering a button that cannot work.
         show({ label: `${snapshot.backend.newest || 'back-end'} changed. Restart server.py to apply it.` });
       }
-      baseline = { ...baseline, backend: snapshot.backend.stamp };
+      baseline = { ...baseline, backend: snapshot.backend.stamp, dismissedBackend: baseline.dismissedBackend };
       return;
     }
     hide();

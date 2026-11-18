@@ -78,6 +78,21 @@ def test_a_file_in_the_repo_is_named_relative_to_the_repo():
     assert not backend["newest"].startswith("C:"), backend["newest"]
 
 
+def test_boot_backend_is_what_the_process_imported_not_what_disk_holds(client, monkeypatch):
+    """The one fact the page cannot derive for itself.
+
+    It can see the files on disk; it cannot see which bytes the server was started from. Without
+    `bootBackend` a front-end reload cleared the restart prompt while the old Python kept serving, which is
+    the banner saying "all caught up" about a process that is not.
+    """
+    live = client.get("/api/version").json()["backend"]["stamp"]
+    monkeypatch.setattr(devtools, "BOOT_BACKEND", "0-0-0")
+    reported = client.get("/api/version").json()
+    assert reported["bootBackend"] == "0-0-0"
+    assert reported["backend"]["stamp"] == live
+    assert reported["bootBackend"] != reported["backend"]["stamp"], "stale, and the payload says so"
+
+
 def test_backend_stamp_covers_the_entry_point(client):
     backend = client.get("/api/version").json()["backend"]
     assert backend["files"] > 10, "the stamp has to cover pi_chat/, not just the file you happened to edit"
