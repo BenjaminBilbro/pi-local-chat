@@ -24,6 +24,7 @@ import {
 } from './timeline.js';
 import { escapeHtml, isSystemEnvelope } from './utils.js';
 import { randomMascotSrc } from './mascots.js';
+import { primaryMode, primaryText } from './composer-mode.js';
 
 const PROMPT_START_GRACE_MS = 2_000;
 
@@ -40,8 +41,7 @@ const fileAttachments = document.getElementById('file-attachments');
 const waitingIndicator = document.getElementById('waiting-indicator');
 const queueStrip = document.getElementById('queue-strip');
 const steerButton = document.getElementById('steer-btn');
-const stopRunButton = document.getElementById('stop-run-btn');
-const stopRunLabel = stopRunButton?.querySelector('.stop-btn-label') || null;
+const voiceModeButton = document.getElementById('voice-mode-btn');
 
 let onToolInspect = () => {};
 
@@ -165,14 +165,6 @@ export function setupChat(options) {
     if (record) onToolInspect(record, item);
   });
 
-  stopRunButton?.addEventListener('click', () => {
-    if (stopRunButton.disabled) return;
-
-    cancelInFlight = true;
-    updateStopButton();
-    sendCommand({ type: 'cancel_tool' });
-  });
-
   // Show landing page on init
   showLanding();
 
@@ -181,7 +173,7 @@ export function setupChat(options) {
   removeImageButton.addEventListener('click', removePendingImage);
   userInput.addEventListener('input', handleComposerInput);
   userInput.addEventListener('keydown', handleComposerKeydown);
-  sendButton.addEventListener('click', () => submitPrompt('queue'));
+  sendButton.addEventListener('click', () => handlePrimaryClick());
   steerButton?.addEventListener('click', () => submitPrompt('now'));
 
   // Create and wire mic button
@@ -247,7 +239,6 @@ export function setConnectionStatus(connected) {
     resetStreamingState();
     clearQueueState();
     updateSendButton();
-    updateStopButton();
   }
 }
 
@@ -308,7 +299,6 @@ export function resetConversation() {
   updateSendButton();
   /* The stop belongs to a run, and this session has none. Without this call the button keeps the
    * armed look of whatever run was live before the reader clicked into a session. */
-  updateStopButton();
 }
 
 export function loadHistoricalMessages(messages = []) {
@@ -318,7 +308,6 @@ export function loadHistoricalMessages(messages = []) {
   isAgentRunning = false;
   cancelInFlight = false;
   sttController?.setAgentActive(false);
-  updateStopButton();
 
   if (messages.length > 0) {
     hideLanding();
@@ -370,7 +359,6 @@ function startAgentRun() {
   timeline.element.appendChild(waitingIndicator);
   showWaiting();
   updateSendButton();
-  updateStopButton();
 }
 
 function handleResponse(event) {
@@ -1131,29 +1119,12 @@ function finishAgentRun() {
   sttController?.setAgentActive(false);
   resetStreamingState();
   updateSendButton();
-  updateStopButton();
 }
 
 /* Cancelling is a run-level stop (pi has no per-tool primitive), so a second click while the first
- * is still settling would only queue another abort. It unlocks when the run does. */
+ * is still settling would only queue another abort. It unlocks when the run does. The primary button shows
+ * this as `data-primary="stop"` plus `disabled`, which is what the tooltip and the neutral fill are for. */
 let cancelInFlight = false;
-
-function updateStopButton() {
-  if (!stopRunButton) return;
-
-  /* Only present while a turn is running, and Send is disabled while one is, so the composer never offers
-   * two primary actions at once. The wording says what `abort` really reaches: the turn and the tool's own
-   * process tree. The pi child survives this, and `tools/smoke_test_ws.py` pins that rather than leaving it
-   * to whoever reads the tooltip. */
-  stopRunButton.hidden = !isAgentRunning;
-  stopRunButton.disabled = cancelInFlight;
-  stopRunButton.title = cancelInFlight
-    ? 'Stopping: pi acknowledges an abort only once the turn goes idle'
-    : 'Stop this turn: the running tool is killed and queued messages come back here. '
-      + 'The pi session keeps running.';
-
-  if (stopRunLabel) stopRunLabel.textContent = cancelInFlight ? 'Stopping...' : 'Stop';
-}
 
 /* What the server sends after it has taken the queue away and told pi to stop. The cleared text
  * goes back to the composer rather than being resent: pi already delivered whatever left the queue,
@@ -1166,8 +1137,7 @@ export function handleCancelResult(payload = {}) {
 
   const current = userInput.value.trim();
   userInput.value = current ? `${current}\n${cleared.join('\n')}` : cleared.join('\n');
-  userInput.style.height = 'auto';
-  userInput.style.height = `${Math.min(userInput.scrollHeight, 200)}px`;
+  autosizeComposer();
   userInput.focus();
   updateSendButton();
 }
@@ -1412,13 +1382,33 @@ function clearPendingFiles() {
   updateSendButton();
 }
 
-function handleComposerInput() {
+/**
+ * The field is as tall as its content, capped at the same 150px the stylesheet allows, from one place. It used
+ * to be measured here at 150 and in `handleCancelResult` at 200, so the same text was two heights depending on
+ * which path measured it last, and it is measured at whatever width the field has at that instant, which is
+ * why the controls no longer share that line.
+ */
+function autosizeComposer() {
   userInput.style.height = 'auto';
   userInput.style.height = `${Math.min(userInput.scrollHeight, 150)}px`;
+}
+
+function handleComposerInput() {
+  autosizeComposer();
   updateSendButton();
 }
 
 function handleComposerKeydown(event) {
+  if (event.key === 'Escape') {
+    /* Escape stops the turn when it is pressed in the field you are typing into. It is bound here rather than
+     * on the document because `preview.js`, `sessions.js`, `toolDetail.js` and the voice settings dialog each
+     * own Escape for closing themselves, and a global stop would fire while you were dismissing one of them. */
+    if (isAgentRunning) {
+      event.preventDefault();
+      stopRun();
+    }
+    return;
+  }
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault();
     // Enter queues, which is the safe default while pi is mid-run. Ctrl/Cmd+Enter is the keyboard
@@ -1427,20 +1417,70 @@ function handleComposerKeydown(event) {
   }
 }
 
+/**
+ * The composer's one primary button, and what it means right now.
+ *
+ * Three functions share the slot because only one of them is ever the action of the moment: Voice Mode while
+ * the field is empty and nothing is running, Send while there is text and nothing is running, Stop while
+ * something is running. Stop outranks Send because Enter queues, so sending never needed the button; that is
+ * the trade Ben chose on 2026-11-18 after testing that Enter still queues mid-stream. The box is 44px in every
+ * state, so a state change cannot move the layout, which is also why the old Stop and Send-now pills moved
+ * into the chip strip: a control that shares the field's line is a control that can resize the field.
+ *
+ * `data-primary` is the single source of truth: CSS picks the icon from the same attribute JS reads to
+ * dispatch, so showing an arrow while performing a stop would take two files to get wrong.
+ */
 function updateSendButton() {
   const hasContent = userInput.value.trim().length > 0 || pendingFiles.length > 0;
-  // A running agent no longer locks the composer: a message typed mid-run is queued rather than
-  // refused, which is the whole point of the queue.
-  sendButton.disabled = !hasContent;
+  const mode = primaryMode({ running: isAgentRunning, armed: cancelInFlight, hasContent });
+  const text = primaryText(mode, cancelInFlight);
+
+  sendButton.dataset.primary = mode;
+  sendButton.disabled = mode === 'stop' && cancelInFlight;
+  sendButton.setAttribute('aria-label', text.label);
+  sendButton.title = text.title;
 
   if (steerButton) {
     steerButton.hidden = !isAgentRunning || !hasContent;
+  }
+  /* Voice Mode has one entry point at a time: the primary button while it is free, this chip while a turn runs
+   * and the primary slot is showing Stop. Hiding rather than removing keeps app.js's listener, and the
+   * pressed state a screenshot asserts, in one element. */
+  if (voiceModeButton) {
+    voiceModeButton.hidden = !isAgentRunning;
   }
   if (isAgentRunning) {
     userInput.placeholder = 'Message pi - it waits for this run to finish';
   } else if (userInput.placeholder !== 'Message pi...') {
     userInput.placeholder = 'Message pi...';
   }
+}
+
+/**
+ * The click, routed by what the button currently claims to be. Voice Mode is dispatched by clicking the real
+ * control rather than calling into the mode directly, so there is one code path into it and app.js keeps
+ * owning the connection check and the pressed state. A programmatic click fires on a hidden element, which is
+ * what makes the chip route work while it is `hidden`.
+ */
+function handlePrimaryClick() {
+  const mode = sendButton.dataset.primary;
+  if (mode === 'voice') {
+    voiceModeButton?.click();
+    return;
+  }
+  if (mode === 'stop') {
+    stopRun();
+    return;
+  }
+  submitPrompt('queue');
+}
+
+function stopRun() {
+  if (cancelInFlight) return;
+
+  cancelInFlight = true;
+  updateSendButton();
+  sendCommand({ type: 'cancel_tool' });
 }
 
 function clearConversation() {

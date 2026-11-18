@@ -1,9 +1,14 @@
 # Voice Mode (S9)
 
-One button in the composer (`#voice-mode-btn`). On: the conversation, the tool calls, the queue strip, the
+One button in the composer. On: the conversation, the tool calls, the queue strip, the
 composer and the preview pane go under a full-screen surface carrying the orb, a level strip and the session
 transcript. Off: all of it comes back exactly where it was. In the mode there is no typing, so a finished
 recording *is* the turn.
+
+Since 2026-11-18 the round button *is* the entry point (`#send-btn` with `data-primary="voice"`), because when
+the field is empty and nothing is running there is nothing else it could be. While a turn runs that slot is
+Stop, so `#voice-mode-btn` shows as a chip beside Attach instead: the case where you want to hear an answer
+that is already streaming. `docs/composer.md`.
 
     open the app, press the round button (or tap the orb to interrupt, Esc to leave, M to mute and again to
     unmute)

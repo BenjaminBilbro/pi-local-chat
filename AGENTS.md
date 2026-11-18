@@ -15,6 +15,7 @@ more than once a day. Everything else lives in `docs/`, and the split is deliber
 | Module boundaries, what owns what, where a behavior lives | `docs/architecture.md` |
 | The browser WebSocket, pi's event stream, queue and steer semantics, session file formats | `docs/protocol.md` |
 | The timeline renderer, or anything that could make live and history render differently | `docs/rendering-parity.md` |
+| The composer: its two-row card, the one button with three functions, or anything that could resize the field | `docs/composer.md` |
 | How to run, test, screenshot, or debug this on a machine | `docs/dev-workflow.md` |
 | "It did something and I cannot reproduce it" | debug-mode audit log: `PI_CHAT_AUDIT=1`, read with `tools/audit.py` | `docs/dev-workflow.md` |
 | Getting a change applied without restarting by hand | hot reload: `PI_CHAT_DEV=1` runs a supervisor, and the page offers Reload or Restart server | `docs/dev-workflow.md` |
@@ -54,6 +55,7 @@ more than once a day. Everything else lives in `docs/`, and the split is deliber
 | STT latency defaults | measured 2026-11-18 with `tools/stt_probe.py`, defaults set from the table; re-measure before changing a model or a silence window | `docs/stt-latency.md` |
 | Voice Mode (S9) | shipped: composer button, full-bleed orb surface (previews still open above it), readiness chips for both engines, mode markers both directions, barge-in armed only on an echo-cancelled mic. The `<PI-CHAT-SYSTEM-MESSAGE>` tag is what keeps the markers from rendering, on echo AND on reload | `docs/voice-mode.md` |
 | Open TODO: `questionnaire` over RPC | pi's `questionnaire` tool has no surface in `pi --mode rpc`, so a model that asks a question through pi-chat gets a failure where a person would have got a dialog (hit 2026-11-18 with `Cannot read properties of undefined (reading 'cancelled')`). Needs the request handler on pi's side and an answering dialog on this one, and it is the reason a voice-mode session cannot ask a clarifying question | `~/.pi/agent/memories/projects/pi-chat.md` |
+| Composer redesign (2026-11-18) | **shipped**: the field on top with a fixed 44px control line under it at every width, and one 44px button that is Voice Mode, Send or Stop. It is the fix for the streaming flicker Ben reported verbally, and `tools/screenshot_ui.mjs` measures the invariant in a real browser rather than asserting it in prose | `docs/composer.md` |
 | CI | runs on Ubuntu and Windows for pushes to `master`, `main`, `feature/**` and `refactor/**`, for every pull request, and on manual dispatch. A workflow only registers once it exists on the branch being pushed, which is why a brand new default branch has to carry the file in its first commit | `.github/workflows/ci.yml` |
 
 
@@ -154,6 +156,13 @@ These are non-negotiable. Violating any of these will break the application:
   `[data-mascot-img]` live, including the randomized landing mascot.
   `pi-chat-header-mascot` (`shown`|`hidden`) is the third: it toggles `body.hide-header-mascot`, whose rule
   is scoped to `#chat-screen` so the login screen keeps its mascot.
+- The composer is two lines in one card at every width: the field, then a control line that is 44px and never
+  grows. Nothing may share the field's line, because that is what made the conversation jump while pi streamed:
+  a control appearing took about 110 px from the textarea, the textarea re-wrapped, the autosizer changed its
+  height, and the `1fr` conversation row resized under the reader. The one round button is Voice Mode, Send or
+  Stop from `static/composer-mode.js`, and `data-primary` drives the icon, the action and the accessible name
+  together. Anything that submits on both sides of `agent_start`, which means every harness, presses Enter
+  rather than clicking that button, because mid-run it is Stop. `docs/composer.md`.
 - The chat header carries five actions and nothing else: Voice, Preview, Settings, New session, Sign out
   (`tools/test_header_settings.mjs` asserts them in order). Theme, mascot style, header-mascot and Buddy
   visibility live in the Settings dialog, which is `#voice-settings-dialog` with its original voice tab.

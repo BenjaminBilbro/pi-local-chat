@@ -77,7 +77,7 @@ Browser-native ES modules. No bundler or framework.
 
 ### Live Prompt
 
-1. `chat.js` turns composer contents into a browser `prompt` command, carrying `delivery`: `"queue"` for Enter and the send button, `"now"` for the send-now arrow and Ctrl/Cmd+Enter.
+1. `chat.js` turns composer contents into a browser `prompt` command, carrying `delivery`: `"queue"` for Enter and the send button, `"now"` for the send-now arrow and Ctrl/Cmd+Enter. The round button is only Send when nothing is running; while a turn runs it is Stop, so Enter is the way to queue (see `docs/composer.md`).
 2. `socket.js` sends the JSON command over `/ws`.
 3. `websocket.py` lazily spawns the connection's `PiProcess`, if necessary, and maps `delivery` to pi's `streamingBehavior` (`followUp` / `steer`).
 4. `process.py` writes the pi RPC command to stdin.

@@ -425,7 +425,7 @@ async function runSession(chromeChild) {
         "(() => { const el = document.getElementById('user-input');"
         + ` el.value = ${JSON.stringify(PROMPT)};`
         + " el.dispatchEvent(new Event('input', { bubbles: true }));"
-        + " document.getElementById('send-btn').click(); return true; })()",
+        + " document.getElementById('user-input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return true; })()",
       );
       // Assistant content lives in the timeline, not in a bubble: a settled run is
       // .message.assistant > .timeline > .timeline-item.
@@ -480,32 +480,73 @@ async function runSession(chromeChild) {
 
     if (STAGE === 'chat' || STAGE === 'tool-running') {
       const geo = await evaluate(cdp, `(() => {
-        const box = (id) => {
-          const el = document.getElementById(id);
+        const box = (sel) => {
+          const el = sel.startsWith('.') ? document.querySelector(sel) : document.getElementById(sel);
           if (!el) return null;
           const r = el.getBoundingClientRect();
           return { top: r.top, bottom: r.bottom, left: r.left, width: r.width, height: r.height };
         };
-        return { input: box('user-input'), send: box('send-btn'), attach: box('attach-btn'), width: window.innerWidth };
+        return { input: box('user-input'), send: box('send-btn'), attach: box('attach-btn'),
+          bar: box('.input-bar'), width: window.innerWidth };
       })()`);
       if (geo && geo.input && geo.send && geo.attach) {
         const mid = (b) => b.top + b.height / 2;
-        const stacked = geo.send.top >= geo.input.bottom - 2;
-        const oneLine = Math.abs(mid(geo.attach) - mid(geo.send)) < 12;
-        if (geo.width < 700) {
-          const wrong = [];
-          if (!stacked) wrong.push(`Send top ${geo.send.top.toFixed(0)} is not below the field's bottom at ${geo.input.bottom.toFixed(0)}`);
-          if (!oneLine) wrong.push(`attach mid ${mid(geo.attach).toFixed(0)} is not on Send's line at ${mid(geo.send).toFixed(0)}`);
-          if (!(geo.attach.left < geo.send.left)) wrong.push(`attach left ${geo.attach.left.toFixed(0)} is not left of Send at ${geo.send.left.toFixed(0)}`);
-          if (wrong.length) {
-            throw new Error(`the phone composer (${geo.width} px) is not a field on top with its controls underneath: ${wrong.join('; ')}`);
-          }
-        } else if (stacked) {
-          throw new Error(
-            `the desktop composer (${geo.width} px) stacked its controls under the field ` +
-            `(Send top ${geo.send.top.toFixed(0)}, field bottom ${geo.input.bottom.toFixed(0)}): the phone rules leaked upward`,
-          );
+        const wrong = [];
+        /* One card at every width since 2026-11-18: the field on top, the controls on a line under it. The
+         * desktop used to put the controls beside the field, and sharing that line is what let a control
+         * appearing re-wrap the text. Both directions stay asserted: a guard that checks one half lets the
+         * other drift. */
+        if (geo.send.top < geo.input.bottom - 2) {
+          wrong.push(`Send top ${geo.send.top.toFixed(0)} is not below the field's bottom at ${geo.input.bottom.toFixed(0)}`);
         }
+        if (Math.abs(mid(geo.attach) - mid(geo.send)) >= 12) {
+          wrong.push(`attach mid ${mid(geo.attach).toFixed(0)} is not on Send's line at ${mid(geo.send).toFixed(0)}`);
+        }
+        if (!(geo.attach.left < geo.send.left)) {
+          wrong.push(`attach left ${geo.attach.left.toFixed(0)} is not left of Send at ${geo.send.left.toFixed(0)}`);
+        }
+        if (wrong.length) {
+          throw new Error(`the composer (${geo.width} px) is not a field on top with its controls underneath: ${wrong.join('; ')}`);
+        }
+
+        /* The invariant the flicker fix rests on, measured rather than described: growing the field and
+         * letting the Send-now chip appear must not move the control line or change the field's width. Both
+         * used to resize the field's own line, which re-wrapped what you had typed and shifted the
+         * conversation under the reader, and no DOM test could see it because it is geometry. */
+        const probe = `(() => {
+          const bar = document.querySelector('.input-bar').getBoundingClientRect();
+          const field = document.getElementById('user-input').getBoundingClientRect();
+          return JSON.stringify({ barHeight: bar.height, fieldWidth: field.width, fieldHeight: field.height,
+            sendLeft: document.getElementById('send-btn').getBoundingClientRect().left });
+        })()`;
+        const before = JSON.parse(await evaluate(cdp, probe));
+        await evaluate(cdp, "(() => { const el = document.getElementById('user-input');"
+          + " el.value = 'a message long enough that it has to wrap at least once in a composer this narrow,'"
+          + " + ' and the rest of it is here to make the field grow, which is the case that used to jump';"
+          + " el.dispatchEvent(new Event('input', { bubbles: true })); return true; })()");
+        await sleep(250);
+        const after = JSON.parse(await evaluate(cdp, probe));
+        if (!(after.fieldHeight > before.fieldHeight + 2)) {
+          throw new Error(`the field did not grow (${before.fieldHeight} to ${after.fieldHeight} px), `
+            + 'so the composer was never measured in the case that flickered');
+        }
+        const still = [];
+        if (Math.abs(after.barHeight - before.barHeight) > 0.5) {
+          still.push(`the control line changed height from ${before.barHeight.toFixed(1)} to ${after.barHeight.toFixed(1)}`);
+        }
+        if (Math.abs(after.fieldWidth - before.fieldWidth) > 0.5) {
+          still.push(`the field changed width from ${before.fieldWidth.toFixed(1)} to ${after.fieldWidth.toFixed(1)}`);
+        }
+        if (Math.abs(after.sendLeft - before.sendLeft) > 0.5) {
+          still.push(`Send moved left from ${before.sendLeft.toFixed(1)} to ${after.sendLeft.toFixed(1)}`);
+        }
+        if (still.length) {
+          throw new Error(`a growing field moved the composer: ${still.join('; ')}`);
+        }
+        // Back to an empty composer, so the picture shows the state the stage is named for.
+        await evaluate(cdp, "(() => { const el = document.getElementById('user-input');"
+          + " el.value = ''; el.dispatchEvent(new Event('input', { bubbles: true })); return true; })()");
+        await sleep(120);
       }
     }
 
@@ -939,7 +980,7 @@ async function runSession(chromeChild) {
         `(() => { const el = document.getElementById('user-input');`
         + ` el.value = ${JSON.stringify(`/preview store ${source}`)};`
         + " el.dispatchEvent(new Event('input', { bubbles: true }));"
-        + " document.getElementById('send-btn').click(); return true; })()",
+        + " document.getElementById('user-input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return true; })()",
       );
       await waitFor(
         cdp,
@@ -968,7 +1009,7 @@ async function runSession(chromeChild) {
         `(() => { const el = document.getElementById('user-input');`
         + ` el.value = ${JSON.stringify(`/preview store ${source}`)};`
         + " el.dispatchEvent(new Event('input', { bubbles: true }));"
-        + " document.getElementById('send-btn').click(); return true; })()",
+        + " document.getElementById('user-input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return true; })()",
       );
       await waitFor(
         cdp,
@@ -983,7 +1024,7 @@ async function runSession(chromeChild) {
         `(() => { const el = document.getElementById('user-input');`
         + " el.value = '/preview close';"
         + " el.dispatchEvent(new Event('input', { bubbles: true }));"
-        + " document.getElementById('send-btn').click(); return true; })()",
+        + " document.getElementById('user-input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return true; })()",
       );
       await waitFor(
         cdp,
@@ -1008,12 +1049,19 @@ async function runSession(chromeChild) {
         const typed = ` const el = document.getElementById('user-input');`
           + ` el.value = ${JSON.stringify(text)};`
           + " el.dispatchEvent(new Event('input', { bubbles: true }));";
-        const clicked = button
-          ? ` document.getElementById('${button}').click();`
-          : '';
-        return `(() => {${typed}${clicked} return true; })()`;
+        /* "Send" in a stage means press Enter. The composer's round button is Stop while a turn runs, so a
+         * stage that clicks it mid-run would cancel the very run it is waiting for; Enter queues when running
+         * and sends when idle, which is the path Ben actually uses. `null` still means "type it and leave it
+         * there", which is how the stage gets a chip without sending anything. */
+        const pressed = button === null
+          ? ''
+          : button === 'steer-btn'
+            ? ` document.getElementById('steer-btn').click();`
+            : " el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));";
+        return `(() => {${typed}${pressed} return true; })()`;
       };
       const submit = (text, button = 'send-btn') => evaluate(cdp, script(text, button));
+
 
       const waitingFor = (text) =>
         "Array.from(document.querySelectorAll('#messages > .message.user'))"
@@ -1021,7 +1069,52 @@ async function runSession(chromeChild) {
 
       await submit('Write me a very long story about a robot.');
       await waitFor(cdp, "document.querySelector('.message.assistant .timeline-item')", 30000);
+
+      /* The composer's one primary button has to be Stop right now: a turn is streaming. Asserted here rather
+       * than only in the tool stages because this is the cheapest stage that has a live turn, and because the
+       * state that matters most is the one where you have also typed something. */
+      const primaryWhileRunning = JSON.parse(await evaluate(cdp,
+        "(() => { const b = document.getElementById('send-btn');"
+        + " return JSON.stringify({ mode: b.dataset.primary, armed: b.disabled,"
+        + " label: b.getAttribute('aria-label') }); })()"));
+      if (primaryWhileRunning.mode !== 'stop') {
+        fail('the primary button did not become Stop while a turn ran', JSON.stringify(primaryWhileRunning));
+      }
+      if (primaryWhileRunning.armed) fail('the stop control was armed before anyone clicked it', JSON.stringify(primaryWhileRunning));
+      if (!/stop/i.test(primaryWhileRunning.label || '')) {
+        fail('the stop control still announced itself as something else', JSON.stringify(primaryWhileRunning));
+      }
+
+      /* Typing during a turn used to be the flicker: the Send-now pill appeared in the field's line and took
+       * about 110 px from it, which re-wrapped the text and resized the conversation. Asserted in pixels here,
+       * because the shape is what the fix is. */
+      const beforeTyping = JSON.parse(await evaluate(cdp,
+        "(() => { const f = document.getElementById('user-input').getBoundingClientRect();"
+        + " const s = document.getElementById('send-btn').getBoundingClientRect();"
+        + " return JSON.stringify({ fieldWidth: f.width, fieldHeight: f.height, sendLeft: s.left }); })()"));
       await submit('Actually make it about a lighthouse.', 'steer-btn');
+      await evaluate(cdp, "(() => { const el = document.getElementById('user-input');"
+        + " el.value = 'and one more line of text so the field has to grow taller than one line at all';"
+        + " el.dispatchEvent(new Event('input', { bubbles: true })); return true; })()");
+      await sleep(300);
+      const afterTyping = JSON.parse(await evaluate(cdp,
+        "(() => { const f = document.getElementById('user-input').getBoundingClientRect();"
+        + " const s = document.getElementById('send-btn').getBoundingClientRect();"
+        + " return JSON.stringify({ fieldWidth: f.width, fieldHeight: f.height, sendLeft: s.left }); })()"));
+      if (!(afterTyping.fieldHeight > beforeTyping.fieldHeight + 2)) {
+        throw new Error(`the field did not grow mid-turn (${beforeTyping.fieldHeight} to `
+          + `${afterTyping.fieldHeight} px), so nothing was measured in the case that flickered`);
+      }
+      const moved = [];
+      if (Math.abs(afterTyping.fieldWidth - beforeTyping.fieldWidth) > 0.5) {
+        moved.push(`field width ${beforeTyping.fieldWidth.toFixed(1)} to ${afterTyping.fieldWidth.toFixed(1)}`);
+      }
+      if (Math.abs(afterTyping.sendLeft - beforeTyping.sendLeft) > 0.5) {
+        moved.push(`Send left ${beforeTyping.sendLeft.toFixed(1)} to ${afterTyping.sendLeft.toFixed(1)}`);
+      }
+      if (moved.length) {
+        throw new Error(`typing mid-turn moved the composer: ${moved.join('; ')}`);
+      }
 
       if (STAGE === 'queue') {
         await waitFor(cdp, "document.querySelector('#queue-strip .queue-chip')", 15000);
@@ -1055,7 +1148,7 @@ async function runSession(chromeChild) {
       await evaluate(cdp, "(() => { const el = document.getElementById('user-input');"
         + " el.value = 'Run something slow.';"
         + " el.dispatchEvent(new Event('input', { bubbles: true }));"
-        + " document.getElementById('send-btn').click(); return true; })()");
+        + " document.getElementById('user-input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return true; })()");
       try {
         await waitFor(
           cdp,
@@ -1086,7 +1179,7 @@ async function runSession(chromeChild) {
       await evaluate(cdp, "(() => { const el = document.getElementById('user-input');"
         + " el.value = 'Write me a file.';"
         + " el.dispatchEvent(new Event('input', { bubbles: true }));"
-        + " document.getElementById('send-btn').click(); return true; })()");
+        + " document.getElementById('user-input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return true; })()");
 
       const peek = "(() => { const item = document.querySelector('.timeline-item.tool');"
         + " return JSON.stringify({status: item?.dataset.toolStatus || '',"
@@ -1178,7 +1271,7 @@ async function runSession(chromeChild) {
       await evaluate(cdp, "(() => { const el = document.getElementById('user-input');"
         + " el.value = 'Work through the repo and write the notes.';"
         + " el.dispatchEvent(new Event('input', { bubbles: true }));"
-        + " document.getElementById('send-btn').click(); return true; })()");
+        + " document.getElementById('user-input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return true; })()");
 
       try {
         // The stub's closing sentence, so the reading below happens on the settled timeline.
@@ -1329,7 +1422,7 @@ async function runSession(chromeChild) {
         "(() => { const el = document.getElementById('user-input');"
         + " el.value = 'Write me something long.';"
         + " el.dispatchEvent(new Event('input', { bubbles: true }));"
-        + " document.getElementById('send-btn').click(); return true; })()",
+        + " document.getElementById('user-input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return true; })()",
       );
       await waitFor(cdp, "document.querySelectorAll('.message.assistant .timeline-item').length > 0", 30000);
       // The child takes about half a second to spawn, and the waiting indicator is not a reliable
@@ -1409,7 +1502,7 @@ async function runSession(chromeChild) {
       await evaluate(cdp, "(() => { const el = document.getElementById('user-input');"
         + " el.value = 'Run the long job.';"
         + " el.dispatchEvent(new Event('input', { bubbles: true }));"
-        + " document.getElementById('send-btn').click(); return true; })()");
+        + " document.getElementById('user-input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return true; })()");
 
       try {
         await waitFor(cdp, 'document.querySelector(\'.timeline-item.tool[data-tool-status="running"]\')', 40000);
@@ -1417,15 +1510,15 @@ async function runSession(chromeChild) {
         throw new Error(`${error.message}. This stage needs the server started with FAKE_RPC_STREAM_TOOLS=1 FAKE_RPC_TOOL_MS=25000 PI_CHAT_PI_BIN=tools/fake_rpc_pi.py.`);
       }
 
-      const stopVisible = await evaluate(cdp, "(() => { const b = document.getElementById('stop-run-btn');"
-        + ' return Boolean(b) && b.hidden === false; })()');
+      const stopVisible = await evaluate(cdp, "(() => { const b = document.getElementById('send-btn');"
+        + " return b.dataset.primary === 'stop' && b.disabled === false; })()");
       if (!stopVisible) fail('nothing in the composer could stop a live run');
 
       // Queue something first, so handing it back is something the stage can observe.
       await evaluate(cdp, "(() => { const el = document.getElementById('user-input');"
         + " el.value = 'second thing please';"
         + " el.dispatchEvent(new Event('input', { bubbles: true }));"
-        + " document.getElementById('send-btn').click(); return true; })()");
+        + " document.getElementById('user-input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return true; })()");
       await waitFor(cdp, "document.querySelectorAll('#queue-strip .queue-chip').length > 0", 20000);
 
       const hit = await clickAt('.timeline-item.tool .tool-line');
@@ -1482,14 +1575,14 @@ async function runSession(chromeChild) {
       }
 
       const after = JSON.parse(await evaluate(cdp,
-        "(() => JSON.stringify({ stopHidden: document.getElementById('stop-run-btn').hidden,"
+        "(() => JSON.stringify({ mode: document.getElementById('send-btn').dataset.primary,"
         + " composer: document.getElementById('user-input').value,"
         + " chips: document.querySelectorAll('#queue-strip .queue-chip').length }))()"));
       if (after.chips !== 0) fail('a queued chip survived the cancel', JSON.stringify(after));
       if (!after.composer.includes('second thing please')) {
         fail('the queued message was not handed back to the composer', JSON.stringify(after));
       }
-      if (after.stopHidden !== true) fail('the stop control stayed armed after the run settled', JSON.stringify(after));
+      if (after.mode === 'stop') fail('the stop control stayed armed after the run settled', JSON.stringify(after));
 
       await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
       await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
@@ -1514,18 +1607,22 @@ async function runSession(chromeChild) {
       await evaluate(cdp, "(() => { const el = document.getElementById('user-input');"
         + " el.value = 'Run the long job again.';"
         + " el.dispatchEvent(new Event('input', { bubbles: true }));"
-        + " document.getElementById('send-btn').click(); return true; })()");
+        + " document.getElementById('user-input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return true; })()");
       await waitFor(cdp, 'document.querySelector(\'.timeline-item.tool[data-tool-status="running"]\')', 40000);
-      const armed = await evaluate(cdp, "!document.getElementById('stop-run-btn').hidden");
+      const primaryState = "(() => { const b = document.getElementById('send-btn');"
+        + " return JSON.stringify([b.dataset.primary, b.disabled]); })()";
+      const armed = await evaluate(cdp, `(() => JSON.parse(${JSON.stringify(primaryState)})[0] === 'stop')()`);
       if (!armed) fail('the stop control did not arm for the second run', 'cannot test that leaving disarms it');
 
       await evaluate(cdp, "document.getElementById('new-session-btn').click(); true");
       await sleep(600);
-      if (await evaluate(cdp, "!document.getElementById('stop-run-btn').hidden")) {
-        fail('starting a new session left the stop control armed with no run to stop');
+      const settled = JSON.parse(await evaluate(cdp, primaryState));
+      if (settled[0] === 'stop') {
+        fail('starting a new session left the stop control armed with no run to stop', JSON.stringify(settled));
       }
-      if (await evaluate(cdp, "document.getElementById('stop-run-btn').disabled")) {
-        fail('a cancel in flight survived starting a new session, leaving the control disabled forever');
+      if (settled[1] === true) {
+        fail('a cancel in flight survived starting a new session, leaving the control disabled forever',
+          JSON.stringify(settled));
       }
 
       await sleep(200);
@@ -2002,7 +2099,7 @@ async function runSession(chromeChild) {
         `(() => { const el = document.getElementById('user-input');`
         + ` el.value = ${JSON.stringify(`/preview store ${source}`)};`
         + " el.dispatchEvent(new Event('input', { bubbles: true }));"
-        + " document.getElementById('send-btn').click(); return true; })()",
+        + " document.getElementById('user-input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return true; })()",
       );
       await waitFor(cdp, settled, 30000);
       // The frame's content is unreadable from here on purpose, so give the viewer or the document

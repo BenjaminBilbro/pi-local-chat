@@ -81,9 +81,16 @@ if (payload.mode === 'live') {
   const submit = (text, target) => {
     input.value = text;
     input.dispatchEvent(new window.Event('input', { bubbles: true }));
-    const button = document.getElementById(target === 'steer' ? 'steer-btn' : 'send-btn');
-    if (!button) throw new Error('composer is missing its submit button');
-    button.click();
+    if (target === 'steer') {
+      const chip = document.getElementById('steer-btn');
+      if (!chip) throw new Error('composer is missing its send-now chip');
+      chip.click();
+      return;
+    }
+    /* Enter, not the round button. This harness submits on both sides of `agent_start` on purpose, and the
+     * round button is Stop while a turn runs: clicking it mid-run would cancel the run the fixture is about. */
+    input.dispatchEvent(new window.KeyboardEvent('keydown',
+      { key: 'Enter', bubbles: true, cancelable: true }));
   };
 
   if (payload.submitText) submit(payload.submitText);

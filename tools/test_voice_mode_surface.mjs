@@ -163,9 +163,15 @@ const prompts = (commands) => commands.filter((c) => c.type === 'prompt');
 
 await check('the composer carries exactly one voice-mode control', () => {
   assert.ok(modeButton, 'no #voice-mode-btn in index.html');
-  assert.equal(modeButton.closest('.input-buttons'), document.querySelector('.input-buttons'));
+  /* It is a chip in the strip beside Attach since 2026-11-18, because a control that shares the field's line
+     is a control that can resize the field. It starts hidden: while nothing is running the primary button is
+     the way in, and the chip is the route that stays available once that slot has become Stop. */
+  assert.ok(modeButton.closest('.composer-chips'), 'the voice control is not in the composer chip strip');
   assert.equal(document.querySelectorAll('[id^="voice-mode-btn"]').length, 1);
   assert.equal(modeButton.getAttribute('aria-pressed'), 'false');
+  assert.ok(modeButton.hidden, 'the chip is for a running turn, and this composer is idle');
+  assert.equal(document.querySelector('#send-btn').dataset.primary, 'voice',
+    'idle and empty, so the primary button has to be the way into Voice Mode');
 });
 
 await check('the voice surface starts hidden and inert', () => {

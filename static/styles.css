@@ -759,59 +759,9 @@ html[data-mascot="pi"] .header-mascot {
   color: var(--text-subtle);
 }
 
-/* Stop moved into the composer on 2026-11-17 (S4): a control that ends the turn belongs where the hands are
- * during the turn, not in the chrome above it. It is the one control in this surface allowed the error colour,
- * because it is the one that throws away work in progress. */
-.stop-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 44px;
-  padding: 0 12px;
-  border: 1px solid var(--error-border);
-  /* Same pill as Send now, so the composer reads as one group of actions at one size. */
-  border-radius: 9999px;
-  background: var(--error-surface);
-  color: var(--error);
-  font-family: inherit;
-  font-size: var(--font-size-xs);
-  font-weight: 500;
-  white-space: nowrap;
-  cursor: pointer;
-  flex-shrink: 0;
-  transition: background 0.15s var(--ease-out), color 0.15s var(--ease-out);
-}
-
-
-.stop-btn:hover:not([disabled]) {
-  background: var(--error);
-  color: var(--accent-contrast);
-}
-
-/* Armed: the click landed and pi has not answered yet. `abort` is only acknowledged once the session goes
- * idle, which is the same wait the reader is trying to escape, so this state is honest rather than snappy. */
-.stop-btn[disabled] {
-  opacity: 0.55;
-  cursor: progress;
-}
-
-/* At phone widths the composer row holds the field, Stop, the mic and Send, and a third labelled control
- * leaves the field too narrow to read what you just typed. The square carries the meaning; the words move to
- * screen-reader text rather than disappearing, so the button is still announced as Stop. */
-@media (max-width: 560px) {
-  .stop-btn {
-    padding: 0 10px;
-  }
-
-  .stop-btn-label {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-  }
-}
+/* Stop used to be its own labelled pill beside Send. It is the primary button's second icon now, which is
+ * why there is no `.stop-btn` rule here: the error colours live on `.send-btn[data-primary="stop"]`, and the
+ * armed state on its [disabled]. */
 
 /* ── Tool call detail ────────────────────────────────────── */
 .tool-detail-overlay {
@@ -1175,70 +1125,128 @@ body.tool-detail-open {
   flex-shrink: 0;
 }
 
-.input-row {
+/* The composer card: the field on the first line, every control on a second line that is always 44px tall.
+ * Desktop and phone share this shape since 2026-11-18, which is also the flicker fix. When the controls sat
+ * beside the field, one appearing or relabelling took width from the textarea, the textarea re-wrapped, its
+ * autosized height changed, and the conversation row resized under the reader. */
+.input-card {
   display: flex;
-  gap: 8px;
-  /* Centred, not bottom-aligned. The field is as tall as its content and the composer controls are a fixed
-   * 44px (42 for the mic until 2026-11-17), so `flex-end` sat every control a couple of pixels below the
-   * field's middle line: Ben read it as the buttons sitting low. One-line input is the normal case and this
-   * is what makes the row read as one line; when the field grows the controls float mid-height, which is
-   * what every other chat composer on his phone does.
-   */
-  align-items: center;
+  flex-direction: column;
+  gap: 2px;
   max-width: 720px;
   margin: 0 auto;
+  padding: 6px 8px 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg);
+  transition: border-color 0.15s ease;
 }
 
-.input-buttons {
-  /* Stop, Send now, the microphone and Send. On a desktop this is transparent: the group sits in the row
-     with the same 8 px the row was already giving them individually. It exists so a phone can move the whole
-     set below the field in one step. */
+/* The ring lives on the card rather than the field, because on a phone it always did and the field is now
+   transparent at every width. */
+.input-card:focus-within {
+  border-color: var(--accent);
+}
+
+.input-bar {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex: none;
+  /* The invariant, and the reason the card cannot resize itself: the bar is 44px whether it holds one button
+     or a button, a microphone and two chips. A taller bar would be a height source as good as the old
+     wrapping field, which is why nothing here is allowed to wrap. */
+  min-height: 44px;
 }
 
-.input-wrapper {
-  flex: 1;
-  position: relative;
-}
-
-.input-wrapper textarea {
+.input-card #user-input,
+#user-input {
   width: 100%;
-  padding: 10px 14px;
-  padding-right: 40px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--bg);
+  padding: 6px 0 2px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   color: var(--text);
   font-size: var(--font-size-base);
   font-family: inherit;
   resize: none;
   outline: none;
-  min-height: 42px;
+  min-height: 30px;
+  /* One cap, in one place. `handleComposerInput` and `handleCancelResult` used to disagree at 150 and 200,
+     so the same text was two different heights depending on which path measured it last. */
   max-height: 150px;
   line-height: var(--line-height-base);
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  box-shadow: none;
 }
 
-.input-wrapper textarea:focus {
-  border-color: var(--accent);
-  /* 3px ring at the brand focus alpha. This used --accent-glow (16%), which is too faint
-     to read as a focus state. */
-  box-shadow: 0 0 0 3px var(--focus-ring);
-}
-
-.input-wrapper textarea::placeholder {
+#user-input::placeholder {
   color: var(--text-subtle);
 }
 
-.input-actions {
-  position: absolute;
-  right: 6px;
-  bottom: 6px;
+/* Contextual chips: Attach, Send now, Voice. They share one line so a chip appearing moves a chip, never the
+ * field, and they clip rather than wrap. */
+.composer-chips {
   display: flex;
-  gap: 2px;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.composer-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 9999px;
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: var(--font-size-xs);
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  flex: none;
+  transition: background 0.15s var(--ease-out), color 0.15s var(--ease-out),
+    border-color 0.15s var(--ease-out);
+}
+
+.composer-chip:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Send now is the accent chip; Voice is neutral until it is on. */
+#steer-btn {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+#steer-btn:hover {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+/* Below the phone's own tap target, and deliberately: this chip is a secondary route to Voice Mode, whose
+ * primary route is the button you are already aiming at. The label is screen-reader text so the chip strip
+ * stays one line tall. */
+#voice-mode-btn .chip-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.input-buttons {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
 }
 
 .input-btn {
@@ -1251,7 +1259,10 @@ body.tool-detail-open {
   transition: color 0.15s ease;
   display: flex;
   align-items: center;
+  flex: none;
 }
+
+.input-btn:hover { color: var(--text-muted); }
 
 .input-btn:hover { color: var(--text-muted); }
 
@@ -1290,6 +1301,60 @@ body.tool-detail-open {
   cursor: not-allowed;
   transform: none;
   box-shadow: none;
+}
+
+/* One box, three icons, whichever one the moment offers. The box is 44px in every state, which is the whole
+ * reason a state change cannot move the layout: the icon is chosen here and the action, label and tooltip are
+ * set together in `updatePrimary`, so a state where CSS shows an arrow and JS performs a stop is a
+ * two-file mistake rather than a slip. */
+.send-btn .i-stop,
+.send-btn .i-voice {
+  display: none;
+}
+
+.send-btn[data-primary="voice"] .i-send,
+.send-btn[data-primary="stop"] .i-send {
+  display: none;
+}
+
+.send-btn[data-primary="voice"] .i-voice {
+  display: block;
+}
+
+.send-btn[data-primary="stop"] .i-stop {
+  display: block;
+}
+
+/* Voice Mode is an offer, not the primary action of the moment, so it does not wear the Lava fill. */
+.send-btn[data-primary="voice"] {
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+  border-color: var(--border);
+}
+
+.send-btn[data-primary="voice"]:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* Stop is the one control in this surface allowed the error colour, because it is the one that throws away
+ * work in progress. Armed (`disabled`) means the click landed and pi has not answered yet: `abort` is only
+ * acknowledged once the session goes idle, which is the same wait the reader is trying to escape. */
+.send-btn[data-primary="stop"] {
+  background: var(--error-surface);
+  color: var(--error);
+  border-color: var(--error-border);
+}
+
+.send-btn[data-primary="stop"]:hover:not(:disabled) {
+  background: var(--error);
+  color: var(--accent-contrast);
+}
+
+.send-btn[data-primary="stop"][disabled] {
+  opacity: 0.55;
+  cursor: progress;
 }
 
 /* Mic toggle button */
@@ -1518,40 +1583,7 @@ body.tool-detail-open {
   background: var(--bg-subtle);
 }
 
-/* The send-now arrow: outline until hovered, so a mid-run composer shows one Lava action, not two. */
-.steer-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  height: 44px;
-  padding: 0 12px;
-  border: 1px solid var(--accent);
-  /* Pill, to sit beside the round send button without competing with it. */
-  border-radius: 9999px;
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-family: inherit;
-  font-size: var(--font-size-xs);
-  font-weight: 500;
-  white-space: nowrap;
-  cursor: pointer;
-  flex-shrink: 0;
-  transition: background 0.15s var(--ease-out), color 0.15s var(--ease-out);
-}
-
-
-.steer-btn:hover {
-  background: var(--accent);
-  color: var(--accent-contrast);
-}
-
-/* A message that is waiting sits in the chip strip, not in the flow: it has not reached the model,
- * and the transcript only records it where pi eventually delivers it. */
-
-@media (max-width: 560px) {
-  .steer-btn { padding: 0 10px; }
-  .steer-btn-label { display: none; }
-}
+/* Send now is a chip now: see `#steer-btn` in the composer card rules. */
 
 /* Welcome */
 .welcome {
@@ -1680,7 +1712,7 @@ html[data-mascot="pi"] .landing-page-avatar img {
   /* Covered by --chat-center-shift, which accounts for the sidebar and the pane together. */
 }
 
-.input-area.landing-mode .input-row {
+.input-area.landing-mode .input-card {
   max-width: 100%;
 }
 
@@ -2373,7 +2405,7 @@ body.has-landing-page {
   color: var(--text);
 }
 
-.input-wrapper {
+.input-card {
   --text: var(--text);
   --text-dim: var(--text-muted);
   --detail: var(--accent);
@@ -3530,7 +3562,7 @@ body:has(#chat-screen[data-doc-open="true"]) .buddy-stage {
     padding: 8px 10px;
   }
 
-  .input-wrapper textarea::placeholder {
+  #user-input::placeholder {
     opacity: 1;
     color: var(--text-subtle);
   }
@@ -3582,63 +3614,12 @@ body:has(#chat-screen[data-doc-open="true"]) .buddy-stage {
      advertised Ctrl+\, which is not a shortcut in this app, and the line is now about a button that is on
      screen at every width, so it stays. */
 
-  /* Composer on a phone: one card, the field on the first line and the controls on the line under it. The
-     desktop puts the controls beside the field because the field can afford to lose 150 px; on 390 px that
-     left the typing area about three characters wide once Stop appeared, and Send, the microphone and Stop
-     were a column of circles nobody could read as part of the thing they were typing into.
-
-     `.input-wrapper` is `display: contents`, which promotes the textarea and the attach button to be grid
-     items directly: the field spans both columns, the attach button takes the left of the second row and the
-     control group the right, which is the arrangement every composer under a phone keyboard uses. The card
-     border moves from the textarea to the row, so the focus ring has to move with it. */
-  .input-row {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    grid-template-areas:
-      "text text"
-      "attach controls";
-    align-items: center;
-    gap: 2px 8px;
-    padding: 6px 8px 6px 12px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
-    background: var(--bg);
-  }
-
-  .input-row:focus-within {
-    border-color: var(--accent);
-  }
-
-  .input-wrapper {
-    display: contents;
-  }
-
-  .input-wrapper textarea {
-    grid-area: text;
-    padding: 6px 0 0;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
-    box-shadow: none;
-  }
-
-  .input-wrapper textarea:focus {
-    border-color: transparent;
-    box-shadow: none;
-  }
-
-  .input-actions {
-    grid-area: attach;
-    position: static;
-  }
-
-  .input-buttons {
-    grid-area: controls;
-    justify-self: end;
-  }
-
-  /* The landing card is already a card; a second border inside it would be a frame around a frame. */
-  .input-area.landing-mode .input-row {
+  /* The composer card is the same shape at every width since 2026-11-18, so there is no phone-specific
+     composer here any more. There used to be a grid that promoted the textarea and the attach button out of
+     their wrappers to stack the controls under the field; the desktop adopted that shape because sharing a
+     line with the controls was what made the field re-wrap. The landing card is already a card, so it drops
+     its own border. */
+  .input-area.landing-mode .input-card {
     border: 0;
     background: transparent;
     padding: 6px 4px;
@@ -3716,24 +3697,11 @@ body:has(#chat-screen[data-doc-open="true"]) .buddy-stage {
    the canvas: a gradient that reaches the canvas edge draws a soft square, which is a clipping artifact that
    looks like a design choice in a thumbnail. The glow reaches zero at 0.44 of the canvas either way, so this
    number only buys empty margin, and 2.1 bought a 60 px void between the orb and the strip for nothing. */
-.voice-mode-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 40px;
-  height: 40px;
-  flex: 0 0 auto;
-  border-radius: 50%;
-  border: none;
+.voice-mode-btn[aria-pressed="true"] {
+  border-color: var(--accent);
   background: var(--accent);
   color: var(--accent-contrast);
-  cursor: pointer;
-  transition: background 0.15s ease, transform 0.1s ease;
 }
-
-.voice-mode-btn:hover { background: var(--accent-hover); }
-.voice-mode-btn:active { transform: scale(0.96); }
-.voice-mode-btn[aria-pressed="true"] { background: var(--accent-2); box-shadow: 0 0 0 3px var(--accent-glow); }
 
 .voice-screen {
   position: fixed;

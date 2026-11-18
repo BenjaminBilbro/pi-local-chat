@@ -121,45 +121,53 @@
     <div class="queue-strip" id="queue-strip" role="list" aria-label="Queued messages" hidden></div>
 
     <div class="input-area">
-      <div class="input-row">
-        <div class="input-wrapper">
-          <textarea id="user-input" placeholder="Message pi..." rows="1"></textarea>
-          <div class="input-actions">
-            <button class="input-btn" id="attach-btn" type="button" aria-label="Attach file">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+      <!-- The composer is a card with the field on the first line and every control on a second line of a
+           fixed 44px. That shape is the flicker fix: when the controls shared the field's line, each one that
+           appeared or changed label took pixels from the textarea, which re-wrapped what you had typed,
+           which changed the field's height, which resized the conversation. Two claims in
+           tools/test_composer_layout.mjs and one screenshot stage keep the bar's height constant and the
+           field's width equal to the card's. -->
+      <div class="input-card">
+        <textarea id="user-input" placeholder="Message pi..." rows="1"></textarea>
+        <div class="input-bar">
+          <div class="composer-chips">
+            <button class="input-btn" id="attach-btn" type="button" aria-label="Attach file"
+                    title="Attach a file: images, PDF or text">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+            </button>
+            <!-- Contextual chips live here rather than beside the field, because a chip that shares the
+                 field's line is a control that can resize the field. They also never wrap: a wrapping chip
+                 row would just be a new height source, so overflow is clipped. -->
+            <button class="composer-chip" id="steer-btn" type="button" aria-label="Send now" hidden
+                    title="Send now: lands after the current tool calls">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2 4.5 13.5H11l-1 8.5 8.5-11.5H12l1-8.5Z"/></svg>
+              <span class="chip-label">Send now</span>
+            </button>
+            <!-- The one Voice Mode control, and the reason it is a chip that only shows while a turn runs:
+                 the primary button is the entry point the rest of the time, and Ben's rule is that if he is
+                 typing he is not about to start talking. It stays in the markup rather than built in JS
+                 because it has a pressed state worth asserting in a screenshot. -->
+            <button class="composer-chip voice-mode-btn" id="voice-mode-btn" type="button" hidden
+                    aria-pressed="false" aria-label="Voice mode"
+                    title="Voice mode: talk and listen. The conversation and every tool call are hidden while it is on, and everything the model says is spoken aloud.">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 10v4M8 6v12M12 3v18M16 7v10M20 10v4"/></svg>
+              <span class="chip-label">Voice</span>
             </button>
           </div>
-        </div>
-        <!-- Stop lives here, beside Send, because that is where attention is during a turn, and it only
-             exists while a turn is running. The id still says "run" because pi's protocol calls a turn a
-             run: this clears pi's queue and aborts the turn, and the pi child itself keeps running. Owned
-             by static/chat.js, which is also what keeps the tool-detail dialog in step with it. -->
-        <!-- The controls the composer groups on the right on a desktop. On a phone they move under 
-            the field, so they have to be one thing that moves. `chat.js` appends the microphone to 
-            this wrapper by way of `sendButton.parentElement`. -->
-        <div class="input-buttons">
-          <!-- Voice Mode: one button, and when it is on this composer, the history and every tool call are
-               gone until it is turned off again. Kept in the markup rather than built in JS the way the
-               microphone button is, because it has a pressed state worth asserting in a screenshot.
-               The icon is Feather's `mic` path verbatim; it is the filled circle that tells it apart from the
-               dictation microphone next to it, which puts words in this field instead of holding a
-               conversation. -->
-          <button class="voice-mode-btn" id="voice-mode-btn" type="button" aria-pressed="false"
-                  aria-label="Voice mode" title="Voice mode: talk and listen. The conversation and every tool call are hidden while it is on, and everything the model says is spoken aloud.">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
-          </button>
-          <button class="stop-btn" id="stop-run-btn" type="button" hidden
-                  title="Stop this turn: the running tool is killed and queued messages come back here. The pi session keeps running.">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
-            <span class="stop-btn-label">Stop</span>
-          </button>
-          <button class="steer-btn" id="steer-btn" type="button" aria-label="Send now" title="Send now: lands after the current tool calls" hidden>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2 4.5 13.5H11l-1 8.5 8.5-11.5H12l1-8.5Z"/></svg>
-            <span class="steer-btn-label">Send now</span>
-          </button>
-          <button class="send-btn" id="send-btn" type="button" aria-label="Send message" disabled>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
-          </button>
+          <div class="input-buttons">
+            <!-- `createMicButton` in static/chat.js inserts the dictation microphone here, before Send. -->
+            <!-- One slot, three functions, whichever one the moment actually offers: Voice Mode when there is
+                 nothing to send, Send when there is text and no turn is running, Stop while a turn runs. The
+                 box is 44px in every state, so changing the icon cannot move the layout, and the icon is
+                 chosen by `data-primary` in CSS while the label and the action are set together in JS.
+                 Stop wins over Send while running because Enter queues, so sending never needed this button. -->
+            <button class="send-btn" id="send-btn" type="button" data-primary="voice" aria-label="Voice mode"
+                    title="Voice mode: talk and listen">
+              <svg class="i-send" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+              <svg class="i-stop" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+              <svg class="i-voice" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 10v4M8 6v12M12 3v18M16 7v10M20 10v4"/></svg>
+            </button>
+          </div>
         </div>
       </div>
     </div>
