@@ -303,9 +303,11 @@ STT_BEAM_SIZE = int(os.environ.get("PI_CHAT_STT_BEAM_SIZE", "1"))
 #
 # Re-measured 2026-11-18 after voice mode shipped, because Ben asked for about 0.1 s less and the number was
 # worth checking rather than repeating (`tools/stt_probe.py realtime --sweep`, production config: small.en,
-# int8, beam 1, this machine). 0.5 s does exactly what he asked and exactly what the note above says: it takes
-# 70-165 ms off every short turn and puts `speech-story.wav` from word error 0.0 to 0.80. A request with two
-# sentences comes back with one of them. Nothing about the echo work changed that.
+# int8, beam 1, this machine). 0.5 s puts `speech-story.wav` from word error 0.0 to 0.80: a request with two
+# sentences comes back with one of them, and nothing about the echo work changed that. The latency it appeared
+# to buy, 70-165 ms, is since retracted - with strata on the same cores the recorder's queue falls behind real
+# time and `final_ms` measures that backlog instead (see the correction at the top of `docs/stt-latency.md`).
+# Word error is contention-independent, so the cost stands and the saving does not.
 #
 # The alternative that looked right is also a no. `silero_deactivity_detection=True` fixes the OTHER complaint
 # from the same live run - a creaking chair holding the gate open so the message never sent, which reproduces

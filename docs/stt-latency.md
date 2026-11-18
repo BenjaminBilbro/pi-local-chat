@@ -19,6 +19,30 @@ so the VAD's `post_speech_silence_duration` wait is inside the number. That is t
 they stop talking. It also records the first realtime partial, timed from the start of speech, which is what
 the voice-mode orb has to react to.
 
+## Corrected the same day: absolute latency here is CPU-contended, and the probe shows it
+
+Running the same instrument over Ben's own recordings, `final_ms` landed on the *tail length* for every clean
+clip: a 3.0 s trailing silence produced 3000 ms on all of them, at every setting. A VAD waiting 0.6 s does not
+agree to be timed at 3000 ms. What is happening is that the recorder's queue falls behind real time, because
+this box is running strata on the same cores while the probe transcribes, so the number being reported is
+mostly backlog rather than the silence window.
+
+So treat every absolute latency in this document as an upper bound measured under load, and treat the
+cross-setting latency deltas quoted earlier (0.6 s against 0.5 s, "70-165 ms") as inside the noise. Re-measure
+with strata stopped before quoting an absolute figure at anyone; `tools/stt_probe.py` prints free RAM per
+configuration for exactly this reason, and 844 MB free next to a 72 GB strata is the tell.
+
+What survives, because it is content rather than timing, or a difference measured in one sweep on one audio
+under the same contention: word error rates, turn counts, and these three relative findings from Ben's real
+room (chair creaking in the silence after he stops talking, at the level his recording actually has, p90 about
+8 dB over his room floor):
+
+| setting | trailing-chair take | clean two-sentence take |
+|---|---|---|
+| as shipped, no gate | about 2.9 s slower to close | first words mangled: word error 0.12 ("figure out" became "care") |
+| energy gate `12:9:200` | **no extra delay at all** | **word error 0.00** |
+| silence window 1.0 s, gate on | about 3.2 s slower than 0.6 s | word error 0.06 |
+
 ## The numbers
 
 Six fixtures, 2.5 to 19 seconds, synthesized with the app's own Phonon voice. Final pass, median wall:

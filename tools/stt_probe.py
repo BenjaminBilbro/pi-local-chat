@@ -91,6 +91,64 @@ NOISY_FIXTURES = {"speech-noisy.wav": 8.0}
 PHONE_FIXTURES = {"speech-phone.wav"}
 
 
+def energy_gate(audio: "np.ndarray", spec: str) -> tuple["np.ndarray", dict]:
+    """Zero everything below a level relative to the clip's own floor, with hysteresis and a hangover.
+
+    This is the chair answer the measurements on Ben's real recordings support: his voiced frames sit about
+    23 dB over his room floor and the chair's p90 about 8 dB, so there is 14 dB of clean air between them.
+    Level separates them, spectrum does not - the chair puts 39% of its energy in the same 80-250 Hz band his
+    voice uses, so a notch there would take his voice with it.
+
+    Hysteresis and the hangover are not polish. A single-threshold gate opens and closes on every syllable
+    and shaves the soft ends off sentences, and what goes first is the unvoiced consonants, which is how a
+    clean signal becomes "what is the weath". So: open at `open` dB over the floor, close only after `hang`
+    ms of staying under `close` dB. The floor is measured from the clip rather than hard-coded, because a
+    threshold in dBFS is a number that only works at one microphone gain.
+
+    `spec` is "open:close:hangover_ms", for example "12:9:200".
+    """
+    import numpy as np
+
+    open_db, close_db, hang_ms = (float(x) for x in spec.split(":"))
+    frame = int(SAMPLE_RATE * 0.02)
+    trimmed = audio[: len(audio) - len(audio) % frame]
+    if len(trimmed) == 0:
+        return audio, {}
+    levels = np.sqrt(np.mean(trimmed.reshape(-1, frame).astype(np.float64) ** 2, axis=1))
+    floor = float(np.percentile(levels, 10)) or 1.0
+    floor_db = float(20 * np.log10(max(floor, 1e-9)))
+    open_at, close_at = floor_db + open_db, floor_db + close_db
+
+    keep = np.zeros(len(levels), dtype=bool)
+    is_open = False
+    under = 0
+    need = max(1, int(hang_ms / 20))
+    for i, level in enumerate(levels):
+        db = float(20 * np.log10(max(float(level), 1e-9)))
+        if is_open:
+            if db < close_at:
+                under += 1
+                if under >= need:
+                    is_open = False
+                    under = 0
+            else:
+                under = 0
+        elif db >= open_at:
+            is_open = True
+        keep[i] = is_open
+
+    out = audio.astype(np.int16).copy()
+    mask = np.repeat(keep, frame)
+    out[: len(mask)][mask == 0] = 0
+    return out, {
+        "gate": spec,
+        "gate_floor_rms": round(floor),
+        "gate_open_rms": round(10 ** (open_at / 20)),
+        "kept_frames": int(keep.sum()),
+        "total_frames": int(len(keep)),
+    }
+
+
 def tail_noise(kind: str, n: int, rms: float) -> "np.ndarray":
     """The sound that stops a message being sent: noise in the SILENCE after you stop talking.
 
@@ -159,6 +217,31 @@ def normalise_words(text: str) -> list[str]:
     return [word for word in "".join(c.lower() if c.isalnum() or c.isspace() else " " for c in text).split()]
 
 
+def expected_text(name: str, args: argparse.Namespace) -> str:
+    """The words a clip is supposed to contain: the committed table, or a transcript someone passed in.
+
+    A JSON object of `{"clip-name.wav": "what was said"}`. Ben's recordings have no reference unless he
+    supplies one, and a clip with no reference must not be scored 0.0 (see `word_error`).
+    """
+    path = getattr(args, "expect_file", "") or ""
+    if path:
+        import json as _json
+
+        global _EXPECT_CACHE
+        if _EXPECT_CACHE is None:
+            _EXPECT_CACHE = _json.loads(Path(path).read_text(encoding="utf-8"))
+        if name in _EXPECT_CACHE:
+            return _EXPECT_CACHE[name]
+        stem = Path(name).stem
+        for key, value in _EXPECT_CACHE.items():
+            if Path(key).stem == stem:
+                return value
+    return FIXTURE_TEXT.get(name, "")
+
+
+_EXPECT_CACHE: dict | None = None
+
+
 def word_error(text: str, expected: str) -> float:
     """Word error rate against the fixture's own text, 0.0 for a perfect transcription.
 
@@ -171,6 +254,11 @@ def word_error(text: str, expected: str) -> float:
 
     said = normalise_words(text)
     want = normalise_words(expected)
+    if not expected.strip():
+        # Nothing to compare against is not a perfect transcription. Silence fixtures and Ben's own
+        # recordings, which are scored only when he supplies the words, must read as unknown rather
+        # than as 0.0, or a config that produced garbage looks like it produced nothing but rightness.
+        return None
     if not want:
         return 0.0
     matcher = difflib.SequenceMatcher(a=want, b=said, autojunk=False)
@@ -256,16 +344,29 @@ def read_wav_int16(path: Path) -> tuple[list[int], int]:
     return np.frombuffer(frames, dtype=np.int16).tolist(), wav.getframerate()
 
 
-def fixtures(selected: str) -> list[Path]:
-    if not FIXTURE_DIR.is_dir():
-        raise SystemExit(f"no fixture directory at {FIXTURE_DIR}")
-    found = sorted(p for p in FIXTURE_DIR.glob("speech-*.wav"))
+def fixtures(selected: str, directory: Path | None = None) -> list[Path]:
+    """The clips to feed.
+
+    `directory` exists so a person's own recordings can be measured. The committed fixtures are
+    Phonon-synthesized precisely because the repository is public, so there is no honest place in it
+    for a recording of someone's voice, and a probe that can only read the repo's fixtures cannot
+    answer questions about a real room. A custom directory takes any `.wav`; the repo's keeps the
+    `speech-` prefix convention.
+    """
+    directory = Path(directory) if directory else FIXTURE_DIR
+    if not directory.is_dir():
+        raise SystemExit(f"no fixture directory at {directory}")
+    pattern = "speech-*.wav" if directory == FIXTURE_DIR else "*.wav"
+    found = sorted(directory.glob(pattern))
     if not found:
-        raise SystemExit("no speech-*.wav fixtures: run `tools/stt_probe.py make-fixtures` first")
+        raise SystemExit(f"no {pattern} in {directory}: run `tools/stt_probe.py make-fixtures` first")
     if selected == "all":
         return found
-    want = selected if selected.endswith(".wav") else f"speech-{selected}.wav"
-    path = FIXTURE_DIR / want
+    if directory == FIXTURE_DIR:
+        want = selected if selected.endswith(".wav") else f"speech-{selected}.wav"
+    else:
+        want = selected if selected.endswith(".wav") else f"{selected}.wav"
+    path = directory / want
     if not path.is_file():
         raise SystemExit(f"no fixture {path.name}; have {', '.join(p.name for p in found)}")
     return [path]
@@ -379,7 +480,7 @@ def run_model_config(cfg: dict, args: argparse.Namespace) -> dict:
     model = faster_whisper.WhisperModel(cfg["model"], **kwargs)
     row["load_ms"] = round((_time.perf_counter() - load_start) * 1000)
 
-    for path in fixtures(args.fixture):
+    for path in fixtures(args.fixture, args.fixture_dir or None):
         import numpy as np
 
         samples, rate = read_wav_int16(path)
@@ -404,7 +505,7 @@ def run_model_config(cfg: dict, args: argparse.Namespace) -> dict:
                     "wall_ms": round(wall * 1000),
                     "rtf": round(wall / duration, 3),
                     "words": len(text.split()),
-                    "word_error": word_error(text, FIXTURE_TEXT.get(path.name, "")),
+                    "word_error": word_error(text, expected_text(path.name, args)),
                     "text": text[:220],
                 }
             )
@@ -511,13 +612,19 @@ def run_realtime_config(cfg: dict, args: argparse.Namespace) -> dict:
     thread.start()
 
     try:
-        for path in fixtures(args.fixture):
+        for path in fixtures(args.fixture, args.fixture_dir or None):
             samples, rate = read_wav_int16(path)
             if rate != SAMPLE_RATE:
                 raise SystemExit(f"{path.name}: fixtures must be at {SAMPLE_RATE} Hz")
             import numpy as np
 
             audio = np.asarray(samples, dtype=np.int16)
+            gate_info: dict = {}
+            # A sweep dimension rather than only a flag, so "with the gate" and "without" are two rows of
+            # one run over the same audio rather than two invocations someone has to remember to compare.
+            gate_spec = cfg.get("gate") or args.gate
+            if gate_spec:
+                audio, gate_info = energy_gate(audio, gate_spec)
             chunk = max(1, int(SAMPLE_RATE * CHUNK_MS / 1000))
             tail = int(SAMPLE_RATE * args.tail_silence)
 
@@ -552,19 +659,32 @@ def run_realtime_config(cfg: dict, args: argparse.Namespace) -> dict:
                     fed_tail += chunk
                     sleep_until(last_speech + fed_tail / SAMPLE_RATE)
 
+                # All of the finals, not the first one. A turn arriving in two pieces is the failure Ben
+                # has (a 900 ms pause between two sentences against a 600 ms window), and a probe that stops
+                # at the first final reports that as a shorter utterance instead of as two turns. The stream
+                # also has to keep running while we wait: a real microphone never stops feeding, and a
+                # stopped stream is a kind of silence the recorder would never see in production.
                 deadline = time.perf_counter() + args.timeout
-                text = None
+                finals: list = []
+                error = None
+                tail_silence = np.zeros(chunk, dtype=np.int16)
                 while time.perf_counter() < deadline:
                     try:
                         kind, payload = texts.get(timeout=0.1)
                     except queue_mod.Empty:
+                        recorder.feed_audio(tail_silence, original_sample_rate=SAMPLE_RATE)
+                        if finals and time.perf_counter() - finals[-1][0] > 2.5:
+                            break
                         continue
                     if kind == "error":
-                        text = f"<recorder error: {payload}>"
+                        error = str(payload)
                         break
                     if kind == "text" and payload.strip():
-                        text = payload
-                        break
+                        finals.append((time.perf_counter(), payload.strip()))
+                text = " ".join(body for _, body in finals) if finals else (
+                    f"<recorder error: {error}>" if error else None)
+                first_final = finals[0][0] if finals else None
+                second_final = finals[1][0] if len(finals) > 1 else None
 
                 first_partial = next(
                     ((when - speech_start) for when, body in sink["partials"] if body.strip()),
@@ -575,10 +695,13 @@ def run_realtime_config(cfg: dict, args: argparse.Namespace) -> dict:
                     "repeat": repeat,
                     "cold": cold,
                     "audio_s": round(len(audio) / SAMPLE_RATE, 2),
-                    "final_ms": round((time.perf_counter() - last_speech) * 1000) if text else None,
+                    "final_ms": round((first_final - last_speech) * 1000) if first_final else None,
+                    "turns": len(finals),
+                    "second_turn_ms": round((second_final - last_speech) * 1000) if second_final else None,
+                    **gate_info,
                     "first_partial_ms": round(first_partial * 1000) if first_partial else None,
                     "partials": len(sink["partials"]),
-                    "word_error": word_error(text or "", FIXTURE_TEXT.get(path.name, "")),
+                    "word_error": word_error(text or "", expected_text(path.name, args)),
                     "text": (text or "")[:220],
                 }
                 row["runs"].append(run)
@@ -675,6 +798,12 @@ def grid(kind: str) -> list[dict]:
             # decided by the speech model, and the same thing plus a stricter activation threshold.
             {**base, "label": "int8+beam1+deact", "compute_type": "int8", "beam": 1,
              "silero_deactivity": True},
+            # The gate, with and without a longer window. 1.0 s is what fits the 900 ms pause Ben measured
+            # in his own two-sentence recording, and it is paid for in latency on every turn.
+            {**base, "label": "int8+beam1+gate", "compute_type": "int8", "beam": 1, "gate": "12:9:200"},
+            {**base, "label": "int8+beam1+sil1.0", "compute_type": "int8", "beam": 1, "post_silence": 1.0},
+            {**base, "label": "int8+beam1+sil1.0+gate", "compute_type": "int8", "beam": 1,
+             "post_silence": 1.0, "gate": "12:9:200"},
             {**base, "label": "int8+beam1+deact+s0.3", "compute_type": "int8", "beam": 1,
              "silero_deactivity": True, "silero_sens": 0.3},
             {**base, "label": "int8+beam1+deact+s0.2", "compute_type": "int8", "beam": 1,
@@ -707,6 +836,12 @@ def run_sweep(kind: str, args: argparse.Namespace) -> int:
             kind,
             "--fixture",
             args.fixture,
+            "--fixture-dir",
+            args.fixture_dir,
+            "--expect-file",
+            args.expect_file,
+            "--gate",
+            args.gate,
             "--repeat",
             str(args.repeat),
             "--tail-noise",
@@ -837,6 +972,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("command", choices=["make-fixtures", "model", "realtime"])
     parser.add_argument("--fixture", default="all", help="fixture name, stem, or 'all'")
+    parser.add_argument("--fixture-dir", default="",
+                        help="measure clips outside tests/fixtures/voices, e.g. a recording of a real room "
+                             "that must not be committed; any .wav in there counts")
+    parser.add_argument("--expect-file", default="",
+                        help="JSON of {clip name: what was actually said}, to score audio with no committed text")
+    parser.add_argument("--gate", default="",
+                        help="energy gate in front of the recorder: open:close:hangover_ms in dB over the "
+                             "clip's own floor, e.g. 12:9:200; blanks everything under it")
     parser.add_argument("--repeat", type=int, default=3, help="measured iterations per fixture (plus one warmup)")
     parser.add_argument(
         "--tail-noise",
