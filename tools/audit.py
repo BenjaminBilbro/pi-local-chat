@@ -33,7 +33,7 @@ LOG_DIR = os.path.join(ROOT, "logs")
 INTERESTING = (
     "delivery", "reason", "state", "streamId", "open", "why", "error", "failures",
     "kind", "id", "phase", "muted", "enabled", "code", "engine", "command", "window_open",
-    "eventKind", "subKind", "chars", "account", "files",
+    "eventKind", "subKind", "chars", "account", "files", "pill",
 )
 
 
@@ -59,7 +59,13 @@ def latest() -> str | None:
 def describe(event: dict, verbose: bool = False) -> str:
     data = event.get("data") or {}
     bits = [f"{key}={data[key]}" for key in INTERESTING if key in data]
-    extra = {key: value for key, value in data.items() if key not in INTERESTING}
+    # The layout sampler nests its rects (`field`, `view`, `tail`), and `+3 fields` is not a thing a person can
+    # read while hunting a jump. Print them compactly: they are numbers the sampler already rounded.
+    nested = {group for group in ("field", "view", "tail") if isinstance(data.get(group), dict)}
+    for group in sorted(nested):
+        values = data[group]
+        bits.append(f"{group}({','.join(f'{key}{values[key]}' for key in sorted(values))})")
+    extra = {key: value for key, value in data.items() if key not in INTERESTING and key not in nested}
     if extra and verbose:
         # Off by default because the shaped leftovers are mostly `message=str(84 ab12cd34)`, which is one
         # fixed-width token per line of noise until someone is hunting for a specific field.
