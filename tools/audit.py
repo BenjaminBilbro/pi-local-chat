@@ -33,6 +33,7 @@ LOG_DIR = os.path.join(ROOT, "logs")
 INTERESTING = (
     "delivery", "reason", "state", "streamId", "open", "why", "error", "failures",
     "kind", "id", "phase", "muted", "enabled", "code", "engine", "command", "window_open",
+    "eventKind", "subKind", "chars", "account", "files",
 )
 
 
@@ -133,7 +134,9 @@ def checks(events: list[dict]) -> list[tuple[str, str]]:
         found.append(("fault", f"{dead} bytes were dropped because the browser was already marked dead"))
 
     if any(e.get("type") == "truncated" for e in events):
-        found.append(("note", "the log hit its byte cap; the tail of the session is not in this file"))
+        found.append(("note", "the log hit its rotation ceiling; the tail of the session is not in this file"))
+    elif any(e.get("type") == "rotating" for e in events):
+        found.append(("note", "this file rolled over; the rest of the session is in the next -part file"))
 
     if not found:
         found.append(("note", "no fault matched the checks: if something felt wrong, read the timeline around "

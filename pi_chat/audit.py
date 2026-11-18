@@ -87,6 +87,32 @@ def shape_value(key: str, value: object, safe: bool | None = None) -> object:
     return type(value).__name__
 
 
+def _with_event_kind(message: dict) -> dict:
+    """Shape a payload, then pull pi's own event kind up to the top level.
+
+    A streaming answer arrives as hundreds of `{"type": "pi_event", "event": {...}}` envelopes, and the shaped
+    envelope alone says nothing but `pi_event`. The kind, the sub-kind and the length of a text delta are
+    state words rather than conversation, and they are what turns "it flickered while streaming" into a rate
+    you can compare against a code change.
+    """
+    shaped = shape(message)
+    event = message.get("event")
+    if not isinstance(event, dict):
+        return shaped
+    kind = event.get("type")
+    if isinstance(kind, str) and kind:
+        shaped["eventKind"] = kind[:48]
+    inner = event.get("assistantMessageEvent")
+    if isinstance(inner, dict):
+        sub = inner.get("type")
+        if isinstance(sub, str) and sub:
+            shaped["subKind"] = sub[:48]
+        delta = inner.get("delta")
+        if isinstance(delta, str):
+            shaped["chars"] = len(delta)
+    return shaped
+
+
 def shape(message: object) -> dict:
     """Shape a whole payload. Keys survive; only state-carrying values keep their bytes."""
     if not isinstance(message, dict):
@@ -104,13 +130,17 @@ class AuditLog:
 
     def __init__(self, path: Path, conn: str, account: str | None = None, max_bytes: int | None = None):
         self.path = path
+        # Rotations are always named from where the connection started, never from the file currently open.
+        # Deriving from the current name is the bug this line prevents: part2 becomes part2-part2.
+        self._base = path
         self.conn = conn
         self.account = account
         self.max_bytes = max_bytes if max_bytes is not None else config.AUDIT_MAX_BYTES
         self._seq = 0
         self._t0 = time.monotonic()
-        self._pending = {"json_in": 0, "json_out": 0, "bytes_in": 0, "bytes_out": 0}
+        self._pending = {"bytes_in": 0, "bytes_out": 0}
         self._stopped = False
+        self._rotations = 0
         path.parent.mkdir(parents=True, exist_ok=True)
         self._fh = path.open("a", encoding="utf-8")
         self.event("open", account=account or "anon")
@@ -118,14 +148,17 @@ class AuditLog:
     # ── the wire ─────────────────────────────────────────────────────
 
     def json_in(self, message: dict) -> None:
-        """One command from the browser."""
-        self._pending["json_in"] += 1
-        self.record("server", "in", str(message.get("type", "unknown")), shape(message))
+        """One command from the browser.
+
+        No counter here, and none for `json_out` either. Each of these lines already *is* the record of one
+        message, so counting them beside themselves wrote a second line per message: on a live streaming
+        session that was half the file, and a log that is half noise is a log nobody reads.
+        """
+        self.record("server", "in", str(message.get("type", "unknown")), _with_event_kind(message))
 
     def json_out(self, payload: dict) -> None:
         """One message headed for the browser."""
-        self._pending["json_out"] += 1
-        self.record("server", "out", str(payload.get("type", "unknown")), shape(payload))
+        self.record("server", "out", str(payload.get("type", "unknown")), _with_event_kind(payload))
 
     def bytes_in(self, count: int) -> None:
         """Microphone bytes. Coalesced on purpose: a second of audio is dozens of identical packets, and a
@@ -179,13 +212,33 @@ class AuditLog:
         if data:
             line["data"] = data
         self._write(line)
-        # The cap is a dogfooding guard, not a rotation policy: past this the file has outlived its usefulness
-        # as something to read, and a runaway loop should not fill the disk. Checked on a boundary rather than
-        # every line because `stat` on every write is a syscall per event.
+        # The cap is a dogfooding guard, not a rotation policy for its own sake: a session is longer than a
+        # few megabytes of events, and the interesting moment is usually the one nearest the report, so a log
+        # that stops writing has thrown away the part someone needed. Past the cap it rolls to a second file
+        # and keeps going, up to a ceiling that exists only so a runaway loop cannot fill the disk.
         if self._seq % 50 == 0 and self.path.stat().st_size > self.max_bytes:
+            if self._rotations >= config.AUDIT_MAX_ROTATIONS:
+                self._stopped = True
+                self._write({"seq": self._seq, "conn": self.conn, "type": "truncated",
+                             "note": "audit log reached its rotation ceiling and stopped writing"}, force=True)
+                return
+            self._write({"seq": self._seq, "conn": self.conn, "type": "rotating",
+                         "note": "continuing in the next file", "bytes": self.path.stat().st_size}, force=True)
+            self._rotate()
+
+    def _rotate(self) -> None:
+        """Continue into `...-part2.jsonl`, then part3, keeping one connection readable per file."""
+        try:
+            self._fh.close()
+        except OSError:
+            pass
+        stem = self._base.with_suffix("")
+        self.path = Path(f"{stem}-part{self._rotations + 2}{self._base.suffix}")
+        self._rotations += 1
+        try:
+            self._fh = self.path.open("a", encoding="utf-8")
+        except OSError:
             self._stopped = True
-            self._write({"seq": self._seq, "conn": self.conn, "type": "truncated",
-                         "note": "audit log hit its byte cap and stopped writing"}, force=True)
 
     def _flush_pending(self) -> None:
         if self._stopped or not any(self._pending.values()):

@@ -376,9 +376,13 @@ AUDIT_DIR = os.environ.get(
     "PI_CHAT_AUDIT_DIR",
     os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs"),
 )
-# Stop writing past this size. A dogfooding guard against a runaway loop filling the disk, not a rotation
-# policy: past a few megabytes the file has stopped being something a person can read.
-AUDIT_MAX_BYTES = int(os.environ.get("PI_CHAT_AUDIT_MAX_BYTES", str(8 * 1024 * 1024)))
+# Stop rolling a file past this size and continue into the next one. A long voice session streams a few
+# hundred shaped events a minute, so a fixed cap that merely stops writing would stop before the part anyone
+# wants to read.
+AUDIT_MAX_BYTES = int(os.environ.get("PI_CHAT_AUDIT_MAX_BYTES", str(32 * 1024 * 1024)))
+# ...and the backstop on that: with this many continuations the run is a day long or something is looping, and
+# either way the disk stops being the thing to optimize for.
+AUDIT_MAX_ROTATIONS = int(os.environ.get("PI_CHAT_AUDIT_MAX_ROTATIONS", "8"))
 # Audio packets arrive dozens of times a second, so they are totalled and flushed at this many bytes rather
 # than written one line each. Too small and the interesting lines drown; too large and a silent stream is
 # indistinguishable from a coalesced one.

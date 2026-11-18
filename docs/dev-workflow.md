@@ -475,7 +475,9 @@ it costs a second variable to start writing one, and `logs/` is gitignored.
 
 What one file holds, in order, on one clock:
 
-- every command the browser sent, and every message the server sent back, as shaped payloads
+- every command the browser sent, and every message the server sent back, as shaped payloads. pi's own events
+  also carry `eventKind`, `subKind` and the character length of a text delta, because `pi_event` on its own
+  describes hundreds of different things and "how fast were the deltas while it flickered" is a real question
 - microphone bytes in and synthesized audio bytes out, **totalled** rather than one line per packet
 - the state the wire never carries: the AEC speaking window opening and closing, delivery failures, messages
   dropped because the tab had already died
@@ -503,6 +505,11 @@ arrived", which is not something a person holding a dead microphone can work out
 
 When a bug report is hard to reproduce, ask for the file. It is a smaller ask than a step-by-step, and it
 arrives already carrying the timestamps.
+
+A file rolls over at `PI_CHAT_AUDIT_MAX_BYTES` (32 MB by default) into `...-part2.jsonl` and keeps going,
+rather than stopping mid-session and throwing away the part someone was about to ask about. The ceiling is
+`PI_CHAT_AUDIT_MAX_ROTATIONS` continuations; past that it stops, because the alternative is a runaway loop
+filling the disk. A live session on 2026-11-18 wrote about 100 KB a minute while streaming.
 
 ## Troubleshooting
 

@@ -122,18 +122,87 @@ def test_audio_packets_are_totalled_not_transcribed(audit_on):
     assert lines[-2]["type"] == "turn_settled", "the totals land before the event they explain"
 
 
-def test_a_long_run_stops_writing_instead_of_filling_the_disk(tmp_path, monkeypatch):
+def test_a_long_run_rolls_over_instead_of_losing_the_tail(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "AUDIT_ENABLED", True)
     monkeypatch.setattr(config, "AUDIT_DIR", str(tmp_path))
     monkeypatch.setattr(config, "AUDIT_COALESCE_BYTES", 1 << 20)
+    monkeypatch.setattr(config, "AUDIT_MAX_ROTATIONS", 8)
     log = audit.AuditLog(tmp_path / "audit-b-small.jsonl", "t", "b", max_bytes=600)
     for i in range(500):
         log.event("chatter", index=i)
     log.close()
 
-    lines = read_lines(tmp_path / "audit-b-small.jsonl")
-    assert len(lines) < 500
-    assert lines[-1]["type"] == "truncated"
+    first = tmp_path / "audit-b-small.jsonl"
+    first_lines = read_lines(first)
+    assert len(first_lines) < 500
+    assert first_lines[-1]["type"] == "rotating"
+    second = tmp_path / "audit-b-small-part2.jsonl"
+    assert second.exists(), "the tail of the session is the part someone asks about"
+
+    def indices(path):
+        return [(line.get("data") or {}).get("index") for line in read_lines(path)]
+
+    assert max(value for value in indices(second) if value is not None) > \
+        max(value for value in indices(first) if value is not None), "part2 continues; it does not restart"
+
+
+def test_the_rotation_ceiling_still_stops(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "AUDIT_ENABLED", True)
+    monkeypatch.setattr(config, "AUDIT_MAX_BYTES", 400)
+    monkeypatch.setattr(config, "AUDIT_MAX_ROTATIONS", 2)
+    monkeypatch.setattr(config, "AUDIT_COALESCE_BYTES", 1 << 20)
+    log = audit.AuditLog(tmp_path / "audit-b-cap.jsonl", "t", "b", max_bytes=400)
+    for i in range(400):
+        log.event("chatter", index=i)
+    log.close()
+
+    files = list(tmp_path.glob("audit-b-cap*.jsonl"))
+    assert sorted(path.name for path in files) == [
+        "audit-b-cap-part2.jsonl", "audit-b-cap-part3.jsonl", "audit-b-cap.jsonl",
+    ], "continuations are named from the first file, so part2 never becomes part2-part2"
+    kinds = {line["type"] for path in files for line in read_lines(path)}
+    assert "truncated" in kinds, "the backstop has to engage eventually"
+
+
+def test_one_message_is_one_line(tmp_path, monkeypatch):
+    """The per-message totals counter wrote a second line for every streaming delta.
+
+    Half a live session's bytes were a counter restating a line that already existed, which is how a log
+    becomes something you skim instead of read.
+    """
+    monkeypatch.setattr(config, "AUDIT_ENABLED", True)
+    monkeypatch.setattr(config, "AUDIT_MAX_BYTES", 1 << 20)
+    monkeypatch.setattr(config, "AUDIT_COALESCE_BYTES", 1 << 20)
+    log = audit.AuditLog(tmp_path / "audit-b-json.jsonl", "t", "b")
+    for i in range(20):
+        log.json_out({"type": "pi_event", "event": {"type": "message_update"}})
+    log.close()
+
+    lines = read_lines(tmp_path / "audit-b-json.jsonl")
+    assert sum(1 for line in lines if line["type"] == "totals") == 0
+    assert sum(1 for line in lines if line["type"] == "pi_event") == 20
+
+
+def test_a_streaming_delta_records_its_kind_and_length_without_its_text(audit_on):
+    """The flicker hunt needs the rate of deltas, and nothing more.
+
+    `pi_event` alone describes hundreds of different things. The sub-kind and the character count are state,
+    so they are kept; the delta itself is a length and a digest.
+    """
+    secret = "the muting fix looks good so far"
+    log = audit.open_log("b")
+    log.json_out({
+        "type": "pi_event",
+        "event": {"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": secret}},
+    })
+    log.close()
+
+    raw = log.path.read_text(encoding="utf-8")
+    assert secret not in raw and "muting" not in raw
+    data = read_lines(log.path)[-2]["data"]
+    assert data["eventKind"] == "message_update"
+    assert data["subKind"] == "text_delta"
+    assert data["chars"] == len(secret)
 
 
 def test_a_failing_log_never_breaks_the_session(tmp_path, monkeypatch):
