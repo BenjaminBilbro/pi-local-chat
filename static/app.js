@@ -424,6 +424,9 @@ setupAuth((account) => {
     onError: (message) => {
       showChatError(message);
       voiceMode?.reportError(message);
+      // The orb covers the toast, so a failure that nobody behind the surface can see is a failure that
+      // nobody sees. This is also the only path that tells voice mode the microphone is not merely slow.
+      voiceMode?.noteFailure('mic', message);
     },
   });
 
@@ -533,6 +536,11 @@ function routeServerMessage(message) {
     || message.type === 'voice_prepared'
   ) {
     voice?.handleServerMessage(message);
+    if (message.type === 'voice_error') {
+      // Same reason as the microphone: the surface is on top of the toast, and "loading" forever is how a
+      // missing engine gets mistaken for a slow one.
+      voiceMode?.noteFailure('voice', message.message || 'the voice engine reported an error');
+    }
   } else if (
     message.type === 'stt_state'
     || message.type === 'stt_recording_start'

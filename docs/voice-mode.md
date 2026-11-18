@@ -111,9 +111,39 @@ that harness admitting it measured the file rather than the room. The room was m
 at maximum speaker volume (`docs/phonon-tts-engine.md`), which is the evidence the gate stands on, and the
 numbers above are why the gate checks `getSettings()` instead of trusting the constraint.
 
+## Getting ready, and saying so
+
+Two engines load lazily and both take seconds on a cold server: whisper loads when the microphone is asked for,
+and the voice loads when it is. Entering voice mode asks for both, and the mode marker is injected immediately
+rather than after the wait, because pi's own cold session start is slow too and the two waits are better
+overlapped than stacked. That decision has a price: you can speak before the microphone exists. So the surface
+says which engine is still the reason you cannot talk.
+
+The server already reported all of this honestly (`stt_state{state:"ready"}` after the recorder is built,
+`voice_state{state:"loading"|"ready"|"disabled", available}` from the voice session). What was missing was a
+client that waited for it. `stt.js` and `voice.js` now expose `backendStateValue` (and `backendAvailable` for
+the voice), and the orb surface shows two chips under its buttons while anything is pending: `microphone`,
+`voice`, each pending-pulsing, quiet when ready, or `failed` and red.
+
+Precedence in the hint line, because more than one thing can be true: **a failure outranks a wait**. A headless
+browser with no microphone found this, by captioning "speech recognition failed: Could not access microphone"
+while the hint went on saying "listening, warming up the voice" about a machine that could hear nothing.
+
+The chips hide themselves once both engines answer. A loading indicator that never leaves becomes scenery, and
+scenery is no good for telling anyone when something broke.
+
+A voice engine the server does not have at all is reported as failed rather than loading forever: `available:
+false` is a permanent condition, and only the backend saying so can tell it apart from a slow one. If the
+microphone comes back after a reconnect the failure clears itself; a chip that still accuses the machine after
+recovery is a lie in the other direction.
+
+The first reply of a new session is slower than every reply after it, since the marker turn is the turn that
+makes pi read the system prompt. That wait gets its own hint instead of a spinner with no reason attached.
+
 ## States, and what can be pinned
 
-`idle`, `listening`, `thinking`, `speaking`, `barge`. A pinned state is a photograph rather than a
+`idle`, `listening`, `thinking`, `speaking`, `barge`. `--voice-state preparing` is not a sixth pin: it is the
+real path photographed while the engines load, since a pinned state has no engines to wait for. A pinned state is a photograph rather than a
 conversation, for screenshots and for reviewing a state on demand:
 
     window.__piChatVoiceMode.enter({ demo: 'barge' })     // or #voice-screen[data-demo] before entering
@@ -121,7 +151,7 @@ conversation, for screenshots and for reviewing a state on demand:
 
 It synthesizes the levels and leaves the routing, the damping and the drawing real. It sends no mode marker,
 opens no microphone and speaks nothing. `probe()` reports the phase, frames drawn, whether the draw loop threw,
-`echoCancelled`, and the last refused transcript with its reason, which is the difference between debugging a
+`echoCancelled`, what each engine reported (`ready.mic`, `ready.voice`), and the last refused transcript with its reason, which is the difference between debugging a
 voice bug and guessing at one: everything it reports is audio and almost none of it is on screen.
 
 ## Known gaps

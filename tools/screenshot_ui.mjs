@@ -559,12 +559,18 @@ async function runSession(chromeChild) {
       // `?drive=simulated`; this app has no URL of its own to put a parameter on, so the state is pinned on the
       // element the controller reads when it starts. That also means no microphone prompt in a headless
       // browser and no turn spent on a model that has nothing to do with a picture.
-      const states = ['idle', 'listening', 'thinking', 'speaking', 'barge'];
+      const states = ['idle', 'listening', 'thinking', 'speaking', 'barge', 'preparing'];
       if (!states.includes(VOICE_STATE)) {
         throw new Error(`--voice-state takes ${states.join('|')}, got ${VOICE_STATE}`);
       }
+      /* `preparing` cannot be pinned, because it is not a drawing: it is a real engine still loading. So this
+       * one state runs the real path and photographs the wait, which is the state a person actually sees on a
+       * cold server and the one that used to have no indication at all. */
+      const preparing = VOICE_STATE === 'preparing';
       await waitFor(cdp, "Boolean(document.getElementById('voice-mode-btn'))", 10000);
-      await evaluate(cdp, `document.getElementById('voice-screen').dataset.demo = ${JSON.stringify(VOICE_STATE)}; true`);
+      if (!preparing) {
+        await evaluate(cdp, `document.getElementById('voice-screen').dataset.demo = ${JSON.stringify(VOICE_STATE)}; true`);;
+      }
       await evaluate(cdp, "document.getElementById('voice-mode-btn').click(); true");
       try {
         await waitFor(cdp, "!document.getElementById('voice-screen').hidden", 10000);
@@ -586,7 +592,7 @@ async function runSession(chromeChild) {
         );
         throw new Error(`${error.message} while entering voice mode: ${why}`);
       }
-      await sleep(1100);
+      await sleep(preparing ? 500 : 1100);
 
       // The claim that matters in a browser and cannot be made in jsdom: the history is not merely styled
       // out, it is not reachable. `elementFromPoint` is the honest version of that, because the message list
@@ -625,6 +631,13 @@ async function runSession(chromeChild) {
             viewW: window.innerWidth,
             stripBottom: Math.round(document.getElementById('voice-wave').getBoundingClientRect().bottom),
             actionsBottom: Math.round(document.querySelector('.voice-actions').getBoundingClientRect().bottom),
+            // The readiness row sits under the buttons, so it is the lowest thing on the surface and the one
+            // most likely to fall off a short phone screen.
+            readyBottom: Math.round(document.getElementById('voice-ready').getBoundingClientRect().bottom),
+            readyHidden: document.getElementById('voice-ready').hidden,
+            chipMic: document.getElementById('voice-chip-mic').dataset.state,
+            chipVoice: document.getElementById('voice-chip-voice').dataset.state,
+            hintText: document.getElementById('voice-hint').textContent,
             viewH: window.innerHeight,
             canvasInk: (() => {
               const canvas = document.getElementById('voice-orb');
@@ -643,7 +656,22 @@ async function runSession(chromeChild) {
       if (cover.leaks.length) {
         throw new Error(`the voice surface does not cover: ${cover.leaks.join('; ')}`);
       }
-      if (cover.phase !== VOICE_STATE) {
+      if (preparing) {
+        // The row and the controller have to agree, in either direction. Asserting "the row is visible" would
+        // pass on a cold server and fail on a warm one, where both engines really are ready by now; asserting
+        // nothing would let the row lie on a cold one.
+        const bothReady = cover.probe.ready.mic === 'ready' && cover.probe.ready.voice === 'ready';
+        if (cover.readyHidden !== bothReady) {
+          throw new Error(`the readiness row says hidden=${cover.readyHidden} while the controller says `
+            + `mic=${cover.probe.ready.mic} voice=${cover.probe.ready.voice}, chips ${cover.chipMic}/${cover.chipVoice}`);
+        }
+        if (!bothReady && !/warming up|could not load|failed/.test(cover.hintText)) {
+          throw new Error(`an engine is still loading and the hint says "${cover.hintText}"`);
+        }
+        if (cover.probe.demo !== null) {
+          throw new Error(`the preparing state is supposed to be the real thing, but the demo pin is on`);
+        }
+      } else if (cover.phase !== VOICE_STATE) {
         throw new Error(`the orb is showing "${cover.phase}", not the pinned "${VOICE_STATE}"`);
       }
       if (!cover.probe) throw new Error('window.__piChatVoiceMode is missing; is the server serving the new static/?');
@@ -661,7 +689,7 @@ async function runSession(chromeChild) {
         throw new Error(`the voice surface overflows the viewport: controls end at ${cover.actionsBottom} of ${cover.viewH} px`);
       }
       // A pinned state is a photograph: it must not spend a turn on the model or ask for a microphone.
-      if (cover.probe.demo !== VOICE_STATE) {
+      if (!preparing && cover.probe.demo !== VOICE_STATE) {
         throw new Error(`the demo pin did not survive into the controller (${JSON.stringify(cover.probe.demo)})`);
       }
 
@@ -670,6 +698,10 @@ async function runSession(chromeChild) {
        * be cleared by the composer's submit path alone: on a fresh session the marker started the conversation,
        * the person left voice mode, and the avatar was still sitting above the composer pretending nothing had
        * happened. `start_message` is what clears it now, so that is what gets watched. */
+      /* The real leg only makes sense after a photograph leg: it exits the surface, clears the pin and clicks
+       * back in. `preparing` IS the real leg, and it must still be on screen when the capture runs at the end
+       * of main, so this whole block is the pinned states' business. */
+      if (!preparing) {
       await evaluate(cdp, "window.__piChatVoiceMode.exit('stage'); true");
       await evaluate(cdp, "document.getElementById('voice-screen').dataset.demo = ''; true");
       await sleep(200);
@@ -732,6 +764,7 @@ async function runSession(chromeChild) {
         throw new Error(`${after.markerLeaks} mode marker(s) rendered as a message after a real turn`);
       }
       console.log(`voice-mode real leg: landing cleared by the marker turn, ${after.bubbles} bubbles, no marker leak`);
+      }
     }
 
     if (STAGE === 'preview') {

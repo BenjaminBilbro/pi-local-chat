@@ -175,6 +175,11 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
   const caption = document.getElementById('voice-caption');
   const hint = document.getElementById('voice-hint');
   const waveLabel = document.getElementById('voice-wave-label');
+  const readyRow = document.getElementById('voice-ready');
+  const chips = {
+    mic: document.getElementById('voice-chip-mic'),
+    voice: document.getElementById('voice-chip-voice'),
+  };
   const log = document.getElementById('voice-log');
   const resumeButton = document.getElementById('voice-audio-resume');
 
@@ -198,6 +203,14 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
   let recentSpoken = '';
   let lastAccepted = null;
   let lastRejected = null;
+  // Which side failed, and in its own words. A microphone that refused and a microphone that is still
+  // loading look identical from here unless somebody writes the difference down.
+  const failures = { mic: null, voice: null };
+  let hintText = 'Say something';
+  let lastReadyKey = '';
+  // Whether the session was empty when voice mode opened. The first reply of a new session is slower than
+  // every reply after it, and a wait with no reason attached to it reads as a hang.
+  let startedFresh = false;
   let loopError = null;
   let lastDraw = 0;
   let micLive = null;
@@ -263,7 +276,10 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
       if (stateLine) stateLine.textContent = next;
       if (screen) screen.dataset.phase = next;
     }
-    if (hintLine !== undefined && hint) hint.textContent = hintLine;
+    if (hintLine !== undefined && hint) {
+      hintText = hintLine;
+      hint.textContent = hintLine;
+    }
     // `aria-live` on the caption is what makes this usable without sight; it is also the only channel during
     // a turn, since everything else on screen is an animation.
     if (say && caption) caption.textContent = say;
@@ -318,6 +334,56 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
   }
 
   // ── the loop ─────────────────────────────────────────────────────────
+
+  /** 'ready' | 'pending' | 'failed' for one engine, from what the server reported and what we asked for. */
+  function sideState(side) {
+    const controller = side === 'mic' ? stt : voice;
+    if (!controller) return 'failed';
+    // Recovery clears a failure. A microphone that came back after a reconnect must stop accusing the machine
+    // of being broken, or the chip lies for the rest of the session.
+    if (controller.backendStateValue === 'ready') failures[side] = null;
+    else if (failures[side]) return 'failed';
+    // The server saying there is no voice engine is not a slow load. A spinner that spins forever on a
+    // permanent condition is worse than the word "failed".
+    if (side === 'voice' && controller.backendAvailable === false) {
+      failures.voice = 'not available on this server';
+      return 'failed';
+    }
+    // Asked for but not open yet: the page knows it asked, the engine does not exist yet.
+    if (!controller.enabledState) return 'pending';
+    return controller.backendStateValue === 'ready' ? 'ready' : 'pending';
+  }
+
+  /** Paints the two dots, and says in one line which engine is still the reason you cannot talk yet. */
+  function renderReady() {
+    const mic = sideState('mic');
+    const vox = sideState('voice');
+    const key = `${mic}/${vox}`;
+    if (key !== lastReadyKey) {
+      lastReadyKey = key;
+      if (chips.mic) chips.mic.dataset.state = mic;
+      if (chips.voice) chips.voice.dataset.state = vox;
+      if (chips.mic) chips.mic.textContent = mic === 'failed' ? 'microphone failed' : 'microphone';
+      if (chips.voice) chips.voice.textContent = vox === 'failed' ? 'voice failed' : 'voice';
+      if (readyRow) readyRow.hidden = mic === 'ready' && vox === 'ready';
+    }
+    if (mic === 'pending') return 'microphone';
+    if (vox === 'pending') return 'voice';
+    return null;
+  }
+
+  /** A side that is not coming back. Keeps saying so on screen instead of going quiet. */
+  function noteFailure(side, message) {
+    if (side !== 'mic' && side !== 'voice') return;
+    failures[side] = message || 'failed to load';
+    lastReadyKey = '';
+    renderReady();
+    if (caption) {
+      caption.textContent = side === 'mic'
+        ? `speech recognition failed: ${failures[side]}`
+        : `the voice failed: ${failures[side]}`;
+    }
+  }
 
   function tick(now) {
     if (!active) return;
@@ -381,6 +447,19 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
     if (waveLabel) {
       waveLabel.textContent = phase === 'barge' ? 'you, over the assistant'
         : speechSide ? 'assistant' : 'you';
+    }
+    // The loading line wins over the state line while an engine is still waking up: "Say something" from a
+    // microphone that cannot hear you is the exact complaint this exists to answer. A pinned state has no
+    // engines to wait for, so it never shows it.
+    if (hint && !demo) {
+      const waiting = renderReady();
+      // Order matters here. A microphone that failed and a voice that is still loading are both true at once,
+      // and "listening, warming up the voice" over a dead microphone is the app claiming it can hear you when
+      // it cannot. A failure outranks a wait.
+      hint.textContent = failures.mic ? 'the microphone could not load'
+        : waiting === 'microphone' ? 'warming up the speech model'
+        : waiting === 'voice' ? 'listening, warming up the voice'
+        : hintText;
     }
     // A theme token, read about twice a second rather than 60 times: `getComputedStyle` per frame is a
     // question to the style engine on every frame of an animation that is already the busiest thing running.
@@ -480,7 +559,11 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
     lastPartial = '';
     interruptPending = false;
     orb.beginWait(THINK_MS);
-    setPhase('thinking', { hint: 'Thinking', say: '' });
+    setPhase('thinking', {
+      hint: startedFresh ? 'Thinking, the first reply of a new session takes longer' : 'Thinking',
+      say: '',
+    });
+    startedFresh = false;
     // `queue` because a barge-in abort may still be settling; pi takes the queue as soon as it is idle, and a
     // bare prompt mid-run is what used to make pi refuse the message outright.
     sendCommand({ type: 'prompt', message: text, delivery: 'queue' });
@@ -533,6 +616,11 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
       document.body.dataset.voiceMode = 'on';
     }
     if (log) log.innerHTML = '';
+    failures.mic = null;
+    failures.voice = null;
+    lastReadyKey = '';
+    startedFresh = document.querySelectorAll('#chat-screen .message, #chat-screen .assistant-block').length === 0;
+    if (readyRow) readyRow.hidden = Boolean(demo);
     recentSpoken = '';
     lastAccepted = null;
     lastRejected = null;
@@ -692,6 +780,8 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
       // Whether the gate is armed, which is the difference between "it will not interrupt" and "it is broken".
       echoCancelled: micLive ? micLive.cancelled : null,
       voice: voice && voice.enabledState ? 'on' : 'off',
+      // What each engine reported, which is what "why is it slow" questions need.
+      ready: { mic: sideState('mic'), voice: sideState('voice') },
       orb: document.getElementById('voice-orb') ? orb.probe() : null,
     };
   }
@@ -705,6 +795,7 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
     onPartial,
     onRecordingChange,
     noteAssistantTurn,
+    noteFailure,
     reinject,
     probe,
     get active() { return active; },

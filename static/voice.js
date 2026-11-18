@@ -37,6 +37,7 @@ export function createVoiceController({
   // Internal state
   let enabled = false;
   let backendState = 'disabled'; // disabled | loading | ready | error
+  let backendAvailable = true;   // the server's `available` flag, once it has said one
   let uiInitialized = false;
   let settings = loadSavedSettings(null) || defaultSettings();
   let account = null;
@@ -1300,6 +1301,9 @@ export function createVoiceController({
 
   function handleVoiceState(message) {
     backendState = message.state || 'disabled';
+    // Absent means "never told", which is not the same as "told it is unavailable". Defaulting this to false
+    // would have the orb declaring the voice broken before the server has said anything at all.
+    if (message.available !== undefined) backendAvailable = Boolean(message.available);
     if (message.settings) {
       settings = { ...settings, ...message.settings };
     }
@@ -1470,6 +1474,13 @@ export function createVoiceController({
     getSpeechLevels,
     get enabledState() { return enabled; },
     get speakingState() { return speaking; },
+    /* What the SERVER says the engine is doing, which is not the same thing as what this page asked for:
+       'loading' until Phonon has loaded, 'ready' after. Voice mode shows the difference rather than
+       pretending a request and its result are one event. Named to match stt.js. */
+    get backendStateValue() { return backendState; },
+    /** False only when the server has said the voice engine is not there. Distinguishes "still loading",
+     * which ends, from "not configured", which does not. */
+    get backendAvailable() { return backendAvailable; },
     get audioContextState() { return audioContext ? audioContext.state : null; },
     openSettings,
     applyCapabilities,

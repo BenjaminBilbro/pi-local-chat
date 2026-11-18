@@ -544,6 +544,14 @@
   </div>
   <!-- An AudioContext suspended by autoplay policy is normal on a phone, and here the gesture that would have
        unlocked it was a button in a surface this one covers. -->
+  <!-- Neither engine is instant on a cold server: the whisper model loads when the microphone is asked for, and
+       the voice loads when it is. "Say something" while both are still loading is a lie about the machine's
+       state, and the person pays for it by speaking into nothing. This row is the honest version, and it hides
+       itself once both sides answer. -->
+  <div class="voice-ready" id="voice-ready" role="status" aria-live="polite" hidden>
+    <span class="voice-chip" id="voice-chip-mic" data-side="mic" data-state="pending">microphone</span>
+    <span class="voice-chip" id="voice-chip-voice" data-side="voice" data-state="pending">voice</span>
+  </div>
   <button class="voice-resume" id="voice-audio-resume" type="button" hidden>Tap to resume audio</button>
 </div>
 

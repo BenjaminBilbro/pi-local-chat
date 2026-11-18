@@ -109,24 +109,34 @@ const screen = document.getElementById('voice-screen');
 const modeButton = document.getElementById('voice-mode-btn');
 
 /** A recording stand-in for the WebSocket-facing half of the app: every command, in order. */
-function fakeStt({ enabled = false } = {}) {
-  const state = { enabled, commands: [], enables: 0, disables: 0, levels: null };
+function fakeStt({ enabled = false, backend } = {}) {
+  const state = {
+    enabled, commands: [], enables: 0, disables: 0, levels: null,
+    // 'ready' by default so the older claims see a warm machine; the readiness claims set this.
+    backend: backend || 'ready',
+  };
   return {
     state,
     get enabledState() { return state.enabled; },
+    get backendStateValue() { return state.backend; },
     enable() { state.enables += 1; state.enabled = true; },
     disable() { state.disables += 1; state.enabled = false; },
     getInputLevels: () => state.levels,
   };
 }
 
-function fakeVoice({ enabled = false } = {}) {
-  const state = { enabled, setEnabled: [], resumes: 0, levels: null, speaking: false };
+function fakeVoice({ enabled = false, backend } = {}) {
+  const state = {
+    enabled, setEnabled: [], resumes: 0, levels: null, speaking: false,
+    backend: backend || 'ready', available: true,
+  };
   return {
     state,
     get enabledState() { return state.enabled; },
     get speakingState() { return state.speaking; },
     getSpeechLevels: () => state.levels,
+    get backendStateValue() { return state.backend; },
+    get backendAvailable() { return state.available; },
     setEnabled(next) { state.setEnabled.push(next); state.enabled = next; },
     resumeAudio() { state.resumes += 1; },
   };
@@ -135,8 +145,8 @@ function fakeVoice({ enabled = false } = {}) {
 function harness(options = {}) {
   const commands = [];
   const errors = [];
-  const stt = fakeStt({ enabled: options.sttEnabled });
-  const voice = fakeVoice({ enabled: options.voiceEnabled });
+  const stt = fakeStt({ enabled: options.sttEnabled, backend: options.sttBackend });
+  const voice = fakeVoice({ enabled: options.voiceEnabled, backend: options.voiceBackend });
   const mode = createVoiceModeController({
     sendCommand: (command) => { commands.push(command); return true; },
     getSocket: () => ({ readyState: 1 }),
@@ -501,6 +511,96 @@ await check('a pinned state names itself on screen through the attribute too', a
   assert.equal(screen.dataset.phase, 'barge');
   h.mode.exit();
   delete screen.dataset.demo;
+});
+
+/* --------------------------------------------------------------------------
+ * Readiness. Both engines load lazily and take seconds on a cold server, and the complaint from the first
+ * live run was that nothing on screen said so: the orb said "Say something" at a person whose microphone did
+ * not exist yet.
+ * -------------------------------------------------------------------------- */
+await check('a cold microphone says it is warming up instead of asking you to speak', async () => {
+  const h = harness({ sttBackend: 'loading', voiceBackend: 'loading' });
+  h.mode.enter();
+  await wait(120);
+  assert.equal(document.getElementById('voice-ready').hidden, false,
+    'the readiness row is hidden while both engines are loading');
+  assert.equal(document.getElementById('voice-chip-mic').dataset.state, 'pending');
+  assert.equal(document.getElementById('voice-hint').textContent, 'warming up the speech model',
+    'the hint asked a person to speak into a microphone that is not loaded');
+  assert.equal(h.mode.probe().ready.mic, 'pending');
+  h.mode.exit();
+});
+
+await check('a warm microphone and a cold voice say which one is still loading', async () => {
+  const h = harness({ sttBackend: 'ready', voiceBackend: 'loading' });
+  h.mode.enter();
+  await wait(120);
+  assert.equal(document.getElementById('voice-chip-mic').dataset.state, 'ready');
+  assert.equal(document.getElementById('voice-chip-voice').dataset.state, 'pending');
+  assert.equal(document.getElementById('voice-hint').textContent, 'listening, warming up the voice');
+  assert.equal(h.mode.probe().ready.voice, 'pending');
+  h.mode.exit();
+});
+
+await check('the readiness row gets out of the way once both engines answer', async () => {
+  const h = harness();
+  h.mode.enter();
+  await wait(120);
+  assert.equal(document.getElementById('voice-ready').hidden, true,
+    'a loading row that never leaves becomes scenery');
+  assert.equal(document.getElementById('voice-hint').textContent, 'Say something');
+  h.mode.exit();
+});
+
+await check('an engine that failed says failed, in words, and stops spinning', async () => {
+  const h = harness({ sttBackend: 'disabled' });
+  h.mode.enter();
+  h.mode.noteFailure('mic', 'whisper refused to load');
+  await wait(120);
+  const chip = document.getElementById('voice-chip-mic');
+  assert.equal(chip.dataset.state, 'failed');
+  assert.equal(chip.textContent, 'microphone failed');
+  assert.match(document.getElementById('voice-caption').textContent, /whisper refused to load/);
+  assert.equal(h.mode.probe().ready.mic, 'failed');
+  // It stops calling a permanent condition a slow one: the hint stays on the failure.
+  assert.equal(document.getElementById('voice-hint').textContent, 'the microphone could not load');
+  h.mode.exit();
+});
+
+await check('a microphone that comes back stops being reported as broken', async () => {
+  const h = harness({ sttBackend: 'disabled' });
+  h.mode.enter();
+  h.mode.noteFailure('mic', 'dropped');
+  await wait(60);
+  assert.equal(document.getElementById('voice-chip-mic').dataset.state, 'failed');
+  h.stt.state.backend = 'ready';
+  await wait(120);
+  assert.equal(document.getElementById('voice-chip-mic').dataset.state, 'ready',
+    'the chip still accuses the machine after the engine recovered');
+  assert.equal(document.getElementById('voice-ready').hidden, true);
+  h.mode.exit();
+});
+
+await check('a voice engine the server does not have is failed, not loading forever', async () => {
+  const h = harness({ voiceBackend: 'disabled' });
+  h.voice.state.available = false;
+  h.mode.enter();
+  await wait(120);
+  assert.equal(document.getElementById('voice-chip-voice').dataset.state, 'failed');
+  assert.equal(h.mode.probe().ready.voice, 'failed');
+  h.mode.exit();
+});
+
+await check('a failed microphone outranks a voice that is still loading', async () => {
+  // Both are true at once in the real world, and this is the case where the app could claim to be listening
+  // while it cannot hear anything. Found by a headless browser with no microphone at all.
+  const h = harness({ sttBackend: 'disabled', voiceBackend: 'loading' });
+  h.mode.enter();
+  h.mode.noteFailure('mic', 'Could not access microphone.');
+  await wait(120);
+  const line = document.getElementById('voice-hint').textContent;
+  assert.equal(line, 'the microphone could not load', `the hint said "${line}" with a dead microphone`);
+  h.mode.exit();
 });
 
 console.log(results.join('\n'));

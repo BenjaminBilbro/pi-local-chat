@@ -3819,6 +3819,55 @@ body:has(#chat-screen[data-doc-open="true"]) .buddy-stage {
   pointer-events: none;
 }
 
+/* Two dots that say what the server is still doing. Pending pulses in the warning colour, ready is quiet,
+   failed is red and stays put. The row hides itself once both answer: a loading indicator that never leaves
+   becomes scenery, and scenery is no good for telling anyone when something broke. */
+.voice-ready {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.voice-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--text-subtle);
+}
+
+.voice-chip::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.voice-chip[data-state="pending"] {
+  color: var(--warning);
+  animation: voice-chip-pulse 1.1s ease-in-out infinite;
+}
+
+.voice-chip[data-state="failed"] {
+  color: #d13c3c;
+  border-color: currentColor;
+}
+
+@keyframes voice-chip-pulse {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .voice-chip[data-state="pending"] { animation: none; opacity: 0.9; }
+}
+
 .voice-log {
   width: min(560px, 92vw);
   max-height: 108px;
