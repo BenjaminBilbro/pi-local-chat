@@ -15,7 +15,9 @@
 #   tools/verify_fresh_clone.sh [target-dir]
 #
 # Environment:
-#   REPO        repo to clone (default: the repo this script lives in)
+#   REPO        repo to clone: a local path (default: the repo this script lives in) or a URL such as
+#               https://github.com/BenjaminBilbro/pi-local-chat.git, which is what "what other people get"
+#               actually means. BRANCH= overrides the branch in either case.
 #   KEEP=1      leave the clone in place afterwards
 #
 # Needs network for `npm ci` and for the pinned git dependencies, and a few minutes on a cold cache. It
@@ -41,11 +43,26 @@ step() {
     fi
 }
 
-BRANCH=$(git -C "$REPO" rev-parse --abbrev-ref HEAD)
-echo "source repo: $REPO (branch $BRANCH, HEAD $(git -C "$REPO" rev-parse --short HEAD))"
-if [ -n "$(git -C "$REPO" status --porcelain)" ]; then
-    echo "NOTE: the source tree has uncommitted changes. This run verifies HEAD, not those edits."
-fi
+# A URL is the honest target, so it is allowed: it verifies what a stranger gets, with none of this machine's
+# state in the way. A remote has no working tree to be dirty and no local HEAD to read, so the branch comes
+# from the remote's own symref unless one is named.
+case "$REPO" in
+    *://*|git@*)
+        BRANCH=${BRANCH:-$(git ls-remote --symref "$REPO" HEAD | awk '/^ref:/ {sub("refs/heads/", "", $2); print $2}')}
+        if [ -z "$BRANCH" ]; then
+            echo "could not read a default branch from $REPO; set BRANCH= explicitly" >&2
+            exit 1
+        fi
+        echo "source repo: $REPO (remote default branch $BRANCH)"
+        ;;
+    *)
+        BRANCH=${BRANCH:-$(git -C "$REPO" rev-parse --abbrev-ref HEAD)}
+        echo "source repo: $REPO (branch $BRANCH, HEAD $(git -C "$REPO" rev-parse --short HEAD))"
+        if [ -n "$(git -C "$REPO" status --porcelain)" ]; then
+            echo "NOTE: the source tree has uncommitted changes. This run verifies HEAD, not those edits."
+        fi
+        ;;
+esac
 
 echo "clone dir:   $DIR"
 rm -rf "$DIR"
