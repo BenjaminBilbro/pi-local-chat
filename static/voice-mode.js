@@ -216,6 +216,7 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
   let micLive = null;
   let accentColor = '';
   let accentReadAt = 0;
+  let paneReadAt = 0;
   const micBins = new Float32Array(56);
   const speechBins = new Float32Array(56);
 
@@ -385,6 +386,26 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
     }
   }
 
+  /** Keep the orb in the space the preview pane leaves rather than behind it.
+   *
+   *  Measured off the pane, not off the stylesheet: `--doc-pane-width` is decided on #chat-screen and the
+   *  resizer writes to it, so a copy of that clamp here would be a second place for the width to be wrong.
+   *  Read four times a second rather than every frame, which is often enough to keep up with a drag and does
+   *  not ask for layout 60 times a second on top of an animation that already costs. */
+  function layoutForPane() {
+    const chat = document.getElementById('chat-screen');
+    const pane = document.getElementById('doc-pane');
+    const open = Boolean(chat && chat.dataset.docOpen === 'true' && pane);
+    // The column is permanent since S6 and has an empty state, so "open" is not the same as "showing one of
+    // pi's documents". Lifting the empty state above the orb would cover the header with a panel that says
+    // nothing, which is a worse screen than the one this exists to fix. A tab strip entry is the honest signal
+    // that there is a document in there.
+    const shown = open && Boolean(pane.querySelector('[data-doc-id]'));
+    const room = shown ? Math.round(pane.getBoundingClientRect().width) : 0;
+    document.body.style.setProperty('--voice-doc-room', `${room}px`);
+    document.body.dataset.voiceDoc = shown ? 'shown' : 'empty';
+  }
+
   function tick(now) {
     if (!active) return;
     // About 40 fps is the ceiling. This loop runs at the same time as microphone capture, resampling and TTS
@@ -463,6 +484,10 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
     }
     // A theme token, read about twice a second rather than 60 times: `getComputedStyle` per frame is a
     // question to the style engine on every frame of an animation that is already the busiest thing running.
+    if (now - paneReadAt > 250) {
+      layoutForPane();
+      paneReadAt = now;
+    }
     if (now - accentReadAt > 500 || accentColor === '') {
       accentColor = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
       accentReadAt = now;
@@ -673,6 +698,8 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
   function exit(reason = 'button') {
     if (!active) return;
     active = false;
+    document.body.style.removeProperty('--voice-doc-room');
+    delete document.body.dataset.voiceDoc;
     const wasDemo = Boolean(demo);
     demo = null;
     cancelAnimationFrame(raf);

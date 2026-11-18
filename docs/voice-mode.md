@@ -140,6 +140,22 @@ recovery is a lie in the other direction.
 The first reply of a new session is slower than every reply after it, since the marker turn is the turn that
 makes pi read the system prompt. That wait gets its own hint instead of a spinner with no reason attached.
 
+## Previews stay on screen
+
+A voice assistant that cannot show you anything is a worse assistant, so the preview pane is not hidden by the
+orb surface: it is lifted above it (`z-index: 310`, and the surface itself stays at 300 over everything else),
+and the voice column re-centres in the space that is left.
+
+The width it moves by is measured off the pane and published as `--voice-doc-room` on the body, read about four
+times a second. A copy of the pane's `clamp()` in this stylesheet would have been a second place for that number
+to be wrong, and the resizer writes to the first one.
+
+Two conditions gate the lift, both of them found by the browser stage rather than decided here. The pane is a
+permanent column since S6 with an empty state, so lifting it whenever it is `open` put a panel that says nothing
+over the header; the real signal is a document in the tab strip. And on a phone there is no room for an orb and
+a document side by side at 390 px, so the sheet keeps the whole screen over the orb, and what matters is that
+closing it hands the voice surface back: the stage asserts both directions with `elementFromPoint`.
+
 ## States, and what can be pinned
 
 `idle`, `listening`, `thinking`, `speaking`, `barge`. `--voice-state preparing` is not a sixth pin: it is the

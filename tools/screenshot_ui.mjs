@@ -613,7 +613,16 @@ async function runSession(chromeChild) {
           for (const [name, fx, fy] of points) {
             const el = document.elementFromPoint(Math.round(rect.width * fx), Math.round(rect.height * fy));
             if (!el || !el.closest('#voice-screen')) {
-              leaks.push(name + ' -> ' + (el ? el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') : 'nothing'));
+              /* Naming the offender is the whole point of this check, and "div" names nothing: the element that
+               * leaked is nearly always anonymous, so print where it sits instead. No backticks and no dollar
+               * braces in here: this whole script is a template literal on its way to the page. */
+              const path = [];
+              for (let node = el; node && path.length < 4; node = node.parentElement) {
+                const cls = node.className && typeof node.className === 'string'
+                  ? '.' + node.className.trim().split(/\s+/).join('.') : '';
+                path.push(node.tagName.toLowerCase() + (node.id ? '#' + node.id : '') + cls);
+              }
+              leaks.push(name + ' -> ' + (path.join(' < ') || 'nothing'));
             }
           }
           const probe = window.__piChatVoiceMode ? window.__piChatVoiceMode.probe() : null;
@@ -698,6 +707,102 @@ async function runSession(chromeChild) {
        * be cleared by the composer's submit path alone: on a fresh session the marker started the conversation,
        * the person left voice mode, and the avatar was still sitting above the composer pretending nothing had
        * happened. `start_message` is what clears it now, so that is what gets watched. */
+      // Captured here rather than at the end of main: the real leg below exits voice mode, and the picture
+      // anyone opens should be the orb, not the chat that comes back after it.
+      await capture(cdp, OUT, false);
+
+      /* Previews in voice mode. pi can hand the person a document in the middle of a spoken exchange, and
+       * "here it is" from a screen with nothing on it is the whole feature missing, so the pane comes above the
+       * surface and the orb moves into the space that is left. Phone: the sheet keeps its full screen. */
+      await evaluate(cdp, `(() => {
+        const pane = window.__piChatDocPane;
+        if (!pane) return false;
+        const body = ['# In voice mode', '', 'The orb keeps talking while this is open.', '',
+          '- a document can arrive mid-sentence', '- typing is not how you reply here'].join('\\n');
+        pane.show({ docId: 'stage-voice', kind: 'markdown', revision: 1, title: 'In voice mode',
+          text: body, note: 'written by the stage' }, { activate: true });
+        return true;
+      })()`);
+      await sleep(700);
+      const withPane = JSON.parse(await evaluate(
+        cdp,
+        `(() => {
+          const pane = document.getElementById('doc-pane');
+          const orb = document.getElementById('voice-orb');
+          const actions = document.querySelector('.voice-actions');
+          const pr = pane.getBoundingClientRect();
+          const or = orb.getBoundingClientRect();
+          const ar = actions.getBoundingClientRect();
+          const who = (x, y) => {
+            const top = document.elementFromPoint(x, y);
+            if (!top) return 'nothing';
+            if (top.closest('#doc-pane')) return 'pane';
+            if (top.closest('#voice-screen')) return 'voice';
+            return top.id || top.className || top.tagName;
+          };
+          return JSON.stringify({
+            open: document.getElementById('chat-screen').dataset.docOpen,
+            pane: { left: Math.round(pr.left), width: Math.round(pr.width) },
+            orbRight: Math.round(or.right),
+            actionsRight: Math.round(ar.right),
+            paneCentre: who(Math.round(pr.left + pr.width / 2), Math.round(window.innerHeight / 2)),
+            orbPoint: who(Math.round(or.left + or.width / 2), Math.round(or.top + or.height / 2)),
+            viewW: window.innerWidth,
+            room: getComputedStyle(document.body).getPropertyValue('--voice-doc-room').trim(),
+          });
+        })()`,
+      ));
+      await capture(cdp, OUT.replace(/\.png$/, '-preview.png'), false);
+      if (withPane.open !== 'true') {
+        throw new Error(`a preview opened while voice mode was on and the pane says "${withPane.open}"`
+          + '; the surface is hiding it again');
+      }
+      if (withPane.paneCentre !== 'pane') {
+        throw new Error(`the middle of the preview answers to "${withPane.paneCentre}", not the pane:`
+          + ` the orb surface is still on top (${JSON.stringify(withPane)})`);
+      }
+      if (withPane.viewW > 700) {
+        if (withPane.orbPoint !== 'voice') {
+          throw new Error(`the orb answers to "${withPane.orbPoint}" with a preview open; it is behind the pane`);
+        }
+        if (withPane.orbRight > withPane.pane.left + 2 || withPane.actionsRight > withPane.pane.left + 2) {
+          throw new Error(`the orb or its buttons sit under the preview: orb right ${withPane.orbRight}, `
+            + `buttons ${withPane.actionsRight}, pane starts ${withPane.pane.left} (${JSON.stringify(withPane)})`);
+        }
+        if (withPane.room === '' || withPane.room === '0px') {
+          throw new Error(`--voice-doc-room is "${withPane.room}" with a ${withPane.pane.width} px pane open; `
+            + 'the voice column will not move aside');
+        }
+      } else {
+        // On a phone the document takes the whole sheet, which is the shape that was chosen: there is no room
+        // for an orb and a document side by side at 390 px. So the orb is meant to be covered here, and what
+        // matters is that closing the sheet hands the voice surface back, which the check below proves.
+        if (withPane.orbPoint !== 'pane') {
+          throw new Error(`a phone preview should cover the orb, and the orb answered to "${withPane.orbPoint}"`);
+        }
+        if (withPane.pane.width < withPane.viewW - 1) {
+          throw new Error(`a phone preview should cover the sheet over the orb and got ${withPane.pane.width} px `
+            + `of ${withPane.viewW}`);
+        }
+      }
+      await evaluate(cdp, "window.__piChatDocPane.closeAll(); true");
+      await sleep(400);
+      const closedPane = await evaluate(
+        cdp,
+        `(() => {
+          const orb = document.getElementById('voice-orb').getBoundingClientRect();
+          const top = document.elementFromPoint(Math.round(orb.left + orb.width / 2), Math.round(orb.top + orb.height / 2));
+          return JSON.stringify({
+            who: top && top.closest('#voice-screen') ? 'voice' : (top ? (top.id || top.className) : 'nothing'),
+            room: getComputedStyle(document.body).getPropertyValue('--voice-doc-room').trim(),
+          });
+        })()`,
+      );
+      const closed = JSON.parse(closedPane);
+      if (closed.who !== 'voice' || closed.room !== '0px') {
+        throw new Error(`closing the preview left the surface shifted: ${closedPane}`);
+      }
+
       /* The real leg only makes sense after a photograph leg: it exits the surface, clears the pin and clicks
        * back in. `preparing` IS the real leg, and it must still be on screen when the capture runs at the end
        * of main, so this whole block is the pinned states' business. */
@@ -1905,7 +2010,7 @@ async function runSession(chromeChild) {
       await sleep(STAGE === 'pdf' ? 3500 : 1200);
     }
 
-    await capture(cdp, OUT, false);
+    if (STAGE !== 'voice-mode') await capture(cdp, OUT, false);
 
     // After the capture, so a failing stage still leaves the screenshot behind.
     if (pageErrors.length > 0) {

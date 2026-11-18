@@ -3943,3 +3943,39 @@ body:has(#chat-screen[data-doc-open="true"]) .buddy-stage {
   .voice-wave { height: 46px; }
   .voice-log { max-height: 84px; }
 }
+
+/* Previews keep working in voice mode, because a voice assistant that cannot show you anything is a worse
+   assistant than a useful one. The pane was under the orb surface: pi could write a document, the app could
+   open it, and the person would hear "here is the file" from a screen with no file on it.
+
+   On desktop the pane leaves the grid and becomes a panel above the surface, and the voice column re-centres
+   itself in what is left. Padding rather than a transform, because every child of this column is centred by
+   flexbox and a shifted column would leave the caption, the strip and the buttons behind. The width is
+   measured off the pane and published as `--voice-doc-room` by voice-mode.js: `--doc-pane-width` is decided on
+   #chat-screen, a resizer writes to it, and a second copy of that clamp here would be a second place for the
+   number to be wrong. */
+body[data-voice-mode][data-voice-doc="shown"] #chat-screen[data-doc-open="true"] .doc-pane {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 310;
+  border-left: 1px solid var(--border);
+  background: var(--bg-elevated);
+}
+
+@media (min-width: 701px) {
+  body[data-voice-mode][data-voice-doc="shown"] .voice-screen {
+    padding-right: calc(24px + var(--voice-doc-room, 0px));
+  }
+}
+
+/* A phone has no room to put the two side by side, so the sheet keeps its full screen over the orb and one tap
+   on its close control brings the conversation-with-no-typing back. Nothing reflows underneath it. */
+@media (max-width: 700px) {
+  body[data-voice-mode][data-voice-doc="shown"] .doc-pane[data-open="true"] {
+    inset: 0;
+    width: 100vw;
+    z-index: 310;
+  }
+}
