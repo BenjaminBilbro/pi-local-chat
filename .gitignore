@@ -50,6 +50,9 @@ pi_chat.egg-info/
 # Sweep 2 (2026-11-17, RH-03/RH-04): these hold personal audio and derived local state.
 # They were untracked but not ignored, so any `git add -A` would have committed real voice
 # recordings. Ignore first, decide retention separately.
+# Note: `tests/fixtures/voices/` predates this rule and IS tracked (its tone fixtures are
+# used by the audio tests), so `tools/stt_probe.py make-fixtures` output needs `git add -f`. If you are
+# tidying this file, that directory's speech fixtures are inputs, not stray captures.
 voices/
 voice-clone-samples/
 voice-debug-audio/
