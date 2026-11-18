@@ -124,6 +124,10 @@ const PROMPT = flag('prompt', 'smoke test prompt');
 // `--pane open|closed` drives the header's Preview toggle before the shot. The pane is a permanent column
 // now, so both resting states are things a reader can end up in and both need a picture.
 const PANE = flag('pane', '');
+// `--landing` clicks New session and waits for the landing card, which is a state of the chat screen rather
+// than a stage: the composer renders inside that card, and at phone width it must not draw a second border
+// around itself.
+const LANDING = args.includes('--landing');
 const CHROME = flag(
   'chrome',
   'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
@@ -455,6 +459,48 @@ async function runSession(chromeChild) {
         await evaluate(cdp, "document.getElementById('doc-toggle-btn').click(); true");
         await waitFor(cdp, `document.getElementById('chat-screen').dataset.docOpen === '${want}'`);
         await sleep(450);
+      }
+    }
+
+    // Composer geometry, measured off the rendered page. Whether the controls sit under the field or beside it
+    // is a CSS question with no DOM to assert in jsdom, and the stacked card is the whole point of the phone
+    // layout, so the stage checks the rectangles before it writes the picture. Under 700 px the card must
+    // stack: Send below the field, attach on Send's line and to its left. Above it the row must stay
+    // horizontal. Both directions are asserted, because a guard that checks one half lets the other drift.
+    if (LANDING) {
+      await evaluate(cdp, "document.getElementById('new-session-btn').click(); true");
+      await waitFor(cdp, "document.querySelector('.input-area.landing-mode') !== null");
+      await sleep(400);
+    }
+
+    if (STAGE === 'chat' || STAGE === 'tool-running') {
+      const geo = await evaluate(cdp, `(() => {
+        const box = (id) => {
+          const el = document.getElementById(id);
+          if (!el) return null;
+          const r = el.getBoundingClientRect();
+          return { top: r.top, bottom: r.bottom, left: r.left, width: r.width, height: r.height };
+        };
+        return { input: box('user-input'), send: box('send-btn'), attach: box('attach-btn'), width: window.innerWidth };
+      })()`);
+      if (geo && geo.input && geo.send && geo.attach) {
+        const mid = (b) => b.top + b.height / 2;
+        const stacked = geo.send.top >= geo.input.bottom - 2;
+        const oneLine = Math.abs(mid(geo.attach) - mid(geo.send)) < 12;
+        if (geo.width < 700) {
+          const wrong = [];
+          if (!stacked) wrong.push(`Send top ${geo.send.top.toFixed(0)} is not below the field's bottom at ${geo.input.bottom.toFixed(0)}`);
+          if (!oneLine) wrong.push(`attach mid ${mid(geo.attach).toFixed(0)} is not on Send's line at ${mid(geo.send).toFixed(0)}`);
+          if (!(geo.attach.left < geo.send.left)) wrong.push(`attach left ${geo.attach.left.toFixed(0)} is not left of Send at ${geo.send.left.toFixed(0)}`);
+          if (wrong.length) {
+            throw new Error(`the phone composer (${geo.width} px) is not a field on top with its controls underneath: ${wrong.join('; ')}`);
+          }
+        } else if (stacked) {
+          throw new Error(
+            `the desktop composer (${geo.width} px) stacked its controls under the field ` +
+            `(Send top ${geo.send.top.toFixed(0)}, field bottom ${geo.input.bottom.toFixed(0)}): the phone rules leaked upward`,
+          );
+        }
       }
     }
 

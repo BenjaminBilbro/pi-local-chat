@@ -167,7 +167,14 @@ await check('the empty column names what lands there and how to put it away', ()
   handle.closeAll();
   const text = empty.textContent.replace(/\s+/g, ' ');
   assert.match(text, /Markdown, HTML, and PDF/, 'a reader should know what this column is for');
-  assert.match(text, /Ctrl/, 'and how to get rid of it, since it now opens by default');
+  // An earlier version of this claim asserted /Ctrl/. That is how a made-up shortcut survives: the test was
+  // written from the copy rather than from the app. Measured instead - static/app.js:292 is the only
+  // document-level keydown in the app, Ctrl+K, and it starts a new session. No key closes this column, so the
+  // copy may not print a <kbd>. Checked first, and with the markup quoted, because "how to get rid of it" is
+  // not a message that tells you what to fix.
+  const kbd = empty.innerHTML.match(/<kbd>.*?<\/kbd>/gis);
+  assert.ok(!kbd, `the empty state advertises keys the app does not bind: ${String(kbd).slice(0, 120)}`);
+  assert.match(text, /Preview button/, 'and how to get rid of it, since it now opens by default');
 
   const markup = read('static/index.html');
   assert.ok(

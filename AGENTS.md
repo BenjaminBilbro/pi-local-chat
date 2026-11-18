@@ -169,6 +169,14 @@ These are non-negotiable. Violating any of these will break the application:
   because there it is the full-screen sheet rather than a column. `--doc-pane-room` in `styles.css` keeps
   520 px of conversation after the session drawer, and `clampWidth()` reads `--sidebar-width` for the same
   floor on a drag. `tools/test_preview_pane_state.mjs` and `--pane open|closed` hold this.
+- Under 600 px the composer is one card: the field on the first line, the controls on the line under it
+  (attach left, Stop / Send now / microphone / Send right). The desktop keeps the controls beside the field.
+  The group is `.input-buttons` in the markup and `chat.js` appends `#mic-toggle` to it through
+  `sendButton.parentElement`, so a new composer control belongs there, not loose in `.input-row`. On a phone
+  `.input-wrapper` is `display: contents` and the card border lives on `.input-row`, which is why the focus
+  ring moved to `.input-row:focus-within`. `.buddy-stage` sits above the whole card (104 px), and
+  `--stage chat|tool-running` throws unless the rectangles agree: under 700 px Send must be below the field
+  with attach on its line, above it the row must stay horizontal.
 - Live user bubbles append text before an attached image, matching pi's stored content order.
 - Sub-agent disclosure headers are real buttons with `aria-expanded`.
 - The session drawer is a labelled dialog, closes on Escape, and returns focus to its opener.

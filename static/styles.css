@@ -1189,6 +1189,16 @@ body.tool-detail-open {
   margin: 0 auto;
 }
 
+.input-buttons {
+  /* Stop, Send now, the microphone and Send. On a desktop this is transparent: the group sits in the row
+     with the same 8 px the row was already giving them individually. It exists so a phone can move the whole
+     set below the field in one step. */
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
 .input-wrapper {
   flex: 1;
   position: relative;
@@ -3568,9 +3578,70 @@ body:has(#chat-screen[data-doc-open="true"]) .buddy-stage {
     padding-left: 10px;
   }
 
-  /* On a phone the preview is a sheet, not a column, and nobody is reaching for a keyboard. */
-  .doc-empty-keys {
-    display: none;
+  /* There used to be a `.doc-empty-keys` rule here hiding a keyboard hint on a phone. The hint it hid
+     advertised Ctrl+\, which is not a shortcut in this app, and the line is now about a button that is on
+     screen at every width, so it stays. */
+
+  /* Composer on a phone: one card, the field on the first line and the controls on the line under it. The
+     desktop puts the controls beside the field because the field can afford to lose 150 px; on 390 px that
+     left the typing area about three characters wide once Stop appeared, and Send, the microphone and Stop
+     were a column of circles nobody could read as part of the thing they were typing into.
+
+     `.input-wrapper` is `display: contents`, which promotes the textarea and the attach button to be grid
+     items directly: the field spans both columns, the attach button takes the left of the second row and the
+     control group the right, which is the arrangement every composer under a phone keyboard uses. The card
+     border moves from the textarea to the row, so the focus ring has to move with it. */
+  .input-row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas:
+      "text text"
+      "attach controls";
+    align-items: center;
+    gap: 2px 8px;
+    padding: 6px 8px 6px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--bg);
+  }
+
+  .input-row:focus-within {
+    border-color: var(--accent);
+  }
+
+  .input-wrapper {
+    display: contents;
+  }
+
+  .input-wrapper textarea {
+    grid-area: text;
+    padding: 6px 0 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .input-wrapper textarea:focus {
+    border-color: transparent;
+    box-shadow: none;
+  }
+
+  .input-actions {
+    grid-area: attach;
+    position: static;
+  }
+
+  .input-buttons {
+    grid-area: controls;
+    justify-self: end;
+  }
+
+  /* The landing card is already a card; a second border inside it would be a frame around a frame. */
+  .input-area.landing-mode .input-row {
+    border: 0;
+    background: transparent;
+    padding: 6px 4px;
   }
 
   .voice-controls {
@@ -3620,7 +3691,10 @@ body:has(#chat-screen[data-doc-open="true"]) .buddy-stage {
 
   .buddy-stage {
     right: 8px;
-    bottom: 76px;
+    /* Above the whole composer card, not above the old one-line one. The card grew a controls row in S10 and
+       at 76 px Buddy sat on the line you are typing, which is a worse place for charm than the empty space
+       beside the conversation. Still drag-dismissable, so a multi-line reply that reaches him is escapable. */
+    bottom: 104px;
     /* Buddy is charm, not content: on a phone he shrinks so he never sits on a message */
     transform: scale(0.62);
     transform-origin: bottom right;
