@@ -5,7 +5,8 @@ composer and the preview pane go under a full-screen surface carrying the orb, a
 transcript. Off: all of it comes back exactly where it was. In the mode there is no typing, so a finished
 recording *is* the turn.
 
-    open the app, press the round button (or click the orb to interrupt, Esc to leave, M to mute)
+    open the app, press the round button (or tap the orb to interrupt, Esc to leave, M to mute and again to
+    unmute)
 
 ## The pieces
 
@@ -78,6 +79,23 @@ Server-side AEC also exists for this (`pi_chat/stt_session.py`, WebRTC `AudioPro
 the far-end reference, window opened by playback and closed by `voice_playback_end`). It is a filter, not a
 wall: it needs the window open and the reference aligned. The client rules above are what make a leak a
 non-event.
+
+## Mute
+
+`M` and `#voice-mute` are one control, and it closes the microphone. `stt.disable()` releases the capture, the
+assistant is stopped, and the button carries the state, because it is the only control that can leave it:
+`aria-pressed`, `data-muted="true"`, an icon swap, and the label becomes `Unmute`. Tapping the orb or pressing
+space while muted is read as the other half of the same intent and opens the capture back up. Leaving voice
+mode while muted hands the text surface the microphone it had when voice mode was entered, rather than a dead
+dictation key.
+
+That is a fix and not a feature, and the old shape is worth keeping on paper because it looked correct from
+the server. The control used to send `voice_stop` and print the word "muted". The capture stayed open, so the
+claim was false. The buffer the browser had already scheduled kept playing, so the assistant did not even go
+quiet. Nothing on the button or the surface showed a state that could be left, so there was no unmute to
+press, because there had never been a mute. `static/voice.js` now stops local playback when a stream ends with
+`reason: "stopped"`, which is also what reports `voice_playback_end` promptly and closes the echo window below
+instead of waiting for its tail timeout.
 
 ## The interrupt
 

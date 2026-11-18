@@ -182,6 +182,7 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
   };
   const log = document.getElementById('voice-log');
   const resumeButton = document.getElementById('voice-audio-resume');
+  const muteButton = document.getElementById('voice-mute');
 
   let active = false;
   let raf = 0;
@@ -193,6 +194,10 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
   let weEnabledStt = false;
   let phase = 'idle';
   let recording = false;
+  /** Whether the person has asked for silence. It has to be state and not a caption: `Mute` used to stop the
+   *  assistant and print the word "muted" while the capture stayed open, which lied about the microphone and
+   *  left no control to undo it with. */
+  let muted = false;
   let speechWasOn = false;
   let bargeSince = 0;
   let bargeBlockedUntil = 0;
@@ -599,7 +604,7 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
     if (!active) return;
     lastPartial = text || '';
     if (caption && lastPartial) caption.textContent = lastPartial;
-    if (lastPartial && phase === 'idle') {
+    if (lastPartial && phase === 'idle' && !muted) {
       setPhase('listening', { hint: 'Go ahead' });
     }
   }
@@ -608,7 +613,7 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
   function onRecordingChange(recordingNow) {
     if (!active) return;
     recording = Boolean(recordingNow);
-    if (recording && phase !== 'speaking' && phase !== 'barge') {
+    if (recording && phase !== 'speaking' && phase !== 'barge' && !muted) {
       setPhase('listening', { hint: 'Go ahead' });
     }
     if (!recording && phase === 'listening' && !lastPartial) {
@@ -643,6 +648,9 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
     if (log) log.innerHTML = '';
     failures.mic = null;
     failures.voice = null;
+    // A session never opens muted. The button carries the state, so painting it is the whole reset.
+    muted = false;
+    paintMuted();
     lastReadyKey = '';
     startedFresh = document.querySelectorAll('#chat-screen .message, #chat-screen .assistant-block').length === 0;
     if (readyRow) readyRow.hidden = Boolean(demo);
@@ -702,6 +710,9 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
     delete document.body.dataset.voiceDoc;
     const wasDemo = Boolean(demo);
     demo = null;
+    // Opening the capture back up before leaving is what gives the text surface the microphone it had when
+    // we found it. Leaving it closed would strand him with a dead dictation key after he left voice mode.
+    if (muted) setMuted(false, { say: false });
     cancelAnimationFrame(raf);
     window.removeEventListener('keydown', onKeyDown, true);
     window.removeEventListener('resize', onResize);
@@ -744,10 +755,47 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
     recentSpoken = `${recentSpoken} ${text}`.slice(-2400);
   }
 
+  /** The button is the only place the muted state lives, so it is painted from one place. */
+  function paintMuted() {
+    if (!muteButton) return;
+    muteButton.dataset.muted = muted ? 'true' : 'false';
+    muteButton.setAttribute('aria-pressed', muted ? 'true' : 'false');
+    muteButton.title = muted ? 'Unmute the microphone (M)' : 'Mute the microphone (M)';
+    const label = muteButton.querySelector('.voice-action-label');
+    if (label) label.textContent = muted ? 'Unmute' : 'Mute';
+  }
+
+  /**
+   * Close the microphone for real, or open it again.
+   *
+   * Muting also stops the assistant, because a person who asks for silence has no use for being talked at
+   * while he reaches for the thing he actually wanted to say. The capture is closed rather than ignored: a
+   * muted microphone that still holds the device open is a red light that is still recording.
+   */
+  function setMuted(next, { say = true } = {}) {
+    if (next === muted) return;
+    muted = next;
+    paintMuted();
+    if (demo) return; // a pinned state is a photograph: there is no capture here to open or close
+    if (muted) {
+      sendCommand({ type: 'voice_stop' });
+      if (stt && stt.enabledState) stt.disable();
+      setPhase('idle', { hint: 'Muted. Tap Unmute or press M', say: say ? 'muted' : undefined });
+    } else {
+      if (stt && !stt.enabledState) stt.enable(getSocket());
+      setPhase('idle', { hint: 'Go ahead', say: say ? 'unmuted' : undefined });
+    }
+  }
+
   /** Tapping the orb, or space. It does two real things: it stops the assistant if it is talking, and it
-   *  says out loud, in the only language this surface has, that the microphone is now aimed at you. */
+   *  says out loud, in the only language this surface has, that the microphone is now aimed at you. A muted
+   *  surface reads it as the other half of one intent: he wants to talk, so open the microphone. */
   function poke() {
     if (!active) return;
+    if (muted) {
+      setMuted(false);
+      return;
+    }
     if (phase === 'speaking' || phase === 'barge') {
       interrupt(performance.now());
       return;
@@ -767,8 +815,7 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
       poke();
     } else if (event.key === 'm' || event.key === 'M') {
       event.preventDefault();
-      sendCommand({ type: 'voice_stop' });
-      setPhase('idle', { hint: 'Say something', say: 'muted' });
+      setMuted(!muted);
     }
   }
 
@@ -786,10 +833,7 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
   });
 
   document.getElementById('voice-exit')?.addEventListener('click', () => exit('button'));
-  document.getElementById('voice-mute')?.addEventListener('click', () => {
-    sendCommand({ type: 'voice_stop' });
-    setPhase('idle', { hint: 'Say something', say: 'muted' });
-  });
+  muteButton?.addEventListener('click', () => setMuted(!muted));
   document.getElementById('voice-orb')?.addEventListener('click', () => poke());
 
   /** The orb's own state, for the screenshot harness and for a person debugging at 2 a.m. */
@@ -798,6 +842,7 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
       active,
       phase,
       recording,
+      muted,
       interruptPending,
       demo,
       loopError,
@@ -827,6 +872,7 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
     probe,
     get active() { return active; },
     get phase() { return phase; },
+    get muted() { return muted; },
     /** Exposed so app.js can put a real message where a silent failure used to be. */
     reportError: (message) => { onError?.(message); if (caption) caption.textContent = message; },
   };

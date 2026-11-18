@@ -3923,6 +3923,23 @@ body:has(#chat-screen[data-doc-open="true"]) .buddy-stage {
 .voice-action.is-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-contrast); }
 .voice-action.is-primary:hover { background: var(--accent-hover); color: var(--accent-contrast); }
 
+/* Muted has to read from across the room. The failure this replaces was silent: the caption said "muted",
+   the microphone stayed open, and the only icon on offer was the muted one. */
+.voice-action[data-muted="true"] {
+  border-color: var(--error-border);
+  background: var(--error-surface);
+  color: var(--error);
+}
+
+.voice-action[data-muted="true"]:hover {
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.voice-action .i-muted { display: none; }
+.voice-action[data-muted="true"] .i-live { display: none; }
+.voice-action[data-muted="true"] .i-muted { display: inline-block; }
+
 .voice-resume {
   position: absolute;
   bottom: 26px;

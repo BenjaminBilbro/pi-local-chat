@@ -1193,7 +1193,9 @@ export function createVoiceController({
     lastSequence = -1;
     scheduledEndTime = 0;
     backendStreamEnded = false;
-    speaking = false;
+    // Through the setter, so the header's stop button and voice mode's orb see the state leave. Assigning
+    // the field here is how the surface kept showing "stop" for a reply that had already been killed.
+    setSpeaking(false);
     // Playback stopped before it finished (user stop, new prompt, new stream,
     // disconnect): tell the server so it closes the AEC window for STT and
     // drops the now-stale reference audio.
@@ -1320,10 +1322,19 @@ export function createVoiceController({
   }
 
   function handleVoiceStreamEnd(message) {
-    if (message.streamId === activeStreamId) {
+    if (message.streamId !== activeStreamId) return;
+    // A stream the server ended early still has audio scheduled in this page, and "stop the assistant"
+    // that lets the buffer play out to the end is not a stop. Stopping here is also the only thing that
+    // reports `voice_playback_end` promptly, and that report is what closes the server's echo window
+    // before its tail timeout. Leave it open and the rest of the call treats his microphone as the
+    // assistant's own voice.
+    if (message.reason === 'stopped' || message.reason === 'disabled') {
+      stopLocalPlayback();
       backendStreamEnded = true;
-      checkSpeakingDrain();
+      return;
     }
+    backendStreamEnded = true;
+    checkSpeakingDrain();
   }
 
   function handleVoiceError(message) {

@@ -534,9 +534,12 @@
   <div class="voice-log" id="voice-log" aria-label="What was said in this session"></div>
   <p class="voice-hint" id="voice-hint">Say something</p>
   <div class="voice-actions">
-    <button class="voice-action" id="voice-mute" type="button" title="Stop the assistant mid-sentence (M)">
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>
-      <span>Mute</span>
+    <!-- The muted state lives on this button and nowhere else, so the button has to show it: it is the only
+         control that can get out of the state. `data-muted` is what the styles and the harness read. -->
+    <button class="voice-action" id="voice-mute" type="button" data-muted="false" aria-pressed="false" title="Mute the microphone (M)">
+      <svg class="i-live" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+      <svg class="i-muted" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>
+      <span class="voice-action-label">Mute</span>
     </button>
     <button class="voice-action is-primary" id="voice-exit" type="button" title="Back to the conversation (Esc)">
       Exit voice mode
