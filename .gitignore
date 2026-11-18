@@ -3,6 +3,11 @@ __pycache__/
 *.pyc
 .venv/
 *.jsonl
+# A capture's sidecars are the same conversation bytes: `.gz` is the raw stream and `.meta.json` the argv
+# that produced it. `*.jsonl` covers the parsed capture and nothing covered these, which is how re-running
+# a scenario left six untracked files in `git status` pretending to be candidates.
+*.jsonl.gz
+*.jsonl.meta.json
 sessions/
 
 # Documents the preview pane serves. They are conversation output, sometimes private, and

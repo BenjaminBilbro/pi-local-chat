@@ -45,6 +45,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import ctypes
 import gzip
 import json
 import os
@@ -111,7 +112,7 @@ def _is_written_placeholder(segment: str, scrubbed: dict[str, str]) -> bool:
     depends on knowing a person's name, which is what makes it usable as the CI view of a file.
     """
     low = segment.lower()
-    if low in NEUTRAL_HOME_DIRS or low == FILLER_BASE[:len(low)].lower():
+    if low in NEUTRAL_HOME_DIRS or _is_filler(low):
         return True
     return any(low == value.lower() for value in scrubbed.values())
 
@@ -136,8 +137,19 @@ def _filler(width: int) -> str:
     Equal length is not a style preference. These fixtures record `chunk`, `offset` and `bytes` for a stream
     that was measured, so a replacement of any other length moves every byte behind it and leaves a fixture
     describing a stream it is not.
+
+    Filler is repeated rather than space-padded, so a segment longer than the phrase is still recognisable as
+    this tool's output to `_is_filler`, and padding with a space is how a nine-byte `Local User ` came to be
+    something the check could not explain.
     """
-    return FILLER_BASE.ljust(width)[:width]
+    repeats = width // len(FILLER_BASE) + 1
+    return (FILLER_BASE * repeats)[:width]
+
+
+def _is_filler(segment: str) -> bool:
+    """Whether `segment` (already lowercased) is exactly what `_filler` would have written at this length."""
+    base = FILLER_BASE.lower()
+    return bool(segment) and all(char == base[index % len(base)] for index, char in enumerate(segment))
 
 
 def scrub_home_echoes(text: str, scrubbed: dict[str, str]) -> tuple[str, int]:
@@ -237,6 +249,26 @@ def _parse_literal_line(line: str, source: str) -> tuple[str, str] | None:
     return bad, good
 
 
+def _win_short_home() -> str | None:
+    """The 8.3 form of this home directory, or None where the OS will not say (`C:\\Users\\<NAME>~1`).
+
+    Windows writes that alias into short paths, and anything that ever calls `GetTempPath` gets handed it, so a
+    capture of a child reading a temp file carries it. It is not a second secret: it is the username, truncated
+    and uppercased with `~1` glued on. Asked once from the OS rather than derived, because the truncation rules
+    are the OS's, and a guess that misses is a leak the check then has to be lucky enough to catch.
+    """
+    if not hasattr(ctypes, "windll"):
+        return None
+    try:
+        buffer = ctypes.create_unicode_buffer(260)
+        if ctypes.windll.kernel32.GetShortPathNameW(str(Path.home()), buffer, len(buffer)) == 0:
+            return None
+        short = Path(buffer.value).name
+        return short if short and short != Path.home().name else None
+    except OSError:
+        return None
+
+
 def literal_scrubs() -> dict[str, str]:
     """The literal replacements that apply here, derived rather than declared in the repository."""
     out: dict[str, str] = {}
@@ -244,6 +276,11 @@ def literal_scrubs() -> dict[str, str]:
     home = Path.home().name
     if home and home.lower() not in NEUTRAL_HOME_DIRS:
         out[home] = _filler(len(home))
+        # Both spellings of the same identity: the capture that quoted the long form in a workspace path quoted
+        # the short one in a temp path, and only the second was missed.
+        short = _win_short_home()
+        if short:
+            out[short] = _filler(len(short))
 
     if LITERALS_FILE.exists():
         for number, line in enumerate(LITERALS_FILE.read_text(encoding="utf-8").splitlines(), 1):
