@@ -527,7 +527,10 @@
     <p class="voice-phase" id="voice-phase" aria-hidden="true">idle</p>
   </div>
   <p class="voice-caption" id="voice-caption" role="status" aria-live="polite"></p>
-  <canvas id="voice-wave" class="voice-wave" aria-hidden="true"></canvas>
+  <div class="voice-wave-wrap">
+    <canvas id="voice-wave" class="voice-wave" aria-hidden="true"></canvas>
+    <span class="voice-wave-label" id="voice-wave-label" aria-hidden="true">you</span>
+  </div>
   <div class="voice-log" id="voice-log" aria-label="What was said in this session"></div>
   <p class="voice-hint" id="voice-hint">Say something</p>
   <div class="voice-actions">

@@ -174,6 +174,7 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
   const stateLine = document.getElementById('voice-phase');
   const caption = document.getElementById('voice-caption');
   const hint = document.getElementById('voice-hint');
+  const waveLabel = document.getElementById('voice-wave-label');
   const log = document.getElementById('voice-log');
   const resumeButton = document.getElementById('voice-audio-resume');
 
@@ -377,6 +378,10 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
     // Ripples mark onsets rather than every loud frame: sentence edges, not a VU meter.
     if (driver && driver.level > (speechSide ? 0.28 : 0.3)) orb.ripple();
     wave.push(ring ? ring.level : 0);
+    if (waveLabel) {
+      waveLabel.textContent = phase === 'barge' ? 'you, over the assistant'
+        : speechSide ? 'assistant' : 'you';
+    }
     // A theme token, read about twice a second rather than 60 times: `getComputedStyle` per frame is a
     // question to the style engine on every frame of an animation that is already the busiest thing running.
     if (now - accentReadAt > 500 || accentColor === '') {
@@ -517,26 +522,12 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
     active = true;
     const pinned = options.demo || (screen ? screen.dataset.demo : '');
     demo = DEMO_STATES.includes(pinned) ? pinned : null;
-    if (demo) {
-      // A pinned state is a photograph, not a conversation: no marker reaches the model, no microphone is
-      // opened and no speech is synthesized, because a screenshot run has no reason to spend a turn or ask a
-      // phone for permission.
-      screen.dataset.phase = demo;
-      phase = demo;
-      orb.setState(demo);
-      if (stateLine) stateLine.textContent = demo;
-      if (hint) hint.textContent = demo === 'barge' ? 'Go ahead' : 'Say something';
-      if (demo === 'thinking') orb.beginWait(THINK_MS);
-      orb.resize();
-      wave.resize();
-      last = performance.now();
-      raf = requestAnimationFrame(tick);
-      return;
-    }
 
-    voiceWasEnabled = Boolean(voice && voice.enabledState);
-    weEnabledStt = !(stt && stt.enabledState);
-
+    /* The surface is taken over first, and once, because both paths need it.
+     *
+     * A pinned state used to return before this block, which is how the screenshot stage ended up with a
+     * controller happily reporting 303 frames into a canvas that was still `hidden`, and therefore zero pixels
+     * wide: the animation was alive, nothing was on screen, and every number the probe reported looked fine. */
     if (screen) {
       screen.hidden = false;
       document.body.dataset.voiceMode = 'on';
@@ -547,6 +538,37 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
     lastRejected = null;
     orb.resize();
     wave.resize();
+    window.addEventListener('keydown', onKeyDown, true);
+    window.addEventListener('resize', onResize);
+    // Focus, or Esc goes to the body and the app's own Ctrl+K still owns the keyboard.
+    screen?.focus();
+
+    if (demo) {
+      // A pinned state is a photograph, not a conversation: no marker reaches the model, no microphone is
+      // opened and no speech is synthesized, because a screenshot run has no reason to spend a turn or ask a
+      // phone for permission.
+      const DEMO_HINTS = {
+        idle: 'Say something',
+        listening: 'Go ahead',
+        thinking: 'Thinking',
+        speaking: 'Tap the orb or press space to interrupt',
+        barge: 'Go ahead',
+      };
+      setPhase(demo, { hint: DEMO_HINTS[demo] });
+      if (demo === 'thinking') orb.beginWait(THINK_MS);
+      // Prime the trace. A screenshot of a strip that started empty 200 ms ago is a flat line, and a flat
+      // line reads as "the visualizer is broken" to anyone who has not just watched it start.
+      for (let i = 0; i < 90; i += 1) {
+        const s = i / 12;
+        wave.push(Math.max(0, 0.34 + 0.3 * Math.sin(s * Math.PI * 5) + 0.12 * Math.sin(s * 1.7)));
+      }
+      last = performance.now();
+      raf = requestAnimationFrame(tick);
+      return;
+    }
+
+    voiceWasEnabled = Boolean(voice && voice.enabledState);
+    weEnabledStt = !(stt && stt.enabledState);
 
     // Only ask for what is missing: `setEnabled(true)` on something already enabled is a no-op in voice.js,
     // but a controller that issues it anyway cannot tell the difference between "I turned this on" and
@@ -558,9 +580,6 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
     setPhase('idle', { hint: 'Say something', say: 'voice mode on' });
     last = performance.now();
     raf = requestAnimationFrame(tick);
-    window.addEventListener('keydown', onKeyDown, true);
-    window.addEventListener('resize', onResize);
-    screen?.focus();
   }
 
   function exit(reason = 'button') {

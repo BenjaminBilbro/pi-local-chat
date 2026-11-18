@@ -3712,9 +3712,10 @@ body:has(#chat-screen[data-doc-open="true"]) .buddy-stage {
    picked from the prototype: below about 130 px the ring stops carrying information and only the halo reads,
    and the whole point of the ring is that it shows your own voice while you are talking.
 
-   The canvas box is 2.1x the orb because the halo has to fade to nothing INSIDE the canvas. A radial gradient
-   that reaches the canvas edge draws a soft square, which is a clipping artifact that looks like a design
-   choice in a thumbnail and is not one. */
+   The canvas box is 1.8x the orb. It has to be bigger than the orb because the halo fades to nothing INSIDE
+   the canvas: a gradient that reaches the canvas edge draws a soft square, which is a clipping artifact that
+   looks like a design choice in a thumbnail. The glow reaches zero at 0.44 of the canvas either way, so this
+   number only buys empty margin, and 2.1 bought a 60 px void between the orb and the strip for nothing. */
 .voice-mode-btn {
   display: inline-flex;
   align-items: center;
@@ -3762,8 +3763,8 @@ body:has(#chat-screen[data-doc-open="true"]) .buddy-stage {
 
 .voice-orb {
   --voice-orb-size: 196px;
-  width: calc(var(--voice-orb-size) * 2.1);
-  height: calc(var(--voice-orb-size) * 2.1);
+  width: calc(var(--voice-orb-size) * 1.8);
+  height: calc(var(--voice-orb-size) * 1.8);
   display: block;
   cursor: pointer;
   touch-action: manipulation;
@@ -3790,6 +3791,11 @@ body:has(#chat-screen[data-doc-open="true"]) .buddy-stage {
   color: var(--text);
 }
 
+.voice-wave-wrap {
+  position: relative;
+  display: flex;
+}
+
 .voice-wave {
   width: min(520px, 88vw);
   height: 56px;
@@ -3797,6 +3803,20 @@ body:has(#chat-screen[data-doc-open="true"]) .buddy-stage {
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   background: var(--bg-elevated);
+}
+
+/* Whose voice the strip is drawing. While the assistant talks it is showing the assistant, and a strip
+   labelled "you" during an interruption is how you end up with someone shouting at a screen that claims to
+   have heard something it never did. */
+.voice-wave-label {
+  position: absolute;
+  left: 10px;
+  bottom: 5px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--text-subtle);
+  pointer-events: none;
 }
 
 .voice-log {

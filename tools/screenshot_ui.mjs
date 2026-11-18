@@ -118,6 +118,7 @@ const STAGE = flag('stage', 'login');            // login | chat | voice | previ
 const THEME = flag('theme', 'light');            // light | dark
 const MASCOT = flag('mascot', 'pie');            // pie | pi
 const VIEWPORT = flag('viewport', '1440x900');   // WxH
+const VOICE_STATE = flag('voice-state', 'speaking');  // idle | listening | thinking | speaking | barge
 const OUT = flag('out', 'pi-chat.png');
 const PASSWORD = flag('password', 'test-only');
 const PROMPT = flag('prompt', 'smoke test prompt');
@@ -155,6 +156,10 @@ const STAGE_ENV = {
     breaks: 'FAKE_RPC_REPLY_CHARS or FAKE_RPC_LONG_RUN: this stage asserts the stub sentence is on screen',
   },
   'voice': { needs: 'PI_CHAT_PI_BIN=$PWD/tools/fake_rpc_pi.py; opens the settings dialog, audio untouched' },
+  'voice-mode': {
+    needs: 'PI_CHAT_PI_BIN=$PWD/tools/fake_rpc_pi.py; the orb is pinned with --voice-state and opens no microphone',
+    breaks: 'FAKE_RPC_REPLY_CHARS or FAKE_RPC_LONG_RUN: this stage asserts the composer and history are covered',
+  },
   'preview': { needs: 'a server; the pane is seeded through the dev hook, no pi child is started' },
   'doc-buttons': { needs: 'a server; body seeded inline, so no preview scope is needed server-side' },
   'doc-replay': { needs: 'a server; the pane handle is seeded, the fetch is not under test' },
@@ -546,6 +551,118 @@ async function runSession(chromeChild) {
       }
       if (gate.customVoices === false && gate.customTabShown.length > 0) {
         throw new Error('cloning is unavailable and the Custom Voice tab is still on screen');
+      }
+    }
+
+    if (STAGE === 'voice-mode') {
+      // Voice Mode, in the browser, with the level sources synthesized. The prototype pinned its state with
+      // `?drive=simulated`; this app has no URL of its own to put a parameter on, so the state is pinned on the
+      // element the controller reads when it starts. That also means no microphone prompt in a headless
+      // browser and no turn spent on a model that has nothing to do with a picture.
+      const states = ['idle', 'listening', 'thinking', 'speaking', 'barge'];
+      if (!states.includes(VOICE_STATE)) {
+        throw new Error(`--voice-state takes ${states.join('|')}, got ${VOICE_STATE}`);
+      }
+      await waitFor(cdp, "Boolean(document.getElementById('voice-mode-btn'))", 10000);
+      await evaluate(cdp, `document.getElementById('voice-screen').dataset.demo = ${JSON.stringify(VOICE_STATE)}; true`);
+      await evaluate(cdp, "document.getElementById('voice-mode-btn').click(); true");
+      try {
+        await waitFor(cdp, "!document.getElementById('voice-screen').hidden", 10000);
+      } catch (error) {
+        // "the overlay never opened" has at least four causes from here: no socket, no controller, an
+        // exception inside enter(), or a button that is not the one the wiring found. Say which, because the
+        // alternative is reading the app's source at 1 a.m. to work out what a headless click did.
+        const why = await evaluate(
+          cdp,
+          `JSON.stringify({
+            hook: typeof window.__piChatVoiceMode,
+            probe: window.__piChatVoiceMode ? window.__piChatVoiceMode.probe() : null,
+            body: document.body.dataset,
+            chatActive: document.getElementById('chat-screen')?.classList.contains('active'),
+            button: Boolean(document.getElementById('voice-mode-btn')),
+            caption: document.getElementById('voice-caption')?.textContent,
+            toast: document.querySelector('.chat-error, [data-toast]')?.textContent || null,
+          })`,
+        );
+        throw new Error(`${error.message} while entering voice mode: ${why}`);
+      }
+      await sleep(1100);
+
+      // The claim that matters in a browser and cannot be made in jsdom: the history is not merely styled
+      // out, it is not reachable. `elementFromPoint` is the honest version of that, because the message list
+      // is still rendered underneath and any z-index or stacking mistake shows up as a message bubble being
+      // the thing the top of the screen answers to.
+      const cover = JSON.parse(await evaluate(
+        cdp,
+        `(() => {
+          const screen = document.getElementById('voice-screen');
+          const rect = screen.getBoundingClientRect();
+          const points = [
+            ['centre', 0.5, 0.42],
+            ['where the sidebar is', 0.06, 0.5],
+            ['where the composer is', 0.5, 0.955],
+            ['where the header is', 0.86, 0.03],
+          ];
+          const leaks = [];
+          for (const [name, fx, fy] of points) {
+            const el = document.elementFromPoint(Math.round(rect.width * fx), Math.round(rect.height * fy));
+            if (!el || !el.closest('#voice-screen')) {
+              leaks.push(name + ' -> ' + (el ? el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') : 'nothing'));
+            }
+          }
+          const probe = window.__piChatVoiceMode ? window.__piChatVoiceMode.probe() : null;
+          return JSON.stringify({
+            leaks,
+            modeOn: document.body.dataset.voiceMode === 'on',
+            phase: screen.dataset.phase,
+            probe,
+            orbBox: document.getElementById('voice-orb').getBoundingClientRect().width,
+            // Geometry, because a centered-looking thumbnail can be 200 px off-centre and nobody notices
+            // until someone opens it on a real screen. The strip has to be inside the viewport as well: an
+            // overlay that scrolls is an overlay with a hidden half.
+            orbCentreX: Math.round(document.getElementById('voice-orb').getBoundingClientRect().left
+              + document.getElementById('voice-orb').getBoundingClientRect().width / 2),
+            viewW: window.innerWidth,
+            stripBottom: Math.round(document.getElementById('voice-wave').getBoundingClientRect().bottom),
+            actionsBottom: Math.round(document.querySelector('.voice-actions').getBoundingClientRect().bottom),
+            viewH: window.innerHeight,
+            canvasInk: (() => {
+              const canvas = document.getElementById('voice-orb');
+              const ctx = canvas.getContext('2d');
+              try {
+                const d = ctx.getImageData(0, 0, canvas.width, Math.max(1, canvas.height * 0.34)).data;
+                let painted = 0;
+                for (let i = 3; i < d.length; i += 4) if (d[i] > 8) painted += 1;
+                return painted;
+              } catch { return -1; }
+            })(),
+          });
+        })()`,
+      ));
+      if (!cover.modeOn) throw new Error('body[data-voice-mode] is not "on"; voice mode did not take the page');
+      if (cover.leaks.length) {
+        throw new Error(`the voice surface does not cover: ${cover.leaks.join('; ')}`);
+      }
+      if (cover.phase !== VOICE_STATE) {
+        throw new Error(`the orb is showing "${cover.phase}", not the pinned "${VOICE_STATE}"`);
+      }
+      if (!cover.probe) throw new Error('window.__piChatVoiceMode is missing; is the server serving the new static/?');
+      if (cover.probe.loopError) throw new Error(`the orb loop threw in the browser: ${cover.probe.loopError}`);
+      if (cover.probe.orb.frames < 8) {
+        throw new Error(`the orb drew only ${cover.probe.orb.frames} frames in the browser; it is a still image`);
+      }
+      if (cover.canvasInk < 400) {
+        throw new Error(`only ${cover.canvasInk} painted pixels in the orb's top band (canvas ${cover.orbBox} px)`);
+      }
+      if (Math.abs(cover.orbCentreX - cover.viewW / 2) > cover.viewW * 0.02) {
+        throw new Error(`the orb is not centred: centre x ${cover.orbCentreX} of a ${cover.viewW} px viewport`);
+      }
+      if (cover.actionsBottom > cover.viewH) {
+        throw new Error(`the voice surface overflows the viewport: controls end at ${cover.actionsBottom} of ${cover.viewH} px`);
+      }
+      // A pinned state is a photograph: it must not spend a turn on the model or ask for a microphone.
+      if (cover.probe.demo !== VOICE_STATE) {
+        throw new Error(`the demo pin did not survive into the controller (${JSON.stringify(cover.probe.demo)})`);
       }
     }
 

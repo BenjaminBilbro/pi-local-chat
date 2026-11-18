@@ -437,6 +437,10 @@ setupAuth((account) => {
     voice,
     onError: showChatError,
   });
+  // The same dev hook the pane and the buddy expose, for two reasons: the screenshot stage pins a state, and
+  // `__piChatVoiceMode.probe()` is the difference between debugging a voice bug and guessing at one, since
+  // everything it reports is audio and nothing it reports is on screen.
+  window.__piChatVoiceMode = voiceMode;
 
   socket.connect();
   focusComposer();
