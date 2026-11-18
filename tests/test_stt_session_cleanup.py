@@ -248,3 +248,64 @@ async def test_aec_unavailable_passes_mic_through(monkeypatch):
     recorder.feed_audio.assert_called_once()
     fed = recorder.feed_audio.call_args[0][0]
     np.testing.assert_array_equal(fed, samples)
+
+
+# ---------------------------------------------------------------------------
+# What the recorder gets built with (S7: measured by tools/stt_probe.py)
+# ---------------------------------------------------------------------------
+
+
+def test_shipped_stt_defaults_are_the_measured_ones():
+    """A measured default is worth exactly as much as the test that stops it drifting back.
+
+    `tools/stt_probe.py` produced these on 2026-11-18: with the library defaults (float32 on CPU because
+    `default` widens a float16 checkpoint, beam 5) the wait from last spoken word to text was 3080 ms; at
+    int8 plus greedy beam it is 2510 ms with the same words. `small.en` stays the final model because tiny.en
+    does not mishear the noisy fixture, it hears a different sentence: "weather in Concord tomorrow morning"
+    came back as "weather in contrast to all of them", and a lost place name is not recoverable from context.
+    """
+    from pi_chat import config
+
+    assert config.STT_COMPUTE_TYPE == "int8"
+    assert config.STT_BEAM_SIZE == 1
+    assert config.STT_MODEL == "small.en"
+    # The one knob the measurements say to leave alone. Below 0.6 the multi-sentence fixture loses 40-80% of
+    # its words to a closed recording, which is not a latency improvement at any price.
+    assert config.STT_SILENCE_DURATION == 0.6
+
+
+@pytest.mark.asyncio
+async def test_recorder_is_built_with_the_latency_knobs(monkeypatch):
+    """A config value nobody passes to the constructor is a knob that changes nothing.
+
+    This is the shape `tests/test_config_knob_liveness.py` cannot see: the constant is read by application
+    code, so it passes the grep, and the recorder still uses its own default because the keyword never left.
+    """
+    from pi_chat import config
+
+    seen: dict = {}
+
+    class KwargsRecorder:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+        def text(self):
+            threading.Event().wait(0.05)
+            return ""
+
+        def shutdown(self):
+            pass
+
+    module = types.ModuleType("RealtimeSTT")
+    module.AudioToTextRecorder = KwargsRecorder
+    monkeypatch.setitem(sys.modules, "RealtimeSTT", module)
+
+    session = make_session()
+    await session.enable()
+    try:
+        assert seen["compute_type"] == config.STT_COMPUTE_TYPE
+        assert seen["beam_size"] == config.STT_BEAM_SIZE
+        assert seen["post_speech_silence_duration"] == config.STT_SILENCE_DURATION
+        assert seen["realtime_model_type"] == config.STT_REALTIME_MODEL
+    finally:
+        await session.disable()

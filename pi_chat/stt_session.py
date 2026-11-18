@@ -278,6 +278,11 @@ class STTSession:
                 realtime_model_type=self._config.STT_REALTIME_MODEL,
                 device=self._config.STT_DEVICE,
                 compute_type=self._config.STT_COMPUTE_TYPE,
+                # RealtimeSTT's own default is 5. Measured with tools/stt_probe.py: greedy is 14% faster on the
+                # final pass and identical in output, so the default ships at 1 and the knob stays for the audio
+                # the probe has not heard. Without this line the config value goes nowhere, which is the failure
+                # mode tests/test_config_knob_liveness.py exists to catch.
+                beam_size=self._config.STT_BEAM_SIZE,
                 language=self._config.STT_LANGUAGE,
                 post_speech_silence_duration=self._config.STT_SILENCE_DURATION,
                 min_length_of_recording=self._config.STT_MIN_RECORDING_LENGTH,

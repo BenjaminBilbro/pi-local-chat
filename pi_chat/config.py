@@ -280,8 +280,26 @@ STT_ENABLED = os.environ.get("PI_CHAT_STT_ENABLED", "1").lower() in {"1", "true"
 STT_MODEL = os.environ.get("PI_CHAT_STT_MODEL", "small.en")
 STT_REALTIME_MODEL = os.environ.get("PI_CHAT_STT_REALTIME_MODEL", "tiny.en")
 STT_DEVICE = os.environ.get("PI_CHAT_STT_DEVICE", "cpu")
-STT_COMPUTE_TYPE = os.environ.get("PI_CHAT_STT_COMPUTE_TYPE", "default")
+# Measured on this machine 2026-11-18 with `tools/stt_probe.py` (six utterances from 2.5 to 19 seconds,
+# including one under 8 dB broadband noise, strata running as a neighbour for company), so these are numbers
+# rather than the library's defaults that happened to be first. `default` is the slowest thing you can ask for
+# on CPU: CTranslate2 says the checkpoint is float16, CPU cannot do float16 efficiently, and it silently
+# widens the weights to float32. `int8` is the same transcription word for word on every fixture, about 16%
+# faster, and it leaves about a gigabyte more free, which matters on a box where the inference engine is
+# already holding 75 of 96 GiB.
+STT_COMPUTE_TYPE = os.environ.get("PI_CHAT_STT_COMPUTE_TYPE", "int8")
 STT_LANGUAGE = os.environ.get("PI_CHAT_STT_LANGUAGE", "en")
+# Beam 1 (greedy) for the final pass: 14% faster than RealtimeSTT's default of 5 and, on this material, word
+# for word identical. Beam is where a transcription gets its caution, so this is the knob to raise if voice
+# input starts eating words on audio the probe has never heard: microphone audio, other languages, or a model
+# swap. The realtime pass is deliberately left at its own default of 3 - beam 1 there measured 8 ms off the
+# first partial, which is not a change worth a knob.
+STT_BEAM_SIZE = int(os.environ.get("PI_CHAT_STT_BEAM_SIZE", "1"))
+# 0.6 s of trailing silence before a recording is closed, which is the one latency knob NOT to lower. At 0.5 s
+# and below the probe stops measuring speed and starts measuring damage: the multi-sentence fixture loses 40%
+# to 80% of its words, because Phonon's own between-sentence pause is longer than 0.5 s and so is a person
+# thinking mid-sentence. Whisper's own transcription of what survives is fine, which is the trap: the tail is
+# simply gone, and no amount of LLM context infers an argument that was never transcribed.
 STT_SILENCE_DURATION = float(os.environ.get("PI_CHAT_STT_POST_SPEECH_SILENCE", "0.6"))
 STT_MIN_RECORDING_LENGTH = float(os.environ.get("PI_CHAT_STT_MIN_RECORDING_LENGTH", "0.3"))
 STT_MIN_GAP_BETWEEN_RECORDINGS = float(os.environ.get("PI_CHAT_STT_MIN_GAP_BETWEEN_RECORDINGS", "0.3"))
