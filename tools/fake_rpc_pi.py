@@ -100,6 +100,13 @@ TURN_MS = int(os.environ.get("FAKE_RPC_TURN_MS", "0"))
 # Milliseconds the tool call stays unreturned. A long bash command is the case where a check mark on
 # an executing tool is a lie, so this is how the UI's running state gets exercised without a model.
 TOOL_MS = int(os.environ.get("FAKE_RPC_TOOL_MS", "0"))
+# A prompt can ask for a slow tool by itself, so that one stage gets a call that is genuinely still
+# unreturned without every turn in the harness paying for it. `tools/smoke_test_ws.py` sends this marker to
+# cancel a call mid-flight; the hold runs through `_pause_and_serve`, which keeps serving stdin and raises
+# `_Aborted` the moment an abort is acknowledged, so the turn unwinds where the user stopped it.
+HOLD_TOOL_MARKER = "FAKE_RPC_HOLD_TOOL"
+HOLD_TOOL_MS = int(os.environ.get("FAKE_RPC_HOLD_TOOL_MS", "6000"))
+_hold_tool_ms = 0
 # Announce and stream the tool call the way a real provider does. See the module docstring.
 STREAM_TOOLS = os.environ.get("FAKE_RPC_STREAM_TOOLS", "") == "1"
 # Milliseconds per streamed tool-argument delta.
@@ -217,6 +224,8 @@ def run_prompt(prompt_text: str) -> None:
     delivered only at the end of the run could not catch a UI that renders a message in the wrong
     place, which is the bug this shape exists to reproduce.
     """
+    global _hold_tool_ms
+    _hold_tool_ms = HOLD_TOOL_MS if HOLD_TOOL_MARKER in prompt_text else TOOL_MS
     _state["turns"] += 1
     _state["busy"] = True
     _state["abort_requested"] = False
@@ -535,8 +544,8 @@ def _run_tool_execution(call_id: str, name: str, args: dict, output: str, *, rec
     """
     emit({"type": "tool_execution_start", "toolCallId": call_id, "toolName": name, "args": args})
     emit({"type": "tool_execution_update", "toolCallId": call_id, "toolName": name, "partialResult": output})
-    if TOOL_MS:
-        _pause_and_serve(TOOL_MS)
+    if _hold_tool_ms:
+        _pause_and_serve(_hold_tool_ms)
     emit(
         {
             "type": "tool_execution_end",

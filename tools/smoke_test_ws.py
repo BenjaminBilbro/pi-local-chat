@@ -41,6 +41,13 @@ checks = 0
 # e.g. '--model google:gemini-3.8-flash --no-extensions --no-skills --no-context-files').
 # Use it to prove protocol drift or absence of one; never needed for a normal test run, and
 # never against a local engine that another pi session is already holding.
+# A prompt the RPC double holds open, so there is a real running call to stop, and the log line the
+# server writes each time it starts a pi child. Together these let the suite prove that stopping a turn
+# does not restart the assistant: Ben could not tell what the Stop button reached for, and a tooltip is not
+# evidence. See `check_stop_leaves_the_child_running`.
+CANCEL_PROMPT = "hold a tool open please FAKE_RPC_HOLD_TOOL"
+SPAWN_LOG_MARK = "Spawning pi --mode rpc"
+
 LIVE = os.environ.get("PI_CHAT_SMOKE_LIVE", "") == "1"
 LIVE_PROMPT = "Reply with exactly one word and nothing else: PI-CHAT-OK"
 
@@ -129,7 +136,65 @@ def login() -> str:
     return cookie.split(";")[0]
 
 
-async def drive_session(cookie: str, replay_session: Path | None = None) -> None:
+def spawn_count(server_log: Path) -> int:
+    """How many pi children the server has started, read from its own log.
+
+    Counting spawn lines is the only honest way to answer "did that stop kill the process?" from outside:
+    a restarted child logs again, and a child that survived a cancelled turn does not.
+    """
+    try:
+        return server_log.read_text(encoding="utf-8", errors="replace").count(SPAWN_LOG_MARK)
+    except OSError:
+        return -1
+
+
+async def check_stop_leaves_the_child_running(
+    ws, pump, got: dict, pi_events: dict, server_log: Path
+) -> None:
+    """S4: Stop ends the turn, and stops nothing else.
+
+    The order the server uses matters here and is not obvious: `cancel_result` goes to the browser before
+    the `abort` is written to pi, because pi acknowledges an abort only once the session goes idle and the
+    tool being escaped is exactly what keeps it busy. So the browser is told first, and the settled turn is
+    what the checks below wait for.
+    """
+    started_before = pi_events.get("tool_execution_start", 0)
+    ended_before = pi_events.get("tool_execution_end", 0)
+    settled_before = pi_events.get("agent_settled", 0)
+    spawns = spawn_count(server_log)
+    check(spawns >= 1, "a pi child was spawned and logged", f"spawn lines: {spawns}")
+
+    await ws.send(json.dumps({"type": "prompt", "message": CANCEL_PROMPT}))
+    await pump(20.0, lambda _e: pi_events.get("tool_execution_start", 0) > started_before)
+    check(pi_events.get("tool_execution_start", 0) > started_before,
+          "the held call started, so there is something to stop", str(pi_events))
+
+    cancel_before = got.get("cancel_result", 0)
+    await ws.send(json.dumps({"type": "cancel_tool"}))
+    await pump(20.0, lambda _e: got.get("cancel_result", 0) > cancel_before)
+    check(got.get("cancel_result", 0) > cancel_before,
+          "cancel_result reaches the browser before the run settles", str(got))
+
+    await pump(20.0, lambda _e: pi_events.get("agent_settled", 0) > settled_before)
+    check(pi_events.get("agent_settled", 0) > settled_before,
+          "the aborted turn settles instead of hanging", str(pi_events))
+    check(pi_events.get("tool_execution_end", 0) == ended_before,
+          "the stopped call never reports a result",
+          f"tool_execution_end went {ended_before} -> {pi_events.get('tool_execution_end', 0)}")
+
+    settled_mid = pi_events.get("agent_settled", 0)
+    await ws.send(json.dumps({"type": "prompt", "message": "second prompt after a stop"}))
+    await pump(25.0, lambda _e: pi_events.get("agent_settled", 0) > settled_mid)
+    check(pi_events.get("agent_settled", 0) > settled_mid,
+          "the next prompt is answered, on the child that was already running", str(pi_events))
+    check(spawn_count(server_log) == spawns,
+          "stopping a turn spawned no new pi child",
+          f"spawn lines went {spawns} -> {spawn_count(server_log)}")
+
+
+async def drive_session(
+    cookie: str, replay_session: Path | None = None, server_log: Path | None = None
+) -> None:
     headers = {"Cookie": cookie}
     try:
         ws_context = websockets.connect(f"ws://{HOST}:{PORT}/ws", additional_headers=headers)
@@ -214,6 +279,11 @@ async def drive_session(cookie: str, replay_session: Path | None = None) -> None
             print("  skip  mid-run queue checks: a real turn is not predictable enough to time")
         else:
             await check_queue_delivery(ws, pump, got, pi_events, queue_states, queue_actions, user_deliveries)
+
+        if LIVE or server_log is None:
+            print("  skip  stop-the-turn checks: they need the RPC double and the server log")
+        else:
+            await check_stop_leaves_the_child_running(ws, pump, got, pi_events, server_log)
 
         await ws.send(json.dumps({"type": "new_session"}))
         await pump(10.0, lambda e: got.get("session_started", 0) > 1)
@@ -383,7 +453,7 @@ def main() -> int:
 
         cookie = login()
         session_path = write_smoke_session()
-        asyncio.run(drive_session(cookie, session_path))
+        asyncio.run(drive_session(cookie, session_path, log_path))
     finally:
         if server and server.poll() is None:
             server.terminate()

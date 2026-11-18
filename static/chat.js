@@ -41,6 +41,7 @@ const waitingIndicator = document.getElementById('waiting-indicator');
 const queueStrip = document.getElementById('queue-strip');
 const steerButton = document.getElementById('steer-btn');
 const stopRunButton = document.getElementById('stop-run-btn');
+const stopRunLabel = stopRunButton?.querySelector('.stop-btn-label') || null;
 
 let onToolInspect = () => {};
 
@@ -1111,11 +1112,18 @@ let cancelInFlight = false;
 function updateStopButton() {
   if (!stopRunButton) return;
 
+  /* Only present while a turn is running, and Send is disabled while one is, so the composer never offers
+   * two primary actions at once. The wording says what `abort` really reaches: the turn and the tool's own
+   * process tree. The pi child survives this, and `tools/smoke_test_ws.py` pins that rather than leaving it
+   * to whoever reads the tooltip. */
   stopRunButton.hidden = !isAgentRunning;
   stopRunButton.disabled = cancelInFlight;
   stopRunButton.title = cancelInFlight
-    ? 'Stopping the run'
-    : 'Stop this run: cancels the running tool and clears queued messages';
+    ? 'Stopping: pi acknowledges an abort only once the turn goes idle'
+    : 'Stop this turn: the running tool is killed and queued messages come back here. '
+      + 'The pi session keeps running.';
+
+  if (stopRunLabel) stopRunLabel.textContent = cancelInFlight ? 'Stopping...' : 'Stop';
 }
 
 /* What the server sends after it has taken the queue away and told pi to stop. The cleared text

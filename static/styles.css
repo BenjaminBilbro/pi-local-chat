@@ -740,15 +740,59 @@ html[data-mascot="pi"] .header-mascot {
   color: var(--text-subtle);
 }
 
-/* The header stop control only exists during a run, and it is the one control here that destroys
- * work in progress, so it is the one control allowed the error colour. */
-.btn-icon.run-stop {
+/* Stop moved into the composer on 2026-11-17 (S4): a control that ends the turn belongs where the hands are
+ * during the turn, not in the chrome above it. It is the one control in this surface allowed the error colour,
+ * because it is the one that throws away work in progress. */
+.stop-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--error-border);
+  /* Same pill as Send now, so the composer reads as one group of actions at one size. */
+  border-radius: 9999px;
+  background: var(--error-surface);
   color: var(--error);
+  font-family: inherit;
+  font-size: var(--font-size-xs);
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s var(--ease-out), color 0.15s var(--ease-out);
 }
 
-.btn-icon.run-stop[disabled] {
+.stop-btn[hidden] { display: none; }
+
+.stop-btn:hover:not([disabled]) {
+  background: var(--error);
+  color: var(--accent-contrast);
+}
+
+/* Armed: the click landed and pi has not answered yet. `abort` is only acknowledged once the session goes
+ * idle, which is the same wait the reader is trying to escape, so this state is honest rather than snappy. */
+.stop-btn[disabled] {
   opacity: 0.55;
   cursor: progress;
+}
+
+/* At phone widths the composer row holds the field, Stop, the mic and Send, and a third labelled control
+ * leaves the field too narrow to read what you just typed. The square carries the meaning; the words move to
+ * screen-reader text rather than disappearing, so the button is still announced as Stop. */
+@media (max-width: 560px) {
+  .stop-btn {
+    padding: 0 10px;
+  }
+
+  .stop-btn-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
 }
 
 /* ── Tool call detail ────────────────────────────────────── */
@@ -1119,7 +1163,13 @@ body.tool-detail-open {
 .input-row {
   display: flex;
   gap: 8px;
-  align-items: flex-end;
+  /* Centred, not bottom-aligned. The field is as tall as its content and the composer controls are a fixed
+   * 44px (42 for the mic until 2026-11-17), so `flex-end` sat every control a couple of pixels below the
+   * field's middle line: Ben read it as the buttons sitting low. One-line input is the normal case and this
+   * is what makes the row read as one line; when the field grows the controls float mid-height, which is
+   * what every other chat composer on his phone does.
+   */
+  align-items: center;
   max-width: 720px;
   margin: 0 auto;
 }
@@ -1219,8 +1269,9 @@ body.tool-detail-open {
 
 /* Mic toggle button */
 #mic-toggle {
-  width: 42px;
-  height: 42px;
+  /* Same box as Send and Stop, so the row has one height and centring has something to centre. */
+  width: 44px;
+  height: 44px;
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   background: transparent;

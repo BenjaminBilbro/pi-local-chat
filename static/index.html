@@ -96,10 +96,6 @@
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8M8 17h5"/></svg>
         Preview
       </button>
-      <button class="btn-icon run-stop" id="stop-run-btn" type="button" hidden title="Stop the run and the call it is waiting on. Queued messages come back to the composer.">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
-        Stop
-      </button>
       <button class="btn-icon" id="new-session-btn" type="button" title="New session (Ctrl+K)">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
         New session
@@ -143,6 +139,15 @@
             </button>
           </div>
         </div>
+        <!-- Stop lives here, beside Send, because that is where attention is during a turn, and it only
+             exists while a turn is running. The id still says "run" because pi's protocol calls a turn a
+             run: this clears pi's queue and aborts the turn, and the pi child itself keeps running. Owned
+             by static/chat.js, which is also what keeps the tool-detail dialog in step with it. -->
+        <button class="stop-btn" id="stop-run-btn" type="button" hidden
+                title="Stop this turn: the running tool is killed and queued messages come back here. The pi session keeps running.">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+          <span class="stop-btn-label">Stop</span>
+        </button>
         <button class="steer-btn" id="steer-btn" type="button" aria-label="Send now" title="Send now: lands after the current tool calls" hidden>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2 4.5 13.5H11l-1 8.5 8.5-11.5H12l1-8.5Z"/></svg>
           <span class="steer-btn-label">Send now</span>

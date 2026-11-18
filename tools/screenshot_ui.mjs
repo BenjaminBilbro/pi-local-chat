@@ -999,7 +999,7 @@ async function runSession(chromeChild) {
 
       const stopVisible = await evaluate(cdp, "(() => { const b = document.getElementById('stop-run-btn');"
         + ' return Boolean(b) && b.hidden === false; })()');
-      if (!stopVisible) fail('nothing in the header could stop a live run');
+      if (!stopVisible) fail('nothing in the composer could stop a live run');
 
       // Queue something first, so handing it back is something the stage can observe.
       await evaluate(cdp, "(() => { const el = document.getElementById('user-input');"
