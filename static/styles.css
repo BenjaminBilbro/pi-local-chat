@@ -3996,3 +3996,70 @@ body[data-voice-mode][data-voice-doc="shown"] #chat-screen[data-doc-open="true"]
     z-index: 310;
   }
 }
+
+/* ── Hot-reload banner (injected by devreload.js, dev mode only) ────────────
+   Centered over the conversation on the same axis as the jump-to-bottom pill, because the middle of the
+   conversation is where the person is already looking, and because a corner is where a browser extension
+   puts things.
+
+   It sits under the voice surface on purpose. Voice mode is a full-bleed screen with one job and no typing;
+   a developer affordance poking through it would be the loudest thing on screen for a phone call. */
+#dev-reload {
+  position: fixed;
+  top: 12px;
+  left: calc(50% + var(--chat-center-shift));
+  transform: translateX(-50%);
+  z-index: 250;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(92vw, 720px);
+  padding: 6px 7px 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-size: var(--font-size-xs);
+  box-shadow: var(--shadow-md);
+}
+
+/* Hiding is the one global `[hidden]` rule's job, not this component's. `styles.css` opens with
+   `[hidden] { display: none !important; }` and a claim in `tools/test_voice_engine_gating.mjs` keeps it the
+   only one, which is the reason a per-element patch is not written here. */
+
+body[data-voice-mode] #dev-reload { display: none; }
+
+.dev-reload-label {
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dev-reload-action {
+  padding: 4px 11px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-family: inherit;
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.dev-reload-action:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
+.dev-reload-action:disabled { opacity: 0.55; cursor: default; }
+
+.dev-reload-dismiss {
+  padding: 2px 8px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.dev-reload-dismiss:hover { color: var(--text); }

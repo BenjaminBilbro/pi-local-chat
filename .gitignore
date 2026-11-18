@@ -15,6 +15,10 @@ sessions/
 # too. These are shaped rather than transcribed, but they are still a record of a real conversation.
 logs/
 
+# Live login tokens, written only when PI_CHAT_DEV is set so a hot reload does not sign the browser out.
+# Whatever else happens to this file, it is never committed.
+.dev-sessions.json
+
 # Documents the preview pane serves. They are conversation output, sometimes private, and
 # regenerable only by re-running the assistant, so they are never committed.
 previews/

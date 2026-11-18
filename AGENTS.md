@@ -17,6 +17,7 @@ more than once a day. Everything else lives in `docs/`, and the split is deliber
 | The timeline renderer, or anything that could make live and history render differently | `docs/rendering-parity.md` |
 | How to run, test, screenshot, or debug this on a machine | `docs/dev-workflow.md` |
 | "It did something and I cannot reproduce it" | debug-mode audit log: `PI_CHAT_AUDIT=1`, read with `tools/audit.py` | `docs/dev-workflow.md` |
+| Getting a change applied without restarting by hand | hot reload: `PI_CHAT_DEV=1` runs a supervisor, and the page offers Reload or Restart server | `docs/dev-workflow.md` |
 | What an environment variable does, its default, or which side reads it | `docs/configuration.md` |
 | Voice, STT, TTS engines | `docs/phonon-tts-engine.md`, `docs/system-prompt-composition.md` |
 | Anything about how the app looks: palette, type, themes, the constraints | `docs/design-system.md` |

@@ -414,6 +414,48 @@ uv run python tests/mobile_viewport_test.py --all
 Requires Camoufox running and pi-chat server on port 9000. Captures screenshots and accessibility snapshots for real mobile device viewports.
 
 
+## Hot Reload (dev mode)
+
+Two kinds of change, and the page treats them differently because the app does.
+
+| You changed | Applying it | Why |
+|---|---|---|
+| `static/**` | the banner's **Reload** button, or any refresh | static files are read from disk per request and sent with `Cache-Control: no-cache`, so the only missing piece is knowing a refresh is owed |
+| `pi_chat/**` or `server.py` | the banner's **Restart server** button | Python is read once at import. A refresh only reconnects to the process holding the old code |
+| `PI_CHAT_*` in the environment | restart, same as above | most knobs are read at import, and `docs/configuration.md` says so because it used to be a surprise |
+
+Run it under the supervisor by starting the server with `PI_CHAT_DEV=1` (loopback, per the existing guard):
+
+```bash
+cd ~/pi-chat
+PI_CHAT_DEV=1 PI_CHAT_HOST=127.0.0.1 \
+PI_CHAT_B_PASSWORD_HASH="$TEST_HASH" \
+uv run python server.py
+```
+
+`server.py` then runs a parent that waits on the real server and brings another one back when it exits with
+the restart code. The page asks for that through `POST /api/dev/restart`, which exists only when `PI_CHAT_DEV`
+is set, answers only to loopback, and still requires a logged-in cookie. Measured on this machine 2026-11-18:
+request to new process answering, about 1.5 seconds.
+
+Four consequences worth knowing before the first click:
+
+- **A restart ends every conversation.** Each connection owns a `pi --mode rpc` child, and shutdown kills
+  them. Anything mid-turn is over. The websockets are force-closed after three seconds (`timeout_graceful_shutdown`)
+  because a chat tab is a connection that has no intention of going idle on its own.
+- **It does not log you out**, which needs saying because it used to be true. Sessions are in memory by design,
+  so dev mode writes live tokens to `.dev-sessions.json` (gitignored) and reads them back. `PI_CHAT_DEV` is
+  loopback-only, and the file is the reason that guard is load-bearing rather than tidy.
+- **It puts you back in the conversation you were in.** The banner stores the current session path, and the
+  reconnect asks for it. An ordinary page load asks for nothing, so a fresh open is still a fresh chat.
+- **A crash does not respawn.** The parent restarts on the request code and returns on anything else, so a
+  syntax error prints its traceback and stops instead of restarting into a loop. Ctrl+C reaches parent and
+  child alike, which is what keeps a stopped server from holding the port.
+
+Checked by `tests/test_devreload.py` (who may ask, what a stamp must reveal, the supervisor's restart rule,
+login survival) and `tools/test_dev_reload_banner.mjs` (when the banner appears, which action it offers, and
+whether the reload hands the conversation back).
+
 ## Debug Mode: The Audit Log
 
 Reports about this app arrive as descriptions of what something *felt* like: "it kept talking, then nothing

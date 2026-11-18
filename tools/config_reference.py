@@ -54,6 +54,7 @@ NOTES = {
     "PI_CHAT_PREVIEW_BASE_DIR": "server side; the child gets `PI_CHAT_PREVIEW_DIR`, a different name",
     "PI_CHAT_DEV": "also skips session ownership checks; never set it on a reachable host",
     "PI_CHAT_AUDIT": "writes an event log of every connection to `logs/`; implies nothing about PI_CHAT_DEV, and is implied by neither",
+    "PI_CHAT_DEV_SESSION_FILE": "where dev-mode login tokens are parked so a hot reload is not a logout; read only when PI_CHAT_DEV is set, and gitignored",
     "PI_CHAT_CONTEXT_FILES": "`0` spawns pi with `--no-context-files`; see `docs/system-prompt-composition.md`",
     "PI_CHAT_TTS_ENGINE": "default is `phonon`; `omnivoice` needs the extra and a GPU",
     "PI_CHAT_TTS_VRAM_REQUIRED_GB": "OmniVoice path only; Phonon never touches the GPU",

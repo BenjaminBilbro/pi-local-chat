@@ -17,6 +17,7 @@ from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from . import preview
+from . import devtools
 from .auth import AuthManager, COOKIE_NAME
 from .config import DEV_MODE, PROJECT_ROOT, STATIC_DIR
 from .process import PiProcess
@@ -586,6 +587,36 @@ def create_app(
             "messages": messages,
             "assistantHtml": rendered.get("assistantHtml", []),
         }
+
+    @application.get("/api/version")
+    async def version(request: Request):
+        """What this process was built from, for the hot-reload banner.
+
+        Behind authentication with the rest of the API rather than public: the payload is a pid, a boot id and
+        the name of the most recently edited file, which is nothing to a stranger and a small map of this
+        machine to one. The banner only ever needs it while someone is logged in.
+        """
+        _require_account(request, auth)
+        # Two directory walks per poll, and the page polls every few seconds. On a thread, because this route
+        # shares its event loop with every chat websocket on the box.
+        return await run_in_threadpool(devtools.snapshot, STATIC_DIR, DEV_MODE)
+
+    if DEV_MODE:
+        # Registered only in dev mode, so everywhere else it is a 404 rather than a forbidden route that
+        # advertises itself. This is the one endpoint in the app that can end the process.
+        @application.post("/api/dev/restart")
+        async def dev_restart(request: Request):
+            """Ask the supervisor for a new process, so a back-end change applies without a terminal."""
+            account = _require_account(request, auth)
+            peer = request.client.host if request.client else ""
+            if peer not in devtools.LOOPBACK_HOSTS:
+                # 404, not 403: `PI_CHAT_ALLOW_DEV_REMOTE=1` exists, and the difference between "not allowed
+                # from there" and "nothing here" is worth keeping off the wire.
+                raise HTTPException(status_code=404, detail="Not found")
+            if not devtools.request_restart():
+                raise HTTPException(status_code=503, detail="No server to restart (running under a test client?)")
+            log.warning("Dev restart requested by profile %s from %s", account, peer)
+            return {"ok": True, "restarting": True, "bootId": devtools.BOOT_ID}
 
     @application.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket):

@@ -13,6 +13,7 @@ import {
   showChatError,
 } from './chat.js';
 import { createSessionPanel } from './sessions.js';
+import { createDevReload } from './devreload.js';
 import { createSocket } from './socket.js';
 import { createDocPane } from './preview.js';
 import { createToolDetail } from './toolDetail.js';
@@ -126,6 +127,12 @@ const sessions = createSessionPanel({
   },
 });
 
+/* Hot reload (dev mode). Harmless everywhere else: every poll that fails, including every production run,
+ * hides the banner and says nothing. It is created before the socket so the first `onOpen` can ask it whether
+ * this page load is a reload that owes a conversation back. */
+const devReload = createDevReload({ currentSessionPath: () => sessions.currentSessionPath() });
+window.__piChatDevReload = devReload;
+
 socket = createSocket({
   onOpen: () => {
     connected = true;
@@ -141,6 +148,16 @@ socket = createSocket({
       sessions.refresh();
     } catch (e) {
       console.error('[app] sessions.refresh() failed:', e);
+    }
+    /* A reload is only worth doing if it puts you back where you were, and "where you were" is a session path
+     * this page already knew. Ordinary page loads ask for nothing, so Roxy still lands on a clean chat. */
+    const restore = devReload.takePendingRestore();
+    if (restore) {
+      try {
+        sessions.loadSession(restore);
+      } catch (e) {
+        console.error('[app] session restore after reload failed:', e);
+      }
     }
   },
   onClose: () => {

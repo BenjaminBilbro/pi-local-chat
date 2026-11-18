@@ -385,6 +385,15 @@ AUDIT_MAX_BYTES = int(os.environ.get("PI_CHAT_AUDIT_MAX_BYTES", str(8 * 1024 * 1
 AUDIT_COALESCE_BYTES = int(os.environ.get("PI_CHAT_AUDIT_COALESCE_BYTES", "65536"))
 
 
+# Where dev-mode login sessions are parked between runs, so a hot reload does not sign the browser out. Only
+# read when PI_CHAT_DEV is set; the file holds live tokens, which is why it is gitignored and why production
+# never touches it.
+DEV_SESSION_FILE = os.environ.get(
+    "PI_CHAT_DEV_SESSION_FILE",
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".dev-sessions.json"),
+)
+
+
 # ---------------------------------------------------------------------------
 # Environment diagnostics
 # ---------------------------------------------------------------------------

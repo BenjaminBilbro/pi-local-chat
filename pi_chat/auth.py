@@ -4,7 +4,9 @@ import argparse
 import getpass
 import hashlib
 import hmac
+import json
 import logging
+import os
 import secrets
 import time
 from collections import deque
@@ -14,6 +16,8 @@ from pathlib import Path
 from .config import (
     ACCOUNT_ENV_VARIABLES,
     ACCOUNT_PASSWORD_HASHES,
+    DEV_MODE,
+    DEV_SESSION_FILE,
     ENV_FILE,
     SESSION_TTL_SECONDS,
 )
@@ -73,6 +77,12 @@ class AuthManager:
                 )
         self.session_ttl_seconds = session_ttl_seconds
         self._sessions: dict[str, AuthSession] = {}
+        # Dev mode only: live sessions survive a restart, because "restart the server" from a button that then
+        # throws you back at the login screen is not a restart, it is a logout with extra steps. Production
+        # keeps sessions in memory alone, where a restart is a deliberate act and losing them is the point.
+        self._session_file = Path(DEV_SESSION_FILE) if DEV_MODE else None
+        if self._session_file is not None:
+            self._load_sessions()
         self.max_failed_logins = max_failed_logins
         self.failed_login_window = failed_login_window
         # profile -> monotonic timestamps of recent wrong answers, oldest first
@@ -96,6 +106,7 @@ class AuthManager:
             account=account,
             expires_at=time.time() + self.session_ttl_seconds,
         )
+        self._save_sessions()
         return token
 
     def retry_after(self, account: str) -> float:
@@ -157,6 +168,65 @@ class AuthManager:
     def logout(self, token: str | None) -> None:
         if token:
             self._sessions.pop(token, None)
+            self._save_sessions()
+
+    def _load_sessions(self) -> None:
+        """Read live sessions back, dev mode only.
+
+        Every failure here is a warning rather than an exception: this runs inside a constructor, and a
+        half-written or hand-edited file must cost a login, not the server.
+        """
+        if self._session_file is None:
+            return
+        try:
+            payload = json.loads(self._session_file.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return
+        except (OSError, ValueError) as error:
+            log.warning("Ignoring the dev session file %s (%s); logins will not survive this restart", self._session_file, error)
+            return
+
+        now = time.time()
+        restored = 0
+        for entry in payload.get("sessions", []) if isinstance(payload, dict) else []:
+            if not isinstance(entry, dict):
+                continue
+            token = entry.get("token")
+            account = entry.get("account")
+            expires_at = entry.get("expiresAt")
+            if not isinstance(token, str) or not isinstance(account, str):
+                continue
+            if not isinstance(expires_at, (int, float)) or expires_at <= now:
+                continue
+            if account not in self.password_hashes:
+                # A profile whose hash has gone away is a profile that cannot be logged in, whatever the file
+                # says about a session it issued days ago.
+                continue
+            self._sessions[token] = AuthSession(account=account, expires_at=float(expires_at))
+            restored += 1
+        if restored:
+            log.info("Dev mode: restored %d live session(s) from %s", restored, self._session_file.name)
+
+    def _save_sessions(self) -> None:
+        """Write the live sessions, dropping expired ones on the way out so the file cannot only grow."""
+        if self._session_file is None:
+            return
+        now = time.time()
+        payload = {
+            "sessions": [
+                {"token": token, "account": session.account, "expiresAt": session.expires_at}
+                for token, session in self._sessions.items()
+                if session.expires_at > now
+            ]
+        }
+        try:
+            self._session_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            if os.name != "nt":
+                # The file holds live tokens. Windows answers this through ACLs the call cannot express, so it
+                # is best-effort there and a real mode on everything else.
+                os.chmod(self._session_file, 0o600)
+        except OSError as error:
+            log.warning("Could not write the dev session file %s (%s)", self._session_file, error)
 
     def _remove_expired_sessions(self) -> None:
         now = time.time()
