@@ -159,6 +159,13 @@
 
   /* Code */
   --code-bg: #F1EFEA;
+
+  /* The dot matrix that stands in for an image still being drawn (static/image-loader.js). Lava on
+   * Oat, per Ben 2026-11-19: the lit dots are the accent and the waiting dots are the same subtle
+   * slate the rest of the pane uses, so the animation is one colour and reads as a level rather than
+   * as a confetti of dots. The loader paints with globalAlpha, so plain hex belongs here. */
+  --doc-loader-accent: #FF3621;
+  --doc-loader-base: #5F6877;
   --code-border: var(--border);
 
   /* Elevation: the light theme is border-driven, shadows stay faint */
@@ -233,6 +240,11 @@
 
   /* Code */
   --code-bg: #0A1B21;
+
+  /* Same two roles as the light theme, lifted to the dark accent so the lit dots clear against Navy 900
+   * the way small accent text does elsewhere in this ramp. */
+  --doc-loader-accent: #FF5A45;
+  --doc-loader-base: #94A8AF;
   --code-border: var(--border);
 
   /* Elevation: shadows barely read on navy, so borders carry the depth */

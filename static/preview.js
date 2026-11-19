@@ -11,6 +11,7 @@
  * CSP sandbox directive, so neither the attribute nor the header has to hold the line alone. */
 
 import { setMarkdownContent } from './timeline.js';
+import { createImageLoader, loaderMeta, parseCanvas } from './image-loader.js';
 import {
   MAX_POLL_FAILURES,
   backingFor,
@@ -39,8 +40,29 @@ const MIN_CHAT_WIDTH = 520;
 const MIN_SPLIT_WIDTH = MIN_WIDTH + MIN_CHAT_WIDTH;
 const RESIZE_STEP = 40;
 
-const KIND_LABELS = { markdown: 'md', html: 'html', pdf: 'pdf' };
-const KIND_TITLES = { markdown: 'Markdown', html: 'HTML', pdf: 'PDF' };
+const KIND_LABELS = { markdown: 'md', html: 'html', pdf: 'pdf', image: 'img' };
+const KIND_TITLES = { markdown: 'Markdown', html: 'HTML', pdf: 'PDF', image: 'Image' };
+/* The stages a document can arrive in. Only the image tool uses them, and an absent stage means
+ * "nothing is pending", which is how every other kind reads. */
+const DOC_STATES = new Set(['rendering', 'ready', 'error']);
+/* Zoom bounds. Below a fifth an image is a smudge and above eight you are reading a pixel grid; both
+ * ends are reachable by scroll, so the clamp is what stops a flick of the wheel being unrecoverable. */
+const MIN_ZOOM = 0.2;
+const MAX_ZOOM = 8;
+const ZOOM_STEP = 1.25;
+const PAN_STEP = 40;
+/* How often a document that claims to still be rendering is asked whether its bytes exist yet, and
+ * how long a draw may say nothing before the pane admits it might have died. The draw itself is the
+ * only authority on progress, so this poll exists for the one case where there is no live tool: the
+ * page was reloaded mid-draw, or the server restarted under it. */
+const RENDER_POLL_MS = 4000;
+const STALL_AFTER_MS = 300000;
+/* What to say when a `rendering` entry has said nothing for `STALL_AFTER_MS`. It has to be possible for
+ * this to be wrong - a 2048 H3 draw plus a slow VRAM handback really can go quiet for minutes - so the
+ * copy keeps the door open instead of declaring a death the pane cannot observe. */
+const STALLED_COPY = 'Nothing has arrived for a while. This draw may still be queued behind another, '
+  'or it may have died with its connection. The pane keeps checking, and asking pi to draw it again '
+  'is always safe.';
 /* What a tab's dot means, and the only honest answer for a document that is not on screen: nothing is
  * polling it, so what is rendered is whatever was there when it last was. */
 const FRESHNESS_TITLES = {
@@ -97,6 +119,18 @@ export function createDocPane({ onError } = {}) {
   const sourceView = pane.querySelector('[data-doc-view="source"]');
   const sourcePre = sourceView ? sourceView.querySelector('pre') : null;
   const frameEl = pane.querySelector('[data-doc-view="frame"]');
+  /* The image view: one stage holding either the dots or the picture, a text overlay, and a zoom bar. */
+  const imageView = pane.querySelector('[data-doc-view="image"]');
+  const imageStage = pane.querySelector('[data-doc-image-stage]');
+  const imageEl = pane.querySelector('[data-doc-image]');
+  const imageDots = pane.querySelector('[data-doc-image-dots]');
+  const imagePhaseEl = pane.querySelector('[data-doc-image-phase]');
+  const imageDetailEl = pane.querySelector('[data-doc-image-detail]');
+  const imagePctEl = pane.querySelector('[data-doc-image-pct]');
+  const imageNoteEl = pane.querySelector('[data-doc-image-note]');
+  const imageBarEl = pane.querySelector('[data-doc-image-bar]');
+  const imageScaleEl = pane.querySelector('[data-doc-image-scale]');
+  const downloadBtn = pane.querySelector('[data-doc-download]');
   const sourceBtn = pane.querySelector('[data-doc-source]');
   const sourceLabel = pane.querySelector('[data-doc-source-label]');
   const reloadBtn = pane.querySelector('[data-doc-reload]');
@@ -127,6 +161,24 @@ export function createDocPane({ onError } = {}) {
   let reportTimer = null;
   let chipTimer = null;
 
+  /* ── Image view state ────────────────────────────────────────
+   * The dots and the zoom live here, not on the doc objects, because `normalize()` rebuilds a doc from
+   * scratch on every entry and a re-read from disk must not reset how far the human had zoomed in. */
+  const imageZoom = new Map();
+  /* docId -> { progress, at }. Ephemeral by design: sd-cli emits an update every 400 ms, and a session
+   * file holding hundreds of them per draw would slow every reopen for a number that is stale the
+   * moment the draw ends. The entry carries the truth; this carries the animation. */
+  const imageProgress = new Map();
+  /* The URL the `<img>` element has actually finished loading, so a swap can wait for the bytes. */
+  let imageLoadedUrl = null;
+  let imageBrokenUrl = null;
+  let renderTimer = null;
+  let loader = null;
+  /* The clock behind "this draw has gone quiet". `startedAt` is when this pane started waiting for a
+   * document whose tool it cannot see - which is what makes a page reloaded mid-draw measurable at all,
+   * rather than permanently rendering the word "rendering". */
+  let renderWatch = { docId: null, startedAt: 0, lastProgressAt: 0 };
+
   applyStoredWidth();
 
   /* The column is a fixture of the layout, not a thing that appears when pi first writes a document. The
@@ -154,7 +206,15 @@ export function createDocPane({ onError } = {}) {
     // entry for the same id must not resurrect a follow the human froze nor drop one they started.
     // Recomputing after the merge is not optional: `normalize` ran before it and could not have seen
     // the previous document's override.
-    docs.set(doc.id, recomputeWatching({ ...previous, ...doc }));
+    // The draw is over: the progress stream and any zoom belong to the draw, not to the file that
+    // replaced it, and a stale zoom would open a finished image cropped to the previous one's scale.
+    if (previous?.state === 'rendering' && doc.state !== 'rendering') clearPending(String(doc.id));
+    const merged = recomputeWatching({ ...previous, ...doc });
+    // A `rendering` entry carries the canvas; a later re-read of the same document carries no reason to
+    // restate it. Losing the size would mean the placeholder geometry, and the caption, both go blank on
+    // an entry that only meant "the file changed".
+    if (!merged.canvas && previous?.canvas) merged.canvas = previous.canvas;
+    docs.set(doc.id, merged);
     if (activate || !activeId) activeId = doc.id;
     // Whatever the tool just wrote is now the truth, so the watcher starts from here. Without this
     // the pane would wait two polls and then "reload from disk" a document it was handed seconds
@@ -181,6 +241,8 @@ export function createDocPane({ onError } = {}) {
   function closeDoc(id) {
     if (!docs.has(id)) return;
     docs.delete(id);
+    imageZoom.delete(id);
+    imageProgress.delete(id);
     if (activeId === id) {
       const next = [...docs.keys()];
       activeId = next.length ? next[next.length - 1] : null;
@@ -195,6 +257,10 @@ export function createDocPane({ onError } = {}) {
   function closeAll() {
     docs.clear();
     activeId = null;
+    imageZoom.clear();
+    imageProgress.clear();
+    stopRenderWatch();
+    if (loader) loader.hide();
     renderTabs();
     renderActive();
     // Leaving the pane open here is deliberate: a new session has nothing to show, and the empty state is
@@ -235,6 +301,9 @@ export function createDocPane({ onError } = {}) {
     // Opening starts the one poll; closing stops it dead. A column nobody is looking at has no
     // reason to wake the network once a second.
     resetPoll();
+    // A closed column measures zero, so dots that were asked to draw while it was shut have to be
+    // measured again the moment there is a box to draw in.
+    syncImageStage();
     reportState();
     try {
       localStorage.setItem(OPEN_KEY, open ? 'open' : 'closed');
@@ -372,6 +441,12 @@ export function createDocPane({ onError } = {}) {
       if (value === undefined) return doc ? Boolean(doc.watching) : null;
       return setActiveFollow(value);
     },
+    /**
+     * Feed one `tool_execution_update` in. app.js forwards every pi event here rather than deciding
+     * anything: whether an update belongs to a preview document is a question only this file can answer,
+     * from `partialResult.details.doc`.
+     */
+    toolUpdate: applyToolUpdate,
     replay,
     setWidth,
     width: () => currentWidth(),
@@ -405,6 +480,10 @@ export function createDocPane({ onError } = {}) {
       // the model's explicit opinion, and absence means Follow-files decides. Both feed `watching`.
       copied: Boolean(entry.copied),
       watch: typeof entry.watch === 'boolean' ? entry.watch : undefined,
+      // Stage and requested pixel size, both image-only today. `state` absent means nothing is pending;
+      // `canvas` is what lets a placeholder have the right shape before there are bytes to measure.
+      state: DOC_STATES.has(String(entry.state || '')) ? String(entry.state) : null,
+      canvas: parseCanvas(entry.canvas),
       backing: backingFor(entry),
       // The staleness token the pane last rendered against. `tabFreshness` compares a background
       // tab's recorded token against this to say "fresh" rather than "stale".
@@ -709,12 +788,20 @@ export function createDocPane({ onError } = {}) {
     }
     if (sourceBtn) sourceBtn.hidden = !doc || doc.kind !== 'markdown';
     if (reloadBtn) reloadBtn.hidden = !doc;
+    // A document that does not exist yet has nothing to open and nothing to save. A control that 404s is
+    // worse than a control that is not there.
+    const pending = isPending(doc);
     if (externalEl) {
-      externalEl.hidden = !doc;
-      if (doc) externalEl.href = doc.url;
+      externalEl.hidden = !doc || pending;
+      if (doc && !pending) externalEl.href = doc.url;
     }
+    if (downloadBtn) downloadBtn.hidden = true;
     if (noteEl) {
-      const note = doc ? doc.note : null;
+      // An image that failed says the tool's reason in the stage, where the eye already is. The strip
+      // under the body carries the same sentence, and a screenshot of the cancelled state showed it
+      // twice on one screen - the same words twice reads as a bug even when both are true.
+      const repeated = Boolean(doc) && doc.kind === 'image' && doc.state === 'error';
+      const note = doc && !repeated ? doc.note : null;
       noteEl.hidden = !note;
       noteEl.textContent = note || '';
     }
@@ -741,7 +828,10 @@ export function createDocPane({ onError } = {}) {
     // A replayed document whose file is gone (preview cleanup, or the machine moved) keeps its tab:
     // the conversation still refers to it, and an empty pane would read as a bug. Saying what was here
     // is the useful part, so the detail line carries the name, size and last write time the server saw.
-    if (doc.available === false) {
+    //
+    // A draw in flight is the exception: its entry points at a file that is not written yet, so
+    // `available: false` is the normal state of a `rendering` document, not news about a missing one.
+    if (doc.available === false && !explainsItself(doc)) {
       showView(null);
       if (emptyEl) {
         emptyEl.hidden = false;
@@ -752,6 +842,10 @@ export function createDocPane({ onError } = {}) {
 
     // A markdown document that has not been fetched yet still needs the body switched over
     // before the fetch resolves, or the previous PDF would stay on screen.
+    if (doc.kind === 'image') {
+      renderImage(doc);
+      return;
+    }
     showView(doc.kind === 'markdown' ? 'markdown' : 'frame');
     if (doc.kind === 'markdown') renderMarkdown(doc, priorScroll);
     else loadFrame(doc);
@@ -832,6 +926,446 @@ export function createDocPane({ onError } = {}) {
     frameEl.setAttribute('src', doc.url);
   }
 
+  /* ── Images: the dots, then the picture ───────────────────
+   *
+   * A generated image arrives in three moments and the pane has a face for each: a `rendering` entry
+   * carrying a canvas and no bytes, an optional stream of live progress from the tool, and a `ready`
+   * entry carrying the file. The first two are why the dots exist; the third is why they have to stop
+   * exactly where the picture starts.
+   *
+   * Nothing here polls while the tool is alive - live progress is the only authority. The one poll
+   * below exists for the case where there is no live tool at all: the page was reloaded mid-draw, or
+   * the server restarted under it, and the recorded entry would otherwise pulse forever over a draw
+   * that died with its connection. */
+
+  function isPending(doc) {
+    return Boolean(doc) && doc.kind === 'image' && doc.state === 'rendering';
+  }
+
+  /* A document whose own state already explains why it has no bytes: still being drawn, or a draw that
+   * was cancelled and said so. Both say more than "preview files are cleaned up after a while" does,
+   * and both are true while `available` is false for completely different reasons. */
+  function explainsItself(doc) {
+    return Boolean(doc)
+      && doc.kind === 'image'
+      && (doc.state === 'rendering' || doc.state === 'error');
+  }
+
+  /** Drop the body the `<img>` is holding, so a later revision really is fetched again. */
+  function dropImageBody() {
+    if (!imageEl) return;
+    imageEl.removeAttribute('src');
+    imageEl.hidden = true;
+    imageLoadedUrl = null;
+    imageBrokenUrl = null;
+  }
+
+  function dots() {
+    if (!loader && imageDots) loader = createImageLoader(imageDots);
+    return loader;
+  }
+
+  /* The three conditions that make an animation defensible: the column is open, the tab is visible,
+   * and this is not a session being rebuilt under the user. */
+  function canAnimate() {
+    return open && document.visibilityState === 'visible' && !replaying;
+  }
+
+  function renderImage(doc) {
+    if (!imageView) return;
+    // Same rule as every other kind, and easy to lose on this one: the view has to be switched over
+    // before anything paints into it, or the previous document's body stays on top of a hidden element
+    // and the empty state stays wherever it was (measured in jsdom, and the same bug S8 fixed for
+    // markdown-vs-frame on a tab switch).
+    showView('image');
+    if (doc.state === 'error') renderImageFailure(doc);
+    else if (doc.state === 'rendering') showDots(doc);
+    else showPicture(doc);
+  }
+
+  function renderImageFailure(doc) {
+    stopRenderWatch();
+    if (loader) loader.hide();
+    if (imageDots) imageDots.hidden = true;
+    dropImageBody();
+    if (imageBarEl) imageBarEl.hidden = true;
+    imageLoadedUrl = null;
+    if (!imageStage) return;
+    imageStage.dataset.state = 'error';
+    setLabel(imagePhaseEl, 'Not rendered');
+    setLabel(imageDetailEl, doc.canvas ? `${doc.canvas.w}\u00d7${doc.canvas.h}` : '');
+    setLabel(imagePctEl, '');
+    // The tool's own note is the only explanation a person can act on ("cancelled", "sd-cli exited",
+    // "out of memory"), so it goes in the pane rather than only in the tool line above it.
+    setLabel(imageNoteEl, doc.note || 'The image tool gave up and left no file.');
+  }
+
+  function showDots(doc) {
+    // A draw that is in flight has no body, and the `<img>` may still be holding the one from a previous
+    // revision of this same doc id. Left in place, the next `ready` entry would see its own url already
+    // in the element, fetch nothing, and print the old picture as the new one.
+    dropImageBody();
+    if (imageBarEl) imageBarEl.hidden = true;
+    if (imageDots) imageDots.hidden = false;
+    const canvas = dots();
+    if (canvas) {
+      canvas.show(doc.canvas || null, imageStage);
+      const live = imageProgress.get(doc.id);
+      canvas.setProgress(live ? live.progress : null);
+      if (canAnimate()) canvas.start();
+      else canvas.stop();
+    }
+    paintImageLabels(doc);
+    armRenderWatch(doc);
+  }
+
+  /** The text over the dots. Called on every progress update, so it only writes what changed. */
+  function paintImageLabels(doc) {
+    const live = imageProgress.get(doc.id);
+    const meta = loaderMeta(live ? live.progress : null, doc.canvas || null);
+    const stalled = stalledNow();
+    if (imageStage) {
+      imageStage.dataset.state = stalled ? 'stalled' : 'rendering';
+      const label = `Rendering ${doc.title}: ${stalled ? 'no word from this draw' : meta.phase}${meta.pct ? ` ${meta.pct}` : ''}`;
+      if (imageStage.getAttribute('aria-label') !== label) imageStage.setAttribute('aria-label', label);
+    }
+    setLabel(imagePhaseEl, stalled ? 'No word from this draw' : meta.phase);
+    setLabel(imageDetailEl, [meta.detail, meta.eta].filter(Boolean).join(' \u00b7 '));
+    setLabel(imagePctEl, meta.pct);
+    setLabel(imageNoteEl, stalled ? STALLED_COPY : '');
+  }
+
+  function showPicture(doc) {
+    stopRenderWatch();
+    const url = doc.url;
+    const state = imageBrokenUrl === url ? 'broken' : imageLoadedUrl === url ? 'ready' : 'loading';
+    if (!imageStage) return;
+    imageStage.dataset.state = state;
+    if (imageEl) {
+      imageEl.hidden = false;
+      // The title is the prompt, truncated by the tool: as alt text that is far more useful than
+      // "image", and it is the same sentence the person typed.
+      imageEl.alt = doc.title || 'Generated image';
+    }
+    if (state === 'ready') {
+      if (loader) {
+        loader.stop();
+        loader.hide();
+      }
+      if (imageDots) imageDots.hidden = true;
+      setLabel(imagePhaseEl, '');
+      setLabel(imageDetailEl, '');
+      setLabel(imageNoteEl, '');
+    } else {
+      /* Decoding, or broken: keep the dots as the backdrop, frozen. An empty column reads as a bug, and
+       * "the machine stopped caring" is the wrong lesson to take from a slow decode. */
+      if (loader) {
+        loader.show(doc.canvas || null, imageStage);
+        loader.stop();
+      }
+      if (imageDots) imageDots.hidden = !loader;
+      setLabel(imagePhaseEl, state === 'broken' ? 'Would not load' : 'Loading');
+      setLabel(imageDetailEl, doc.canvas ? `${doc.canvas.w}\u00d7${doc.canvas.h}` : '');
+      setLabel(imageNoteEl, state === 'broken'
+        ? 'The finished file would not load. It may have been cleaned up, or the write never landed.'
+        : '');
+    }
+    setLabel(imagePctEl, '');
+    if (imageBarEl) imageBarEl.hidden = state !== 'ready';
+    if (downloadBtn) {
+      downloadBtn.hidden = state !== 'ready';
+      if (state === 'ready') {
+        downloadBtn.href = url;
+        downloadBtn.download = suggestedName(doc);
+      }
+    }
+    loadImageIfNeeded(doc);
+    applyImageTransform(doc);
+  }
+
+  /** Point the `<img>` at the current revision. Same url is the same document, so leave it alone. */
+  function loadImageIfNeeded(doc) {
+    if (!imageEl) return;
+    const url = doc.url;
+    if (imageEl.getAttribute('src') === url) return;
+    imageEl.dataset.docId = doc.id;
+    imageEl.setAttribute('src', url);
+  }
+
+  /** Re-measure the dots after the column opened, resized, or became visible again. */
+  function syncImageStage() {
+    const doc = activeDoc();
+    if (!doc || doc.kind !== 'image' || !loader) return;
+    if (doc.state !== 'rendering') return;
+    const box = loader.measure(imageStage);
+    if (canAnimate() && box) loader.start();
+    else loader.stop();
+    clampActivePan();
+  }
+
+  function armRenderWatch(doc) {
+    if (renderWatch.docId === doc.id && renderTimer !== null) return;
+    stopRenderWatch();
+    const live = imageProgress.get(doc.id);
+    renderWatch = { docId: doc.id, startedAt: Date.now(), lastProgressAt: live ? live.at : 0 };
+    renderTimer = setInterval(checkRenderedOnce, RENDER_POLL_MS);
+  }
+
+  function stopRenderWatch() {
+    if (renderTimer !== null) {
+      clearInterval(renderTimer);
+      renderTimer = null;
+    }
+    renderWatch = { docId: null, startedAt: 0, lastProgressAt: 0 };
+  }
+
+  function stalledNow() {
+    const since = Math.max(renderWatch.startedAt, renderWatch.lastProgressAt);
+    return since > 0 && Date.now() - since > STALL_AFTER_MS;
+  }
+
+  /**
+   * Ask whether the bytes exist yet, for the one case the tool cannot report: nobody is watching.
+   *
+   * `/api/preview/fresh` is one `stat` behind the same allowlist as the serving route, so this cannot
+   * learn about a file the browser could not already fetch. A "yes" adopts the state the missing entry
+   * would have carried; the recorded entry stays `rendering` in the session file, which is a true
+   * record of what the old connection saw.
+   */
+  async function checkRenderedOnce() {
+    const doc = activeDoc();
+    if (!doc || doc.kind !== 'image' || doc.state !== 'rendering') {
+      stopRenderWatch();
+      return;
+    }
+    if (!open || document.visibilityState !== 'visible') return;
+    const query = freshnessQuery(doc);
+    let served = false;
+    if (query) {
+      try {
+        const response = await fetch(query, { credentials: 'same-origin', cache: 'no-store' });
+        if (response.ok) served = (await response.json()).served === true;
+      } catch {
+        /* A missed check is not a failure to report. The next one is in a few seconds. */
+      }
+    }
+    if (served) {
+      docs.set(doc.id, { ...docs.get(doc.id), state: 'ready' });
+      stopRenderWatch();
+      renderTabs();
+      renderActive();
+      showChip('Draw finished', doc.id);
+      return;
+    }
+    // The stalled copy appears here rather than on its own timer, so there is one clock.
+    if (stalledNow()) paintImageLabels(doc);
+  }
+
+  /**
+   * One `tool_execution_update`. Progress is ephemeral on purpose: sd-cli speaks every 400 ms, and a
+   * session file holding hundreds of those per draw would slow every reopen to print a number that is
+   * stale the moment the draw ends. The entry carries the state; this carries the animation.
+   */
+  function applyToolUpdate(event) {
+    const details = event && event.partialResult && event.partialResult.details;
+    const docId = details && details.doc ? String(details.doc) : '';
+    if (!docId || !docs.has(docId)) return false;
+    const doc = docs.get(docId);
+    if (doc.kind !== 'image') return false;
+    imageProgress.set(docId, { progress: details.progress || null, at: Date.now() });
+    if (renderWatch.docId === docId) renderWatch = { ...renderWatch, lastProgressAt: Date.now() };
+    if (activeId === docId && doc.state === 'rendering') {
+      if (loader) loader.setProgress(details.progress || null);
+      paintImageLabels(doc);
+    }
+    return true;
+  }
+
+  /** The draw is over: drop the ephemeral half of a document's state. */
+  function clearPending(docId) {
+    imageProgress.delete(docId);
+    imageZoom.delete(docId);
+    if (renderWatch.docId === docId) stopRenderWatch();
+  }
+
+  function setLabel(el, text) {
+    if (!el) return;
+    const value = String(text || '');
+    // Written only when it moved: the phase line is a live region, and re-assigning identical text is a
+    // DOM mutation a screen reader would read as news four times a second.
+    if (el.textContent !== value) el.textContent = value;
+    el.hidden = !value;
+  }
+
+  /** The name the download button proposes: what was asked for, and how big, not a doc id. */
+  function suggestedName(doc) {
+    const slug = String(doc.title || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 48)
+      .replace(/-+$/, '');
+    const size = doc.canvas ? `-${doc.canvas.w}x${doc.canvas.h}` : '';
+    return `${slug || `image-${String(doc.id).slice(0, 8)}`}${size}.png`;
+  }
+
+  /* ── Zoom and pan ───────────────────────────────────
+   *
+   * One `transform` on the `<img>`, and nothing else. No scroll container, no resize, no reflow: the
+   * conversation column must not move because a picture got bigger, which is the same invariant that
+   * made the composer two lines (docs/composer.md). */
+
+  function zoomOf(id) {
+    let zoom = imageZoom.get(id);
+    if (!zoom) {
+      zoom = { k: 1, x: 0, y: 0 };
+      imageZoom.set(id, zoom);
+    }
+    return zoom;
+  }
+
+  function applyImageTransform(doc) {
+    if (!imageEl || !doc) return;
+    const zoom = zoomOf(doc.id);
+    const moved = zoom.k !== 1 || zoom.x !== 0 || zoom.y !== 0;
+    imageEl.style.transform = moved
+      ? `translate(${zoom.x.toFixed(1)}px, ${zoom.y.toFixed(1)}px) scale(${zoom.k.toFixed(3)})`
+      : '';
+    imageEl.classList.toggle('is-transformed', moved);
+    if (imageScaleEl) imageScaleEl.textContent = `${Math.round(zoom.k * 100)}%`;
+  }
+
+  function stageBox() {
+    return { w: imageStage?.clientWidth || 1, h: imageStage?.clientHeight || 1 };
+  }
+
+  /**
+   * Scale by `factor` keeping `point` (measured from the stage centre) exactly where it is.
+   *
+   * For a translate-then-scale about the element's own centre, a point of the image lands at
+   * `q = t + k·u`. Solving that for `u` and re-picking `t` is the difference between zooming into the
+   * thing under the cursor and watching the image run away from it.
+   */
+  function zoomAt(doc, factor, point) {
+    const zoom = zoomOf(doc.id);
+    const next = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, zoom.k * factor));
+    if (next === zoom.k) return;
+    const u = { x: (point.x - zoom.x) / zoom.k, y: (point.y - zoom.y) / zoom.k };
+    zoom.k = next;
+    zoom.x = point.x - next * u.x;
+    zoom.y = point.y - next * u.y;
+    clampPan(zoom);
+    applyImageTransform(doc);
+  }
+
+  /** Keep the image's centre inside the stage, so a pan can never lose the picture off screen. */
+  function clampPan(zoom) {
+    const box = stageBox();
+    zoom.x = Math.max(-box.w / 2, Math.min(box.w / 2, zoom.x));
+    zoom.y = Math.max(-box.h / 2, Math.min(box.h / 2, zoom.y));
+  }
+
+  function clampActivePan() {
+    const doc = activeDoc();
+    if (!doc || doc.kind !== 'image') return;
+    const zoom = zoomOf(doc.id);
+    clampPan(zoom);
+    applyImageTransform(doc);
+  }
+
+  function resetZoom(doc) {
+    if (!doc || doc.kind !== 'image') return;
+    imageZoom.set(doc.id, { k: 1, x: 0, y: 0 });
+    applyImageTransform(doc);
+  }
+
+  function setupImageView() {
+    if (!imageStage) return;
+    const zoomable = () => {
+      const doc = activeDoc();
+      return doc && doc.kind === 'image' && imageStage.dataset.state === 'ready' ? doc : null;
+    };
+
+    imageStage.addEventListener('wheel', (event) => {
+      const doc = zoomable();
+      if (!doc) return;
+      // The stage is `overflow: hidden`, so there is nothing for this wheel to scroll: taking it is not
+      // stealing a scroll, and passive is not an option once preventDefault is the point.
+      event.preventDefault();
+      const rect = imageStage.getBoundingClientRect();
+      zoomAt(doc, Math.exp(-event.deltaY * 0.0015), {
+        x: event.clientX - (rect.left + rect.width / 2),
+        y: event.clientY - (rect.top + rect.height / 2),
+      });
+    }, { passive: false });
+
+    let drag = null;
+    imageStage.addEventListener('pointerdown', (event) => {
+      const doc = zoomable();
+      if (!doc || event.button !== 0) return;
+      const zoom = zoomOf(doc.id);
+      drag = {
+        id: doc.id,
+        pointerId: event.pointerId,
+        fromX: event.clientX,
+        fromY: event.clientY,
+        originX: zoom.x,
+        originY: zoom.y,
+      };
+      try {
+        imageStage.setPointerCapture(event.pointerId);
+      } catch {
+        /* A pointer that vanished between down and here; the drag simply does not capture. */
+      }
+      imageStage.classList.add('is-dragging');
+    });
+
+    imageStage.addEventListener('pointermove', (event) => {
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      const doc = docs.get(drag.id);
+      if (!doc) return;
+      const zoom = zoomOf(doc.id);
+      zoom.x = drag.originX + (event.clientX - drag.fromX);
+      zoom.y = drag.originY + (event.clientY - drag.fromY);
+      clampPan(zoom);
+      applyImageTransform(doc);
+    });
+
+    const endDrag = (event) => {
+      if (!drag || (event && event.pointerId !== drag.pointerId)) return;
+      imageStage.classList.remove('is-dragging');
+      drag = null;
+    };
+    imageStage.addEventListener('pointerup', endDrag);
+    imageStage.addEventListener('pointercancel', endDrag);
+    imageStage.addEventListener('dblclick', () => resetZoom(activeDoc()));
+
+    imageStage.addEventListener('keydown', (event) => {
+      const doc = zoomable();
+      if (!doc) return;
+      const centre = { x: 0, y: 0 };
+      if (event.key === '+' || event.key === '=') zoomAt(doc, ZOOM_STEP, centre);
+      else if (event.key === '-' || event.key === '_') zoomAt(doc, 1 / ZOOM_STEP, centre);
+      else if (event.key === '0') resetZoom(doc);
+      else if (event.key === 'ArrowLeft') { zoomOf(doc.id).x += PAN_STEP; clampActivePan(); }
+      else if (event.key === 'ArrowRight') { zoomOf(doc.id).x -= PAN_STEP; clampActivePan(); }
+      else if (event.key === 'ArrowUp') { zoomOf(doc.id).y += PAN_STEP; clampActivePan(); }
+      else if (event.key === 'ArrowDown') { zoomOf(doc.id).y -= PAN_STEP; clampActivePan(); }
+      else return;
+      event.preventDefault();
+    });
+
+    const zoomButtons = [
+      ['[data-doc-zoom-in]', () => zoomAt(activeDoc(), ZOOM_STEP, { x: 0, y: 0 })],
+      ['[data-doc-zoom-out]', () => zoomAt(activeDoc(), 1 / ZOOM_STEP, { x: 0, y: 0 })],
+      ['[data-doc-zoom-fit]', () => resetZoom(activeDoc())],
+    ];
+    for (const [selector, action] of zoomButtons) {
+      const button = pane.querySelector(selector);
+      if (button) button.addEventListener('click', action);
+    }
+  }
+
   function loadActive(force = false) {
     const doc = activeId ? docs.get(activeId) : null;
     if (!doc) return;
@@ -848,6 +1382,12 @@ export function createDocPane({ onError } = {}) {
     // Source mode is honoured here rather than left to `paintMarkdown`, which restores it after its
     // own fetch: switching to markdown first would show the body for the duration of a fetch, which is
     // a flicker on a document being read as source.
+    if (doc.kind === 'image') {
+      // A tab switch has to move which view is on top for an image too, and it must not inherit the
+      // frame: an `<img>` from a previous document would otherwise stay visible under a hidden class.
+      renderImage(doc);
+      return;
+    }
     const inSource = doc.kind === 'markdown' && sourceView?.dataset.showingSource === 'true';
     showView(inSource ? 'source' : doc.kind === 'markdown' ? 'markdown' : 'frame');
     if (doc.kind !== 'markdown') {
@@ -870,12 +1410,13 @@ export function createDocPane({ onError } = {}) {
       markdown: markdownView,
       source: sourceView,
       frame: frameEl,
+      image: imageView,
     };
     for (const [name, element] of Object.entries(mapping)) {
       if (element) element.hidden = name !== kind;
     }
     if (kind !== 'markdown' && kind !== 'source' && emptyEl) emptyEl.hidden = false;
-    if (kind === 'markdown' || kind === 'frame' || kind === 'source') {
+    if (kind === 'markdown' || kind === 'frame' || kind === 'source' || kind === 'image') {
       if (emptyEl) emptyEl.hidden = true;
     }
   }
@@ -901,9 +1442,13 @@ export function createDocPane({ onError } = {}) {
   function focusActive() {
     const doc = activeId ? docs.get(activeId) : null;
     if (!doc) return;
-    const target = doc.kind === 'markdown'
-      ? (sourceView && !sourceView.hidden ? sourceView : markdownView)
-      : frameEl;
+    const target = doc.kind === 'image'
+      // The stage is focusable so the keyboard zoom keys have somewhere to live; focus is also what
+      // makes Escape (which the pane owns) mean "put this away" rather than "do nothing".
+      ? imageStage
+      : doc.kind === 'markdown'
+        ? (sourceView && !sourceView.hidden ? sourceView : markdownView)
+        : frameEl;
     try {
       target?.focus({ preventScroll: true });
     } catch {
@@ -976,6 +1521,36 @@ export function createDocPane({ onError } = {}) {
     chipEl.hidden = true;
     chipEl.addEventListener('click', hideChip);
   }
+  if (imageEl) {
+    // The load event is what turns the backdrop off: before the bytes are decoded, the picture would be
+    // a hole the same size as the image. Guarded on the src because a tab switch can land between the
+    // request and the response, and the old document's load must not restyle the new one.
+    imageEl.addEventListener('load', () => {
+      const url = imageEl.getAttribute('src');
+      if (!url) return;
+      imageLoadedUrl = url;
+      imageBrokenUrl = null;
+      const doc = activeDoc();
+      if (doc && doc.kind === 'image' && doc.url === url) showPicture(doc);
+    });
+    imageEl.addEventListener('error', () => {
+      const url = imageEl.getAttribute('src');
+      if (url) imageBrokenUrl = url;
+      const doc = activeDoc();
+      if (doc && doc.kind === 'image' && doc.url === url) showPicture(doc);
+      report(`Preview image would not load: ${url || 'no source'}`);
+    });
+  }
+  setupImageView();
+  if (typeof MutationObserver === 'function' && imageDots) {
+    // The loader reads its two colours out of the stylesheet, so a theme flip has to tell it. This is
+    // one attribute on the root element and one observer; nothing polls the theme.
+    new MutationObserver(() => {
+      if (!loader) return;
+      loader.readColors();
+      loader.repaint();
+    }).observe(document.documentElement, { attributeFilter: ['data-theme'] });
+  }
   if (sourceBtn) {
     sourceBtn.addEventListener('click', () => {
       const showingSource = sourceView.dataset.showingSource === 'true';
@@ -1036,6 +1611,7 @@ export function createDocPane({ onError } = {}) {
     const width = currentWidth();
     const clamped = clampWidth(width);
     if (clamped !== width) chatScreen.style.setProperty('--doc-pane-width', `${clamped}px`);
+    syncImageStage();
     reportState();
   });
 
@@ -1045,6 +1621,8 @@ export function createDocPane({ onError } = {}) {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') loadActive(true);
     resetPoll();
+    // A hidden tab stops the dot animation dead, for the same reason the poll stops: nothing can see it.
+    syncImageStage();
     reportState();
   });
 
@@ -1073,6 +1651,9 @@ export function createDocPane({ onError } = {}) {
       if (pointerId === null || (event && event.pointerId !== pointerId)) return;
       chatScreen.classList.remove('resizing');
       setWidth(currentWidth());
+      // The dots were laid out for the old column width, and a pan that was legal at 900 px can point
+      // the picture off screen at 460.
+      syncImageStage();
       reportState();
       pointerId = null;
     };
@@ -1182,6 +1763,7 @@ function inertHandle() {
     reload: noop,
     setWidth: noop,
     setPreviewToken: noop,
+    toolUpdate: () => false,
     follow: () => true,
     autoOpen: () => true,
     width: () => 0,

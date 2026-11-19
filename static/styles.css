@@ -3408,6 +3408,151 @@ body.hide-header-mascot #chat-screen .header-mascot {
   text-overflow: ellipsis;
 }
 
+/* ── Body: an image, and the dots that stand in for one ──────────
+ *
+ * Two states share this track: a canvas of dots while the document says it is still being drawn, and
+ * the picture afterwards. Everything about the geometry comes from `boxFor()` in image-loader.js, and
+ * the two agree by construction: the `<img>` is contain-with-no-upscale, which is the same box, so the
+ * animation leaving and the image arriving moves nothing on screen. */
+
+.doc-image {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.doc-image-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  padding: 14px;
+  /* Zoom and pan are transform-only, and overflow is hidden rather than scrollable on purpose: a scroll
+   * container here would take pixels from the conversation column the first time a wide image overflowed
+   * it, and "nothing may resize the conversation" is the invariant the composer work made expensive. */
+  overflow: hidden;
+  /* The pane owns the drag. Without this, dragging the image on a phone scrolls the page under it and
+   * the image never moves. */
+  touch-action: none;
+  cursor: default;
+}
+
+.doc-image-stage[data-state="ready"] {
+  cursor: grab;
+}
+
+.doc-image-stage[data-state="ready"].is-dragging {
+  cursor: grabbing;
+}
+
+.doc-image-stage:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+.doc-image-img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  transform-origin: 50% 50%;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-user-drag: none;
+}
+
+/* Only while the human has actually moved it: a compositor layer for an image nobody is zooming is a
+ * memory cost paid by every conversation that ever opened a picture. */
+.doc-image-img.is-transformed {
+  will-change: transform;
+}
+
+.doc-image-dots {
+  display: block;
+  /* The canvas is the animation, not an image: no zoom affordance over dots, and no drag ghost. */
+  pointer-events: none;
+}
+
+/* The labels are text, not pixels. A person may want the exact number, and a screen reader has
+ * nothing to read in a dot grid. */
+.doc-image-phase,
+.doc-image-detail,
+.doc-image-pct,
+.doc-image-note {
+  position: absolute;
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.doc-image-phase {
+  top: 16px;
+  left: 18px;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  color: var(--text);
+}
+
+.doc-image-detail {
+  top: 36px;
+  left: 18px;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-subtle);
+}
+
+.doc-image-pct {
+  right: 18px;
+  bottom: 16px;
+  padding: 3px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--db-radius-full);
+  background: var(--bg-elevated);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  color: var(--text);
+}
+
+/* The failure line, and the only place this pane prints a tool's own note about a document. */
+.doc-image-note {
+  left: 18px;
+  right: 18px;
+  bottom: 16px;
+  text-align: center;
+  font-size: var(--font-size-xs);
+  color: var(--text-subtle);
+}
+
+.doc-image-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--border-subtle);
+  font-size: var(--font-size-xs);
+  color: var(--text-subtle);
+}
+
+.doc-image-scale {
+  min-width: 46px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.doc-image-hint {
+  margin-left: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Nothing animates here in CSS - the dot matrix is a canvas and image-loader.js reads the same
+   * preference - so this block exists to say why it is empty rather than to hold a rule. */
+  .doc-image-img {
+    transition: none;
+  }
+}
+
 /* Grab handle straddling the divider. It sits inside the pane so a closed pane has nothing to
    drag. Width stays small: it must not eat clicks meant for the document. */
 .doc-resize {

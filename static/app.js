@@ -556,6 +556,12 @@ function routeServerMessage(message) {
     if (message.event.type === 'entry_appended') {
       applyPreviewEntry(message.event.entry);
     }
+    // Tool progress is the one thing the pane wants that is *not* a persisted entry: a draw emits a few
+    // hundred of these and the session file must not carry any of them. The pane decides whether an
+    // update belongs to a document it is holding, because only it knows that `details.doc` is a tab.
+    if (message.event.type === 'tool_execution_update') {
+      docPane.toolUpdate(message.event);
+    }
     // Track agent state for STT interruption logic
     if (message.event.type === 'agent_start') {
       isAgentRunning = true;
