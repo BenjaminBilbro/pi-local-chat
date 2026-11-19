@@ -526,6 +526,7 @@ function renderDeliveredUserMessage(message) {
             filename: file.name,
             path: file.path,
             inlined: file.inlined,
+            previewed: file.previewed,
           })),
       ],
     };
@@ -1353,6 +1354,7 @@ function createUserMessage(text, files) {
       name: file.filename,
       path: file.path || '',
       inlined: file.inlined !== false,
+      previewed: file.previewed === true,
     }))),
   );
 
@@ -1450,6 +1452,10 @@ async function addDocumentFile(file) {
       path: result.path || '',
       content: result.content,
       inlined: result.inlined !== false,
+      // Which of the shapes the server chose, so the chip beside the composer already says what the
+      // transcript will say after the send. Read off `inlineState` rather than off the content length,
+      // because "is this a preview" is the server's fact, not something to re-derive from a string.
+      previewed: result.inlineState === 'preview',
       mimeType: result.mimeType,
     });
     updateFileAttachmentsUI();
@@ -1478,6 +1484,10 @@ function updateFileAttachmentsUI() {
       // Worth saying before the send rather than after: the model will not receive the text, and
       // "why didn't it read my file" is a worse way to find out.
       chip.title = 'Too large to include in the message. The assistant gets the path and opens it from disk.';
+    } else if (file.previewed) {
+      // The other middle case: it got the opening and the ending, and the message says how much it did
+      // not. Say it here so the excerpt is not a surprise after the agent quotes the first line back.
+      chip.title = 'Long document: sent as the opening and the ending with the gap counted. The assistant has the path and can read the rest.';
     }
 
     const icon = document.createElement('span');

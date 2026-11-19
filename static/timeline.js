@@ -301,7 +301,7 @@ export function setMarkdownContent(item, text) {
  * how a reload changes what your own message looks like, which is the parity break this function
  * exists to prevent: both now hand the same shape here.
  *
- * `files` is `[{ name, path, inlined }]`. Images are not here: those really are in the session, and
+ * `files` is `[{ name, path, inlined, previewed }]`. Images are not here: those really are in the session, and
  * both paths paint them from the message's own content blocks.
  */
 export function createUserFileChips(files) {
@@ -309,9 +309,14 @@ export function createUserFileChips(files) {
   for (const file of files || []) {
     const chip = document.createElement('div');
     chip.className = 'user-file-label';
+    // Three states a reader can act on: the text is in context, it is in context as head and tail, or it
+    // is not there at all. "previewed" is worth its own words because it is the state where the agent
+    // goes and reads the file, and a chip that says nothing makes that look like a detour.
     chip.textContent = file.inlined === false
       ? `\u{1F4C4} ${file.name} (on disk, not inlined)`
-      : `\u{1F4C4} ${file.name}`;
+      : file.previewed
+        ? `\u{1F4C4} ${file.name} (previewed, full text on disk)`
+        : `\u{1F4C4} ${file.name}`;
     // The path is the thing the agent was handed. Hidden until asked for, because a Windows path is
     // 90 characters and a chat bubble is not.
     if (file.path) chip.title = file.path;

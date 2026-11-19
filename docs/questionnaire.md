@@ -96,6 +96,20 @@ Three routes, one result text:
 Only a transport failure falls back to route 2. A 400 means the questions were malformed and asking them
 one at a time would fail the same way.
 
+## What a reload shows, and what it cannot
+
+The dialog is live-only, and that is the design rather than a gap: a request cannot outlive the run that
+blocked on it or the tab that was asked to answer it. What survives a reload is pi's own record, the
+assistant message carrying the `toolCall` block, which `static/history.js` renders through the same generic
+tool-card branch it uses for every named call. So a reloaded session shows the question as a tool card with
+its arguments, not as a form, and that is the honest limit of what the session file can show.
+
+`tools/test_questionnaire_dialog.mjs` pins that card, and it is worth saying why the pin is a renderer claim
+rather than a browser one. The fake RPC harness runs `pi --no-session` and writes no session file at all, so a
+reload test driven through it has nothing to reload from and will pass whatever the code does. That is how a
+"persistence" claim here can be worth nothing while looking green. The renderer, run against the shape that
+is actually on disk, is the thing that can fail.
+
 ## Over the orb
 
 A child asks questions during a voice session too, and the first live test (Ben, 2026-11-19) found the

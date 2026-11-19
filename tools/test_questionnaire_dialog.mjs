@@ -406,5 +406,35 @@ await claim('the dialog is a child of the body, never of a surface that can go i
   assert.equal(overlay.parentElement, document.body, 'the dialog lives inside another element');
 });
 
+/* What the session file holds once a question is answered, and the only thing a reload has to go on:
+ * pi's own assistant message with the `toolCall` block, which `static/history.js` renders through the
+ * generic tool-card branch it uses for every named call. The dialog itself is live-only, deliberately - a
+ * request outlives neither its run nor its tab. This claim exists because that is the guarantee a person
+ * actually notices ("my answered questions vanish when I reload") and it was pinned nowhere: the fake RPC
+ * harness runs `--no-session` and writes no session file, so a browser-level reload test there proves
+ * nothing about persistence. What proves it is the renderer, run against the shape on disk. */
+const { renderHistoricalMessages } = await import('../static/history.js');
+const settled = document.createElement('div');
+document.body.appendChild(settled);
+renderHistoricalMessages([
+  {
+    role: 'assistant',
+    content: [
+      {
+        type: 'toolCall',
+        id: 'call-questionnaire-1',
+        name: 'questionnaire',
+        arguments: { questions: [{ id: 'who', prompt: 'Who should hear about it first?' }] },
+      },
+    ],
+  },
+], settled);
+
+await claim('an answered question is still in the transcript after a reload', () => {
+  const card = settled.querySelector('[data-tool-call-id="call-questionnaire-1"]');
+  assert.ok(card, 'a settled questionnaire left no card, so a reload would look like it never happened');
+  assert.match(card.textContent, /questionnaire/, `the card names the tool, not: ${card.textContent}`);
+});
+
 console.log(claims.join('\n'));
 console.log(`${passed}/${claims.length} claims`);

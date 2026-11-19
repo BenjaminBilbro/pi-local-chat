@@ -6,6 +6,7 @@ inline on the event loop that every chat websocket shares.
 """
 
 import json
+import re
 import subprocess
 import threading
 from pathlib import Path
@@ -352,6 +353,108 @@ class TestDocumentKinds:
         for suffix in uploads.accepted_document_suffixes():
             assert suffix in accept, f"{suffix} is uploadable and the picker never offers it"
 
+
+
+class TestPreviewTier:
+    """Between the two old limits, a document goes as head, a counted gap, and tail.
+
+    The reason is the cost of the top of that range: 200,000 characters is about 50k tokens, it rides in
+    every later turn of the session, and it is re-prefilled from scratch whenever the engine's prefix
+    cache misses. Ben's own session supplied the other half of the argument: a 10,156-byte notes file
+    went in whole at roughly 2.5k tokens and the assistant spent a turn proving to itself that it had not
+    been truncated, because nothing in the tag said how big the file was.
+
+    So the marker counts, in the same unit the cap is quoted in. A gap you can measure is a fact the
+    model can act on by reading the path; a silent cut is a thing it has to discover.
+    """
+
+    def test_a_small_document_still_arrives_whole(self, client):
+        """Below the floor a preview is worse than the file: two fragments, more tokens, less sense."""
+        body = "note\n" + ("filler word " * 200)  # ~2.1 KB, under the 4,000-character floor
+        payload = client.post(
+            "/api/upload-file", data={"scope": SCOPE}, files={"file": ("note.md", body.encode(), "text/markdown")}
+        ).json()
+
+        assert payload["inlineState"] == "inlined"
+        assert payload["content"] == body
+        assert uploads.PREVIEW_MARKER not in payload["content"]
+
+    def test_a_longer_document_arrives_as_head_tail_and_a_count(self, client):
+        body = "# Plan of record\n" + ("alpha bravo charlie delta\n" * 600) + "\nTAIL: https://example.test/docs"
+        assert len(body) > uploads.PREVIEW_MIN_CHARS
+
+        payload = client.post(
+            "/api/upload-file", data={"scope": SCOPE}, files={"file": ("plan.md", body.encode(), "text/markdown")}
+        ).json()
+
+        content = payload["content"]
+        assert payload["inlineState"] == "preview"
+        assert uploads.PREVIEW_MARKER in content
+        assert content.startswith("# Plan of record")
+        assert content.rstrip().endswith("TAIL: https://example.test/docs"), "the tail is where conclusions live"
+        assert "\n".join(["alpha bravo charlie delta"] * 3) in content
+        assert body[3000:-3000] not in content, "and the middle is genuinely not being sent"
+
+    def test_the_marker_counts_add_up(self, client):
+        """The marker states four numbers: total, head, tail, omitted. The model acts on the omission
+        without checking, so they have to sum. A gap that does not add up is worse than no gap, because
+        the agent's only way to check it is to read the whole file, which is the cost this tier exists to
+        avoid."""
+        body = ("x" * 900 + " ") * 12  # 10,812 characters, a space every 901st so cuts have somewhere to go
+        payload = client.post(
+            "/api/upload-file",
+            data={"scope": SCOPE},
+            files={"file": ("wide.txt", body.encode(), "text/plain")},
+        ).json()
+        content = payload["content"]
+
+        head, separator, rest = content.partition(uploads.PREVIEW_MARKER)
+        assert separator, "no marker between head and tail"
+        marker, closer, tail = rest.partition("]\n\n")
+        assert closer, "the marker line is not closed"
+        head = head.rstrip("\n")
+        assert head in body and tail in body, "a preview quotes the file, it does not paraphrase it"
+
+        stated = {int(n.replace(",", "")) for n in re.findall(r"\d[\d,]*", marker)}
+        assert len(body) in stated, f"the total ({len(body)}) is not stated"
+        assert len(head) in stated, f"the head length ({len(head)}) is not stated"
+        assert len(tail) in stated, f"the tail length ({len(tail)}) is not stated"
+        omitted = len(body) - len(head) - len(tail)
+        assert omitted in stated, f"the omission ({omitted}) is not stated"
+        assert omitted > 0
+
+    def test_cuts_land_on_whitespace(self, client):
+        """Neither cut may land inside a word. A preview that opens mid-token reads like a corrupted
+        file, and the model has no way to tell that from the file actually being corrupted."""
+        body = " ".join(f"word{n}" for n in range(1200))
+        preview = uploads.preview_body(body)
+
+        head, separator, rest = preview.partition(uploads.PREVIEW_MARKER)
+        head = head.rstrip("\n")
+        marker, closer, tail = rest.partition("]\n\n")
+        assert separator and closer
+
+        assert head == body[: len(head)]
+        assert body[len(head)].isspace(), "the head must stop at whitespace, not inside a word"
+        assert body.endswith(tail)
+        assert body[len(body) - len(tail) - 1].isspace(), "the tail must start at whitespace"
+        assert not head.endswith("wor"), "and specifically not three characters into 'word123'"
+
+    def test_a_previewed_body_survives_the_prompt_path_unchanged(self, client):
+        """The tier is a shape, not an enforcement: the browser sends the string back and the prompt path
+        re-runs the same verdict on it. Both sides have to hand the model the same bytes, or the live turn
+        and the stored one say different things about the same file."""
+        body = ("lorem ipsum dolor sit amet " * 400)[:9000]
+        payload = client.post(
+            "/api/upload-file", data={"scope": SCOPE}, files={"file": ("lorem.txt", body.encode(), "text/plain")}
+        ).json()
+        assert payload["inlineState"] == "preview"
+
+        tag = uploads.file_tag(
+            name="lorem.txt", path="/tmp/lorem.txt", bytes_=len(body), text=payload["content"], mime_type="text/plain"
+        )
+        assert payload["content"] in tag, "the prompt must carry the preview, not a re-derivation of it"
+        assert "over the limit" not in tag and "no text layer" not in tag
 
 class TestInlineStates:
     """`inlined`, `empty` and `over` are three facts, and one of them used to be reported as another.

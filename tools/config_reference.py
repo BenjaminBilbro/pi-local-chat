@@ -33,11 +33,11 @@ PREFIX = "PI_CHAT_"
 # groups must precede the general ones.
 GROUPS = [
     ("Credentials", ("PASSWORD_HASH", "SECRET")),
+    ("Attachments", ("IMAGE_MAX", "INLINE_MAX", "INLINE_PREVIEW", "UPLOAD_RETENTION")),
     ("Previews", ("PREVIEW",)),
     ("Speech synthesis", ("TTS",)),
     ("Speech input", ("STT",)),
     ("Voice storage and cloning", ("VOICE",)),
-    ("Attachments", ("IMAGE_MAX", "INLINE_MAX", "UPLOAD_RETENTION")),
     ("Audit and telemetry", ("AUDIT",)),
     ("Server and child process", ("HOST", "PORT", "PI_BIN", "PI_ARGS", "ACCOUNT", "LOG_", "DEV", "SESSION_TTL", "CONTEXT_FILES", "ALLOW_DEV_REMOTE")),
     ("Test harness", ("SMOKE_",)),
@@ -46,6 +46,9 @@ GROUPS = [
 # Knobs whose name alone will mislead someone, keyed by env var. Anything here that is not a real knob fails
 # the drift test, so this cannot quietly rot into a list of former knobs.
 NOTES = {
+    "PI_CHAT_INLINE_PREVIEW_MIN_CHARS": "at or below this many extracted characters a document is inlined whole; above it it is inlined as head plus tail with the omission counted, until PI_CHAT_INLINE_MAX_CHARS takes the body away entirely",
+    "PI_CHAT_INLINE_PREVIEW_HEAD_CHARS": "characters of the opening a previewed document shows",
+    "PI_CHAT_INLINE_PREVIEW_TAIL_CHARS": "characters of the ending a previewed document shows; the tail earns its place because the last lines of a note are usually its status or its conclusion",
     "PI_CHAT_B_PASSWORD_HASH": "scrypt hash that makes profile `b` exist at all; write it with `python -m pi_chat.auth`",
     "PI_CHAT_R_PASSWORD_HASH": "scrypt hash that makes profile `r` exist at all; same helper",
     "PI_CHAT_SCRUB_LITERALS": "one or more `literal = replacement` pairs, bar-separated, for "

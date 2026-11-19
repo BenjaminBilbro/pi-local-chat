@@ -402,17 +402,23 @@ def create_app(
         if stored is None:
             raise HTTPException(status_code=400, detail="Invalid attachment scope")
 
-        # Inline it only while it is small enough to be worth the context window. Above the cap the
-        # response carries no body and the path does the work: the agent reads it in chunks. An empty
-        # extraction is its own state, because "this PDF has no text" and "this PDF is huge" want
-        # different sentences - and `uploads.inline_verdict` is the single place that decides which.
-        verdict = uploads.inline_verdict(text)
-        inlined = verdict == "inlined"
+        # Three shapes for one document, decided in one place: whole, previewed, or nothing. `preview` is
+        # a shape rather than an enforcement - the marker travels inside the body - which is why the second
+        # enforcement point in `websocket.py` can stay honest without a second implementation.
+        body, verdict = uploads.inline_preview(text)
+        inlined = body is not None
         if verdict == "over":
             log.info(
                 "attachment %s is %d characters, over the inline limit: the agent gets the path only",
                 stored.name,
                 len(text),
+            )
+        elif verdict == "preview":
+            log.info(
+                "attachment %s is %d characters: sent %d as head and tail, the rest is read from the path",
+                stored.name,
+                len(text),
+                len(body or ""),
             )
         elif verdict == "empty":
             log.info(
@@ -430,13 +436,15 @@ def create_app(
             "bytes": stored.bytes,
             # A null content is the browser's cue to send no body back on the prompt. The path is in
             # `path` either way, so the attachment is reachable at every size.
-            "content": text if inlined else None,
+            "content": body,
             "inlined": inlined,
-            # Why it was not inlined, so a later surface can say that instead of guessing: a scan and a
-            # 2 MB log want different advice. Enforcement never reads this - the server re-decides from
-            # the bytes it has, because this value comes back from a client.
+            # Why the body is what it is: `inlined`, `preview`, `empty`, `over`, `missing`. The browser
+            # reads it for the chip label and the server re-derives the truth from the bytes it holds,
+            # because this value comes back from a client and a client does not get to describe its own
+            # attachment. A scan and a 2 MB log want different advice.
             "inlineState": verdict,
             "inlineLimitChars": uploads.INLINE_MAX_CHARS,
+            "previewMinChars": uploads.PREVIEW_MIN_CHARS,
         }
 
     @application.post("/api/questionnaire")

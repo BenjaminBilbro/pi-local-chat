@@ -89,6 +89,8 @@ function attachmentBytes(attrs) {
   return Number.isFinite(size) && size > 0 ? size : 0;
 }
 
+const PREVIEW_MARKER = '[preview:';
+
 /** Pull every `<file>` / `<image>` record out of one string, as chips, and the text without them.
  *
  * Returns `{ text, files }` where a file is `{ kind, name, path, bytes, mimeType, inlined }`. `path`
@@ -131,6 +133,10 @@ export function parseAttachments(text) {
           match[1] === 'image'
             ? true
             : trimmed !== '' && !trimmed.startsWith('(not inlined'),
+        // A long document arrives as head plus tail with the omission counted in the middle. That marker
+        // is the record that it was previewed, so the chip reads it off the same bytes the model read -
+        // live and reloaded, with nothing stored anywhere else to disagree.
+        previewed: match[1] === 'file' && body.includes(PREVIEW_MARKER),
       });
     }
   };

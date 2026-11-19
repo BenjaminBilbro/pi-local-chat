@@ -15,7 +15,8 @@ import pytest
 
 SCRIPT = Path(__file__).resolve().parent.parent / "tools" / "test_questionnaire_dialog.mjs"
 NODE = shutil.which("node")
-CLAIMS = 24
+# 24 through the voice-mode pass, +1 on 2026-11-19 for the settled-card-on-reload claim.
+CLAIMS = 25
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not on PATH")

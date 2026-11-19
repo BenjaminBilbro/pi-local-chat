@@ -15,7 +15,9 @@ import pytest
 
 SCRIPT = Path(__file__).resolve().parent.parent / "tools" / "test_attachment_render.mjs"
 NODE = shutil.which("node")
-CLAIMS = 20
+# 20 through the earlier sweep, +2 on 2026-11-19 for the preview tier: the marker as a chip,
+# and the three chip labels themselves.
+CLAIMS = 22
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not on PATH")

@@ -104,6 +104,9 @@ claim('both attachments come back out of the text, in order', () => {
       bytes: 12043,
       mimeType: 'application/pdf',
       inlined: true,
+      // Whole document, so nothing was left out. The field is here in the expectation as well as the
+      // object: a chip that claimed "previewed" on a full body would be caught by this deep equal.
+      previewed: false,
     },
   );
   assert.equal(files[1].kind, 'image');
@@ -131,6 +134,45 @@ claim('a scan with no text layer is not treated as a document that arrived', () 
   assert.equal(files.length, 1);
   assert.equal(files[0].inlined, false, 'a scan read as a document that made it into context');
   assert.ok(!text.includes('no text layer'), 'and the apology does not render as message text');
+});
+
+claim('a previewed document is a chip, and says it was previewed', () => {
+  /* Between the floor and the cap the body is head plus a counted gap plus tail, built by `preview_body`
+     in `pi_chat/uploads.py`. The marker inside that body is the only record the turn carries that the
+     model got an excerpt, so the chip reads it off the bytes rather than off a field a reloaded session
+     never had: same string in the live echo and in the session file, same chip both times. */
+  const previewed = '<attachments>read this\n'
+    + '<file name="notes.md" path="/tmp/0a1b-notes.md" bytes="10156">'
+    + '# Plan of record\n\n'
+    + '[preview: the first 1,496 and the last 481 characters of 8,966. 6,989 characters are not shown. '
+    + 'The file at this tag\'s path attribute has all of them: read it with offset and limit when the '
+    + 'middle matters.]\n\n'
+    + 'TAIL: https://example.test/docs</file></attachments>';
+  const { files, text } = parseAttachments(previewed);
+  assert.equal(files.length, 1);
+  assert.equal(files[0].inlined, true, 'an excerpt is still text the model received');
+  assert.equal(files[0].previewed, true);
+  assert.ok(!text.includes('[preview:'), 'and the marker never renders as message text');
+  assert.ok(!text.includes('# Plan of record'), 'nor does the head of the document');
+});
+
+const { createUserFileChips } = await import('../static/timeline.js');
+
+claim('the chip names which of the three states a document arrived in', () => {
+  /* Three states, three labels, because each one answers a different question a reader could ask: is it
+     in there, is part of it in there, or do I need to tell the agent where the file is. A chip that says
+     nothing next to a previewed file makes the agent's follow-up `read` look like a detour. */
+  const label = (file) => createUserFileChips([file]).firstChild.textContent;
+
+  assert.equal(label({ name: 'short.md', path: '/tmp/a.md', inlined: true }), '\u{1F4C4} short.md');
+  assert.equal(
+    label({ name: 'notes.md', path: '/tmp/a.md', inlined: true, previewed: true }),
+    '\u{1F4C4} notes.md (previewed, full text on disk)',
+  );
+  assert.equal(
+    label({ name: 'huge.log', path: '/tmp/a.log', inlined: false }),
+    '\u{1F4C4} huge.log (on disk, not inlined)',
+  );
 });
 
 claim('the pre-wrapper shape still yields a chip, with no path to show', () => {

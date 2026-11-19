@@ -53,6 +53,27 @@ MAX_IMAGE_BYTES = int(os.environ.get("PI_CHAT_IMAGE_MAX_BYTES", "10485760"))  # 
 # files above it are read from disk on demand instead, which is what the `read` tool is for.
 INLINE_MAX_CHARS = int(os.environ.get("PI_CHAT_INLINE_MAX_CHARS", "200000"))
 
+# The preview tier. Below `PREVIEW_MIN_CHARS` a document is handed over whole, because a 2 KB note
+# split into a head and a tail is worse than the note: two fragments, more tokens, less sense. Between
+# that and the cap it is handed over as the first `PREVIEW_HEAD_CHARS` and the last `PREVIEW_TAIL_CHARS`
+# with the omission stated in characters, because the body of a document is exactly the part a model can
+# go and read, while the front (what this file is, its status) and the tail (what it concluded) are the
+# parts it needs to decide whether to.
+#
+# The number that sold Ben on it was his own session: a 10,156-byte notes file went in whole at roughly
+# 2.5k tokens and the assistant then spent a turn proving to itself that it had not been truncated.
+# Above the cap the cost is not 2.5k but around 50k, riding in every later turn of that session and
+# re-prefilled from scratch whenever the engine's prefix cache misses, which he has now watched happen.
+PREVIEW_MIN_CHARS = int(os.environ.get("PI_CHAT_INLINE_PREVIEW_MIN_CHARS", "4000"))
+PREVIEW_HEAD_CHARS = int(os.environ.get("PI_CHAT_INLINE_PREVIEW_HEAD_CHARS", "1500"))
+PREVIEW_TAIL_CHARS = int(os.environ.get("PI_CHAT_INLINE_PREVIEW_TAIL_CHARS", "500"))
+
+# Stable prefix of the marker line inside a previewed body. `static/utils.js` matches on it to label the
+# chip "previewed", and it has to be stable for the same reason `(not inlined` is: the marker is present
+# in the live turn and in the session file, so recognising it there rather than storing it somewhere
+# else is what makes a reloaded session draw the same chip as a live one.
+PREVIEW_MARKER = "[preview:"
+
 # Days an attachment survives. The sweep runs at startup, which is enough: the server restarts more
 # often than a month in this deployment, and a scheduled task is another thing that can silently die.
 RETENTION_DAYS = int(os.environ.get("PI_CHAT_UPLOAD_RETENTION_DAYS", "30"))
@@ -265,6 +286,61 @@ def inline_verdict(text: str | None) -> str:
     if len(text) > INLINE_MAX_CHARS:
         return "over"
     return "inlined"
+
+
+def preview_body(text: str) -> str:
+    """Head, an honest statement of what is missing, tail. For documents between the preview floor and the cap.
+
+    Both cuts land on whitespace where one is nearby, so the model is not shown half a word and does not
+    infer a word boundary that is not there. The marker counts in characters, the same unit the cap is
+    quoted in, so the two numbers mean the same thing.
+    """
+    total = len(text)
+    head = text[:PREVIEW_HEAD_CHARS]
+    cut = head.rfind(" ")
+    if cut > PREVIEW_HEAD_CHARS // 2:
+        head = text[:cut]
+
+    tail_from = max(PREVIEW_HEAD_CHARS, total - PREVIEW_TAIL_CHARS)
+    start = text.find(" ", tail_from)
+    if start == -1 or start > total - PREVIEW_TAIL_CHARS // 2:
+        start = tail_from
+    else:
+        # Begin on the next word rather than on the space that ended the last one, so the tail does not
+        # open with whitespace and the first thing shown is content.
+        start += 1
+    tail = text[start:]
+
+    shown = len(head) + len(tail)
+    omitted = max(0, total - shown)
+    # One bracketed line, no brackets inside it: `static/utils.js` and the tests both find the marker by
+    # its prefix, and the shape has to stay as easy to spot as the `(not inlined` prefix beside it.
+    marker = (
+        f"\n\n{PREVIEW_MARKER} the first {len(head):,} and the last {len(tail):,} characters of "
+        f"{total:,}. {omitted:,} characters are not shown. The file at this tag's path attribute has all "
+        "of them: read it with offset and limit when the middle matters.]\n\n"
+    )
+    return head + marker + tail
+
+
+def inline_preview(text: str | None) -> tuple[str | None, str]:
+    """The body to send, and the state to report. One call, so the upload route and the prompt path ship
+    the same bytes rather than two readings of the same document.
+
+    `preview` is a *shape* decision, not an enforcement one: the result is still a body, it still obeys
+    the cap, and the marker travels inside it. That is what keeps the second enforcement point honest
+    without a second implementation - the browser sends back the string it was given, `file_tag` runs
+    `inline_verdict` on it, and the model reads the same text either side of the wire.
+    """
+    verdict = inline_verdict(text)
+    if verdict != "inlined":
+        # No body, and the state that explains it. Returning `None` here rather than the original text is
+        # what makes "there is a body" the same question as "`body is not None`" at both call sites.
+        return None, verdict
+    assert text is not None
+    if len(text) <= PREVIEW_MIN_CHARS:
+        return text, "inlined"
+    return preview_body(text), "preview"
 
 
 def not_inlined_sentence(verdict: str) -> str:
