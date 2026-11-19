@@ -56,6 +56,7 @@ more than once a day. Everything else lives in `docs/`, and the split is deliber
 | Voice Mode (S9) | shipped: composer button, full-bleed orb surface (previews still open above it), readiness chips for both engines, mode markers both directions, barge-in armed only on an echo-cancelled mic. The `<PI-CHAT-SYSTEM-MESSAGE>` tag is what keeps the markers from rendering, on echo AND on reload | `docs/voice-mode.md` |
 | Open TODO: `questionnaire` over RPC | pi's `questionnaire` tool has no surface in `pi --mode rpc`, so a model that asks a question through pi-chat gets a failure where a person would have got a dialog (hit 2026-11-18 with `Cannot read properties of undefined (reading 'cancelled')`). Needs the request handler on pi's side and an answering dialog on this one, and it is the reason a voice-mode session cannot ask a clarifying question | `~/.pi/agent/memories/projects/pi-chat.md` |
 | Composer redesign (2026-11-18) | **shipped**: the field on top with a fixed 44px control line under it at every width, and one 44px button that is Voice Mode, Send or Stop. It is the fix for the streaming flicker Ben reported verbally, and `tools/screenshot_ui.mjs` measures the invariant in a real browser rather than asserting it in prose | `docs/composer.md` |
+| Streaming stutter (open 2026-11-18) | **reproduced, not fixed**: the whole streaming block re-renders per batch, partial markdown is not monotonic in height (about 28px of list/heading margins appear retroactively), and bottom-pinned scroll clamps on the shrink, so the answer jumps up and down. 8 reversals per 4 KB answer, always with the block's own height and never the viewport's. Gentler scroll writes do not help; the fix is to freeze completed blocks and re-render only the tail | `docs/rendering-parity.md`, `tools/stream_stutter_probe.mjs` |
 | CI | runs on Ubuntu and Windows for pushes to `master`, `main`, `feature/**` and `refactor/**`, for every pull request, and on manual dispatch. A workflow only registers once it exists on the branch being pushed, which is why a brand new default branch has to carry the file in its first commit | `.github/workflows/ci.yml` |
 
 
@@ -267,6 +268,7 @@ sh tools/verify_fresh_clone.sh                                             # clo
 node tools/screenshot_ui.mjs --url http://127.0.0.1:9031 --stage chat \
   --cdp-port 9344 --out "$TEMP/shots/chat.png" --password test-only        # needs PI_CHAT_PI_BIN=fake_rpc_pi.py
 node tools/screenshot_ui.mjs --stage voice-mode --voice-state barge ...  # orb pinned, no mic, no turn spent
+node tools/stream_stutter_probe.mjs --url http://127.0.0.1:9022 --password test-only --seconds 20 --fail-on-reversals 2   # the streaming stutter, needs FAKE_RPC_REPLY_CHARS=14000 FAKE_RPC_TURN_MS=45
 node tools/test_voice_mode_surface.mjs                                    # 30 jsdom claims, pytest-wrapped
 node tools/barge_in_echo.mjs --ec on --expect silent   # Phonon fed back as the mic; needs Chrome, not CI
 ```

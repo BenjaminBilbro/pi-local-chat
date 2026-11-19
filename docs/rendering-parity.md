@@ -43,3 +43,55 @@ Always prefer the structured `receipt` object. Some older captures contain Pytho
 - A failed prompt `response` or WebSocket disconnect is terminal for the current browser-side run. `chat.js` clears transient streaming state and unlocks the composer.
 - A successful prompt response that produces no `agent_start` (e.g., a handled extension command) also unlocks after a short grace period.
 
+
+## Open: a streaming answer jumps up and down
+
+Reported verbally by Ben on 2026-11-18 and reproduced the same day: while an answer streams, the text already
+on screen jumps up and down by about 28 px, repeatedly. Only on long answers, and only while streaming.
+
+Measured with `tools/stream_stutter_probe.mjs` (headless Chrome, fake `pi` streaming a 14 KB markdown answer in
+48-character deltas, typing a wrapped message halfway through):
+
+```
+frames 1149, answer reached 3967 chars; viewport height 711 to 736; composer height 93.6 to 119
+  streamed block top   reversals  8   largest 28 px   at 8632, 8682, 11714, 11764, 14765, 14814, 17648, 17699
+  scrollTop            reversals  8   largest 28 px   at the same eight frames
+  block height         reversals  8   largest 27.6 px at the same eight frames
+  viewport height      reversals  0
+every frame the block top moved more than 2px: 0 with the viewport, 108 with the block's own height, 1 with neither
+```
+
+The composer is not the cause. The viewport's height never reversed, and the two hypotheses that came before
+this one, both wrong, were argued rather than measured.
+
+**Mechanism.** `static/chat.js` re-renders the whole streaming block on every batch:
+`entry.render = () => setMarkdownContent(entry.element, entry.rawText)`. Partial markdown is not monotonic in
+height: a chunk that has not yet been recognised as a list or a heading is a paragraph, and the block that
+replaces it carries list or heading margins, about 28 px more. So the block's height oscillates mid-answer.
+Because the browser pins the scroll position to the bottom during a stream, a shrink reduces `scrollHeight`,
+`scrollTop` is clamped, and everything already read moves down; the regrowth moves it back up.
+
+Two things follow. Replacing the scroll write with a gentler follow does not help, and this was tried: the
+reversals are the browser's clamp, not our assignment, and an identical 8 reversals were measured with a
+follow-only version. The fix has to stop the height oscillation.
+
+**The fix to reach for.** Render completed blocks once and re-render only the incomplete tail: cut
+`rawText` at the last block boundary, keep the prefix's DOM frozen, and put the tail in its own element. A
+chunk that ends at a blank line cannot be reinterpreted later, so the prefix stops changing and the height
+stops swinging. It also removes the cost the stub's own docstring complains about, 359 render passes and 298
+times the answer's length handed to the sanitizer for a 4.2 KB answer, and a history render is already a
+single whole-block render, so live and reload stay identical as long as the completed block ends by calling
+`setMarkdownContent` once with the final text.
+
+**Do not fix it by padding the block to a high-water height.** That holds the scroll still and leaves trailing
+whitespace inside the answer's bubble, which is a visible artifact in the one place the user is looking.
+
+Re-run the measurement with:
+
+    PI_CHAT_PI_BIN=$PWD/tools/fake_rpc_pi.py FAKE_RPC_REPLY_CHARS=14000 FAKE_RPC_TURN_MS=45 \
+      uv run python server.py
+    node tools/stream_stutter_probe.mjs --url http://127.0.0.1:9022 --password test-only \
+      --seconds 20 --type-after 5000 --fail-on-reversals 2
+
+The answer has to be long enough to overflow the viewport. A 952-character answer produced zero reversals with
+the defect present, which is how the first measurement of this bug misled me.
