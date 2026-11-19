@@ -1,14 +1,18 @@
 """WebSocket command handling between the browser and pi RPC."""
 
 import asyncio
+import base64
 import json
 import logging
+import re
 import uuid
+from pathlib import Path
 
 from fastapi import WebSocket, WebSocketDisconnect
 
 from .config import DEV_MODE
 from . import audit as audit_log
+from . import uploads
 from .process import PiProcess, parse_queue_snapshot
 from .preview import describe_preview_entries
 from .sessions import (
@@ -196,7 +200,7 @@ async def _dispatch_command(
     # which kills the pi subprocess). Report and keep serving the client.
     try:
         if command_type == "prompt":
-            await _handle_prompt(pi, message)
+            await _handle_prompt(pi, message, account)
         elif command_type == "steer_now":
             await _handle_queue_action(pi, message, action="steer")
         elif command_type == "retract_queued":
@@ -290,12 +294,12 @@ async def _handle_voice_prepare(pi: PiProcess, voice, settings: dict) -> None:
         )
 
 
-async def _handle_prompt(pi: PiProcess, message: dict) -> None:
+async def _handle_prompt(pi: PiProcess, message: dict, account: str) -> None:
     if not pi.proc:
         await _start_session(pi)
 
     text = message.get("message")
-    if not isinstance(text, str) or not text.strip():
+    if not isinstance(text, str):
         await _send_error(pi, "Prompt message is required")
         return
 
@@ -317,10 +321,12 @@ async def _handle_prompt(pi: PiProcess, message: dict) -> None:
     }
     if "images" in message:
         try:
+            # Normalized on the way to pi as well: a data URL is what a browser clipboard gives you,
+            # and pi's `ImageContent.data` is base64 and nothing else.
             payload["images"] = [
                 {
                     "type": "image",
-                    "data": image["data"],
+                    "data": _bare_base64(image["data"]),
                     "mimeType": image.get("mimeType", "image/png"),
                 }
                 for image in message["images"]
@@ -328,7 +334,139 @@ async def _handle_prompt(pi: PiProcess, message: dict) -> None:
         except (KeyError, TypeError) as e:
             await _send_error(pi, f"Invalid image payload: {e}")
             return
+
+    tags, error = await _attachment_tags(account, message)
+    if error:
+        await _send_error(pi, error)
+        return
+    if not text.strip() and not tags:
+        # An empty message used to be refused here, which was fine when a message could only be text.
+        # "Attach a PDF and press send" is a real thing to do, and the block below is a real message.
+        await _send_error(pi, "Prompt message is required")
+        return
+    if tags:
+        # The paths ride in the prompt text because that is the only channel pi gives a client.
+        # `ImageContent` is `{type, data, mimeType}` and a user message has no field for where a
+        # file came from, so an assistant holding a picture in context could not otherwise find out
+        # where the picture *is*. `pi_chat/uploads.py` owns the shape and the reason.
+        #
+        # Which means the stored user turn is not what the person typed, and every render path that
+        # shows a user message has to take the block back out and draw chips from it instead. That is
+        # `parseAttachments()` in `static/utils.js`, called by the live echo and the replay alike,
+        # because a reloaded session that prints the block is a session that prints 30 KB of PDF.
+        block = uploads.attachment_block(tags)
+        payload["message"] = f"{text}\n\n{block}" if text.strip() else block
+
     await pi.send(payload)
+
+
+async def _attachment_tags(account: str, message: dict) -> tuple[list[str], "str | None"]:
+    """Put this prompt's attachments on disk and describe them for the model.
+
+    Returns the tags to append and an error string, at most one of which says anything. An attachment
+    that cannot be found on disk refuses the whole prompt rather than dropping quietly from it: a
+    message that arrives without the file the sender meant to send is the failure this whole feature
+    exists to fix, and a partial prompt is how that happens.
+    """
+    scope = message.get("uploadScope")
+    if not uploads.is_valid_scope(scope) and (message.get("images") or message.get("attachments")):
+        # A tab from before the scope existed, or a hand-rolled client. Images still reach the model
+        # as base64 the way they always did; they just arrive without an address.
+        log.warning("prompt with attachments carries no valid uploadScope; no paths will be given")
+    tags: list[str] = []
+
+    for index, image in enumerate(message.get("images") or [], start=1):
+        if not isinstance(image, dict):
+            continue
+        mime_type = str(image.get("mimeType") or "image/png")
+        try:
+            blob = _decode_image_data(image.get("data"))
+        except ValueError as decode_error:
+            return [], f"That image could not be read: {decode_error}"
+        if len(blob) > uploads.MAX_IMAGE_BYTES:
+            return [], (
+                f"That image is {uploads.format_size(len(blob))}, over the "
+                f"{uploads.format_size(uploads.MAX_IMAGE_BYTES)} limit. "
+                "Send a smaller copy, or tell me the path and I will open it from disk."
+            )
+        if not uploads.is_valid_scope(scope):
+            continue
+        stored = uploads.store(
+            account,
+            scope,
+            original_name=str(image.get("filename") or f"image-{index}"),
+            data=blob,
+            mime_type=mime_type,
+            suffix=uploads.image_suffix_for(str(image.get("filename") or ""), mime_type),
+        )
+        if stored is None:
+            continue
+        tags.append(
+            uploads.image_tag(
+                name=_display_name(stored.path),
+                path=stored.path,
+                bytes_=stored.bytes,
+                mime_type=mime_type,
+            )
+        )
+
+    for item in message.get("attachments") or []:
+        if not isinstance(item, dict):
+            return [], "Malformed attachment: expected a file reference from this browser."
+        path = uploads.resolve_ref(account, item.get("ref"))
+        if path is None:
+            return [], (
+                "That attachment is not on the server any more. Attach it again; "
+                "nothing was sent."
+            )
+        body = item.get("text")
+        # The cap is enforced here as well as in the upload route: the browser is a client, and a
+        # client that sends a body does not get to decide how much of the context window it takes.
+        inline = body if isinstance(body, str) and 0 < len(body) <= uploads.INLINE_MAX_CHARS else None
+        tags.append(
+            uploads.file_tag(
+                name=_display_name(path),
+                path=path,
+                bytes_=path.stat().st_size,
+                text=inline,
+                mime_type=str(item.get("mimeType") or ""),
+            )
+        )
+
+    return tags, None
+
+
+_IMAGE_DATA_PREFIX = re.compile(r"^data:[^,;]*;base64,")
+
+
+def _bare_base64(raw: object) -> object:
+    """Strip a `data:<mime>;base64,` prefix, because pi wants the payload and nothing else."""
+    if isinstance(raw, str):
+        return _IMAGE_DATA_PREFIX.sub("", raw, count=1)
+    return raw
+
+
+def _decode_image_data(raw: object) -> bytes:
+    """Decode an image body, tolerating a data URL because clients are clients."""
+    payload = _bare_base64(raw)
+    if not isinstance(payload, str) or not payload:
+        raise ValueError("the base64 payload is missing")
+    try:
+        blob = base64.b64decode(payload, validate=False)
+    except Exception as error:  # binascii.Error and whatever a huge string raises
+        raise ValueError(str(error)) from error
+    if not blob:
+        raise ValueError("the base64 payload decoded to nothing")
+    return blob
+
+
+def _display_name(path: Path) -> str:
+    """The stored file's name without the random prefix that keeps two uploads apart.
+
+    The `path` attribute is the truth and is handed over verbatim; this only keeps `a31f9c02-` out of
+    the name the model reads back to the person.
+    """
+    return re.sub(r"^[0-9a-f]{8}-", "", path.name)
 
 
 async def _handle_queue_action(pi: PiProcess, message: dict, *, action: str) -> None:

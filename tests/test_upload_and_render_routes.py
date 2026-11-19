@@ -15,6 +15,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from pi_chat import app as app_module
+from pi_chat import uploads
 from pi_chat.app import MAX_DOCUMENT_SIZE, _read_capped, create_app
 from pi_chat.auth import AuthManager, hash_password
 
@@ -41,6 +42,9 @@ def app(tmp_path, monkeypatch):
     auth.password_hashes["b"] = hash_password("test123")
     auth.password_hashes["r"] = hash_password("profile-r-pw")
     monkeypatch.setattr(app_module, "PROJECT_ROOT", tmp_path)
+    # Attachments are filed under the same root the pi child runs in, and that root is a separate
+    # import in each module. Patching one and not the other is how a test writes into the real tree.
+    monkeypatch.setattr(uploads, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(app_module, "DEV_MODE", False)
     (tmp_path / "sessions" / "b").mkdir(parents=True)
     return create_app(auth_manager=auth)
@@ -86,10 +90,14 @@ class TestCappedRead:
         assert caught.value.status_code == 400
 
 
+SCOPE = "8f3c2a1e-4b5d-4e6f-9a8b-7c6d5e4f3a2b"
+
+
 class TestDocumentUpload:
     def test_a_small_text_file_comes_back_as_text(self, client):
         response = client.post(
             "/api/upload-file",
+            data={"scope": SCOPE},
             files={"file": ("notes.txt", "hello from a note".encode("utf-8"), "text/plain")},
         )
 
@@ -97,12 +105,36 @@ class TestDocumentUpload:
         body = response.json()
         assert body["content"] == "hello from a note"
         assert body["mimeType"] == "text/plain"
+        assert body["inlined"] is True
+        # The bytes stay on disk and the response says where: the transcription is what the model
+        # reads, and the file is what it opens afterwards.
+        assert body["bytes"] == len(b"hello from a note")
+        path = Path(body["path"])
+        assert path.is_file()
+        assert path.read_bytes() == b"hello from a note"
+        assert path.suffix == ".txt"
+        assert body["ref"] == f"{SCOPE}/{path.name}"
+
+    def test_a_file_too_big_to_inline_comes_back_as_a_path(self, client, monkeypatch):
+        monkeypatch.setattr(uploads, "INLINE_MAX_CHARS", 8)
+        response = client.post(
+            "/api/upload-file",
+            data={"scope": SCOPE},
+            files={"file": ("long.txt", b"a very long document indeed", "text/plain")},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["content"] is None, "no body means the prompt sends no body"
+        assert body["inlined"] is False
+        assert Path(body["path"]).is_file(), "and the path is the whole way to the file"
 
     def test_an_oversized_file_is_refused(self, client):
         oversized = b"x" * (MAX_DOCUMENT_SIZE + 1024)
 
         response = client.post(
             "/api/upload-file",
+            data={"scope": SCOPE},
             files={"file": ("big.txt", oversized, "text/plain")},
         )
 
@@ -115,8 +147,31 @@ class TestDocumentUpload:
         assert response.status_code == 400
         assert "Unsupported file type" in response.json()["detail"]
 
+    def test_a_scope_that_is_not_one_is_refused(self, client):
+        """The scope becomes a path segment, so it is checked rather than believed."""
+        response = client.post(
+            "/api/upload-file",
+            data={"scope": "../../sessions/r"},
+            files={"file": ("notes.txt", b"hello", "text/plain")},
+        )
+
+        assert response.status_code == 400
+        assert "scope" in response.json()["detail"]
+
+    def test_an_upload_without_a_scope_is_refused(self, client):
+        response = client.post(
+            "/api/upload-file",
+            files={"file": ("notes.txt", b"hello", "text/plain")},
+        )
+
+        assert response.status_code == 400
+
     def test_non_utf8_text_is_refused_rather_than_replaced(self, client):
-        response = client.post("/api/upload-file", files={"file": ("bin.txt", b"\xff\xfe\x00bad", "text/plain")})
+        response = client.post(
+            "/api/upload-file",
+            data={"scope": SCOPE},
+            files={"file": ("bin.txt", b"\xff\xfe\x00bad", "text/plain")},
+        )
 
         assert response.status_code == 400
 
@@ -127,10 +182,32 @@ class TestDocumentUpload:
 
         response = anonymous.post(
             "/api/upload-file",
+            data={"scope": SCOPE},
             files={"file": ("notes.txt", b"someone else's note", "text/plain")},
         )
 
         assert response.status_code in (401, 403)
+
+
+class TestLimitsRoute:
+    """The composer repeats the server's ceilings so an oversized photo is refused with a sentence
+    instead of by the socket, which drops an over-large frame and closes the connection."""
+
+    def test_the_ceilings_are_the_server_ones(self, client):
+        response = client.get("/api/limits")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["documentMaxBytes"] == MAX_DOCUMENT_SIZE
+        assert body["inlineMaxChars"] == uploads.INLINE_MAX_CHARS
+        assert body["imageMaxBytes"] == uploads.MAX_IMAGE_BYTES
+        # The base64 of an image at the cap has to fit inside uvicorn's 16 MiB incoming frame with
+        # room for the JSON around it. If these two ever cross, the failure is a dropped chat rather
+        # than an error message, which is the whole reason the client gets told at all.
+        assert uploads.MAX_IMAGE_BYTES * 4 // 3 + 64 * 1024 < 16 * 1024 * 1024
+
+    def test_an_anonymous_caller_gets_nothing(self, app):
+        assert TestClient(app).get("/api/limits").status_code in (401, 403)
 
 
 class TestVoiceUploadLimit:

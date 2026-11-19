@@ -37,6 +37,7 @@ GROUPS = [
     ("Speech synthesis", ("TTS",)),
     ("Speech input", ("STT",)),
     ("Voice storage and cloning", ("VOICE",)),
+    ("Attachments", ("IMAGE_MAX", "INLINE_MAX", "UPLOAD_RETENTION")),
     ("Audit and telemetry", ("AUDIT",)),
     ("Server and child process", ("HOST", "PORT", "PI_BIN", "PI_ARGS", "ACCOUNT", "LOG_", "DEV", "SESSION_TTL", "CONTEXT_FILES", "ALLOW_DEV_REMOTE")),
     ("Test harness", ("SMOKE_",)),
@@ -62,6 +63,9 @@ NOTES = {
     "PI_CHAT_STT_ENABLED": "on by default; the transcriber loads on first use (`uv sync --extra stt` installs it)",
     "PI_CHAT_SESSION_TTL": "seconds; a restart is required either way, so the value is read once at import",
     "PI_CHAT_PREVIEW_TOKEN": "not a knob: minted per spawn by the server and handed to the child, for the preview pane-state channel",
+    "PI_CHAT_IMAGE_MAX_BYTES": "bytes; an image larger than this is refused by the composer, because the frame around it would exceed uvicorn's 16 MiB incoming limit and the socket would just close",
+    "PI_CHAT_INLINE_MAX_CHARS": "characters of extracted text an attached document may add to a prompt; above it the agent gets the file's path and reads it in chunks",
+    "PI_CHAT_UPLOAD_RETENTION_DAYS": "days an attached file stays on disk; swept at startup, `0` disables the sweep entirely",
 }
 
 # Names that are not `config.py` knobs but are still part of the configuration story, because they cross the

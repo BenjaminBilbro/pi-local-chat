@@ -35,6 +35,7 @@ import pdfplumber
 from .config import STT_ENABLED
 from . import config as app_config
 from . import phonon_voices
+from . import uploads
 from .tts_service import TTSService
 from .voice_store import VoiceStore, MAX_FILE_SIZE as VOICE_MAX_FILE_SIZE
 from .websocket import handle_websocket
@@ -135,6 +136,12 @@ def create_app(
             preview.cleanup()
         except OSError as error:
             log.warning("Preview cleanup failed: %s", error)
+        # Attached files are the other accumulating store, and the same argument applies: nothing else
+        # deletes them, and an attachment's path outlives its usefulness by weeks.
+        try:
+            uploads.prune()
+        except OSError as error:
+            log.warning("Attachment prune failed: %s", error)
         yield
         log.info(
             "Shutting down — killing %d pi subprocess(es)",
@@ -319,8 +326,8 @@ def create_app(
         return {"deleted": True, "sessions": sessions}
 
     @application.post("/api/upload-file")
-    async def upload_file(request: Request, file: UploadFile):
-        _require_account(request, auth)
+    async def upload_file(request: Request, file: UploadFile, scope: str | None = Form(None)):
+        account = _require_account(request, auth)
 
         filename = file.filename or ""
         if not filename:
@@ -332,6 +339,15 @@ def create_app(
             raise HTTPException(
                 status_code=400,
                 detail=f"Unsupported file type: {ext}. Only .pdf and .txt are allowed.",
+            )
+
+        # The scope is the tab's own attachment directory. It comes from the browser because no child
+        # exists yet to key it on (invariant 3), and it is validated rather than trusted because it
+        # becomes a path segment.
+        if not uploads.is_valid_scope(scope):
+            raise HTTPException(
+                status_code=400,
+                detail="This tab is missing its attachment scope; reload the page and try again.",
             )
 
         # Read file content, refusing it the moment it goes over rather than after buffering it all
@@ -367,10 +383,39 @@ def create_app(
                 )
             mime_type = "application/pdf"
 
+        # Keep the bytes. The transcription is what the model reads now; the file is what it opens
+        # later, and without this line there was no file to open.
+        stored = uploads.store(
+            account,
+            scope,
+            original_name=filename,
+            data=content_bytes,
+            mime_type=mime_type,
+        )
+        if stored is None:
+            raise HTTPException(status_code=400, detail="Invalid attachment scope")
+
+        # Inline it only while it is small enough to be worth the context window. Above the cap the
+        # response carries no body and the path does the work: the agent reads it in chunks.
+        inlined = len(text) <= uploads.INLINE_MAX_CHARS
+        if not inlined:
+            log.info(
+                "attachment %s is %d characters, over the inline limit: the agent gets the path only",
+                stored.name,
+                len(text),
+            )
+
         return {
-            "filename": filename,
-            "content": text,
+            "filename": stored.name,
+            "ref": stored.ref,
+            "path": str(stored.path),
             "mimeType": mime_type,
+            "bytes": stored.bytes,
+            # A null content is the browser's cue to send no body back on the prompt. The path is in
+            # `path` either way, so the attachment is reachable at every size.
+            "content": text if inlined else None,
+            "inlined": inlined,
+            "inlineLimitChars": uploads.INLINE_MAX_CHARS,
         }
 
     # The pane is the only witness to what the human can actually see: which tab is in front,
@@ -744,6 +789,23 @@ def create_app(
             "messageCount": len(messages),
             "messages": messages,
             "assistantHtml": rendered.get("assistantHtml", []),
+        }
+
+    @application.get("/api/limits")
+    async def limits(request: Request):
+        """The size ceilings the composer has to respect, so the browser can refuse before the socket does.
+
+        Not decoration. An image larger than uvicorn's incoming frame cap does not come back as a
+        413: the frame is dropped and the websocket closes, which a person reads as the chat falling
+        over rather than as "that photo was too big". The number lives on the server, so the client
+        cannot drift from it.
+        """
+        _require_account(request, auth)
+        return {
+            "imageMaxBytes": uploads.MAX_IMAGE_BYTES,
+            "documentMaxBytes": MAX_DOCUMENT_SIZE,
+            "inlineMaxChars": uploads.INLINE_MAX_CHARS,
+            "retentionDays": uploads.RETENTION_DAYS,
         }
 
     @application.get("/api/version")

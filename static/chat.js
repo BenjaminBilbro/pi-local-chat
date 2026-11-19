@@ -14,6 +14,7 @@ import {
   appendTimelineItem,
   createAssistantTimeline,
   createErrorItem,
+  createUserFileChips,
   createTextItem,
   createThinkingItem,
   createToolItem,
@@ -22,7 +23,7 @@ import {
   setToolStatus,
   TOOL_STATUS,
 } from './timeline.js';
-import { escapeHtml, isSystemEnvelope } from './utils.js';
+import { escapeHtml, isSystemEnvelope, parseAttachments, stripAttachments } from './utils.js';
 import { randomMascotSrc } from './mascots.js';
 import { primaryMode, primaryText } from './composer-mode.js';
 import { createStreamFollow } from './stream-follow.js';
@@ -64,6 +65,60 @@ let sendCommand = () => false;
 let onPromptSubmitted = () => {};
 let sttController = null;
 let pendingFiles = [];
+
+/* This tab's attachment directory, and the server's size ceilings.
+ *
+ * The scope belongs to the browser because nothing else owns it yet: a file can be attached before pi
+ * has been spawned at all (invariant 3, one child per connection started on the first prompt), so
+ * there is no connection id to file it under, and a reload of the same tab should find its own
+ * uploads. sessionStorage is exactly that lifetime. `crypto.randomUUID` is absent outside a secure
+ * context and the tailnet URL is plain http, so the hand-rolled fallback is not paranoia here. The
+ * shape is what `pi_chat/uploads.py` will accept, because this becomes a path segment.
+ */
+const UPLOAD_SCOPE_KEY = 'pi-chat-upload-scope';
+const UPLOAD_SCOPE_PATTERN = /^[0-9a-f][0-9a-f-]{7,63}$/;
+
+function newUploadScope() {
+  const bytes = new Uint8Array(16);
+  if (globalThis.crypto?.getRandomValues) globalThis.crypto.getRandomValues(bytes);
+  else for (let i = 0; i < bytes.length; i += 1) bytes[i] = Math.floor(Math.random() * 256);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function readUploadScope() {
+  try {
+    const stored = sessionStorage.getItem(UPLOAD_SCOPE_KEY);
+    if (stored && UPLOAD_SCOPE_PATTERN.test(stored)) return stored;
+    const fresh = newUploadScope();
+    sessionStorage.setItem(UPLOAD_SCOPE_KEY, fresh);
+    return fresh;
+  } catch {
+    // Storage disabled or full: a scope that lasts this page load is still better than none.
+    return newUploadScope();
+  }
+}
+
+const uploadScope = readUploadScope();
+
+/* The ceilings live on the server (`/api/limits`) and the composer only repeats them, so that an
+ * oversized photo is refused with a sentence instead of by the socket: a frame past uvicorn's
+ * incoming limit does not come back as an error, it closes the connection, and that reads as the chat
+ * falling over. The default is the server's own default, so a failed fetch degrades to the old
+ * behavior rather than to no guard at all. */
+const uploadLimits = { imageMaxBytes: 12 * 1024 * 1024 };
+
+async function loadUploadLimits() {
+  try {
+    const response = await fetch('/api/limits');
+    if (response.ok) Object.assign(uploadLimits, await response.json());
+  } catch {
+    /* keep the default */
+  }
+}
+loadUploadLimits();
 let timeline = null;
 let currentThinking = null;
 let currentText = null;
@@ -441,14 +496,34 @@ function renderDeliveredUserMessage(message) {
      returning here before the match cannot strand a queued bubble. */
   if (isSystemEnvelope(userMessageText(message))) return;
 
-  const text = userMessageText(message);
+  /* The stored turn is not what was typed: the server appends the attachment block that carries the
+   * paths (`pi_chat/uploads.py`), and the echo hands back that whole text. So match the FIFO on the
+   * sentence alone - a prompt with a file in it used to miss its own slot there, which stranded the
+   * entry and printed the block in the bubble - and build the chips from the tags themselves.
+   * That is also how a document attachment survives a reload at all: the session file never held its
+   * bytes, only this. */
+  const parsed = parseAttachments(userMessageText(message));
+  const text = parsed.text;
   const next = outgoing[0];
   const midRun = Boolean(timeline);
-  const bubble = next && next.text === text
+  const bubble = next && stripAttachments(next.text) === text
     ? { label: next.label, files: next.files }
     // Nothing waiting matches: the prompt came from somewhere else (another tab on this session, or
     // a FIFO dropped by a reconnect). The event itself is the record, so render from it.
-    : { label: text, files: filesFromMessageContent(message.content) };
+    : {
+      label: text,
+      files: [
+        ...filesFromMessageContent(message.content),
+        ...parsed.files
+          .filter((file) => file.kind === 'file')
+          .map((file) => ({
+            type: 'file',
+            filename: file.name,
+            path: file.path,
+            inlined: file.inlined,
+          })),
+      ],
+    };
 
   if (next && next.text === text) {
     outgoing.shift();
@@ -1180,9 +1255,12 @@ function submitPrompt(delivery = 'queue') {
 
   hideLanding();
 
-  // Build message with file content appended
-  let messageText = text;
+  /* Only the typed sentence travels from here. A file goes as a reference the server minted and an
+   * image as bytes, and the server turns both into paths on disk (`_attachment_tags` in
+   * `pi_chat/websocket.py`) - a browser cannot name a path it is allowed to read, so it must not be
+   * able to try. */
   const images = [];
+  const attachments = [];
 
   for (const file of pendingFiles) {
     if (file.type === 'image') {
@@ -1190,15 +1268,26 @@ function submitPrompt(delivery = 'queue') {
         type: 'image',
         data: file.data,
         mimeType: file.mimeType,
+        filename: file.filename,
       });
     } else if (file.type === 'file') {
-      messageText += `\n<file name="${escapeFileName(file.filename)}">\n${file.content}\n</file>`;
+      attachments.push({
+        ref: file.ref,
+        name: file.filename,
+        mimeType: file.mimeType,
+        // Null when the upload route decided the document was too big to inline. The path is on the
+        // server's side of the reference either way, so the attachment is reachable at every size.
+        text: typeof file.content === 'string' ? file.content : null,
+      });
     }
   }
 
-  const command = { type: 'prompt', message: messageText, delivery };
+  const command = { type: 'prompt', message: text, delivery, uploadScope };
   if (images.length > 0) {
     command.images = images;
+  }
+  if (attachments.length > 0) {
+    command.attachments = attachments;
   }
   if (!sendCommand(command)) return;
   onPromptSubmitted();
@@ -1209,7 +1298,7 @@ function submitPrompt(delivery = 'queue') {
    * now and swallow that echo. */
   const files = pendingFiles.slice();
   const midRun = isAgentRunning || promptAwaitingStart;
-  outgoing.push({ text: messageText, label: text, files, rendered: !midRun });
+  outgoing.push({ text, label: text, files, rendered: !midRun });
   if (!midRun) createUserMessage(text, files);
 
   promptAwaitingStart = true;
@@ -1219,9 +1308,13 @@ function submitPrompt(delivery = 'queue') {
   updateSendButton();
 }
 
-function escapeFileName(name) {
-  return name.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
+/** The bubble for one user turn, from the same shapes on both sides of the parity line.
+ *
+ * `files` is `[{ type, filename, data?, path?, mimeType?, inlined? }]`: the composer's pending list on
+ * the optimistic path, and the same thing rebuilt from the message's image blocks plus its
+ * `<file>`/`<image>` tags on the echo and replay paths. Text first, then images, then document chips,
+ * in that order here and nowhere else, because this is the one markup both paths share
+ * (`createUserFileChips` in `timeline.js`). */
 
 function createUserMessage(text, files) {
   // Same rule as the echo path, at the optimistic path too: the tag is what makes a message a mode marker,
@@ -1248,13 +1341,15 @@ function createUserMessage(text, files) {
       image.className = 'user-image';
       image.src = `data:${file.mimeType};base64,${file.data}`;
       bubble.appendChild(image);
-    } else if (file.type === 'file') {
-      const fileLabel = document.createElement('div');
-      fileLabel.className = 'user-file-label';
-      fileLabel.textContent = `📄 ${file.filename}`;
-      bubble.appendChild(fileLabel);
     }
   }
+  bubble.appendChild(
+    createUserFileChips(files.filter((file) => file.type === 'file').map((file) => ({
+      name: file.filename,
+      path: file.path || '',
+      inlined: file.inlined !== false,
+    }))),
+  );
 
   container.appendChild(bubble);
   messagesElement.appendChild(container);
@@ -1283,6 +1378,14 @@ async function handleFileSelection(event) {
 }
 
 async function addImageFile(file) {
+  if (file.size > uploadLimits.imageMaxBytes) {
+    showChatError(
+      `That image is ${(file.size / (1024 * 1024)).toFixed(1)} MB. The limit is `
+      + `${(uploadLimits.imageMaxBytes / (1024 * 1024)).toFixed(0)} MB, because anything larger is `
+      + 'dropped by the socket. Send a smaller copy, or tell me the path and I will open it from disk.',
+    );
+    return;
+  }
   return new Promise((resolve) => {
     const reader = new FileReader();
     reader.onload = (loadEvent) => {
@@ -1307,6 +1410,7 @@ async function addImageFile(file) {
 async function addDocumentFile(file) {
   const formData = new FormData();
   formData.append('file', file);
+  formData.append('scope', uploadScope);
 
   try {
     const response = await fetch('/api/upload-file', {
@@ -1324,7 +1428,12 @@ async function addDocumentFile(file) {
     pendingFiles.push({
       type: 'file',
       filename: result.filename,
+      // The reference is what the prompt sends; the path is what the agent is handed. The browser
+      // keeps the second only so a chip can say where its file went.
+      ref: result.ref,
+      path: result.path || '',
       content: result.content,
+      inlined: result.inlined !== false,
       mimeType: result.mimeType,
     });
     updateFileAttachmentsUI();
@@ -1349,6 +1458,11 @@ function updateFileAttachmentsUI() {
   for (const file of nonImageFiles) {
     const chip = document.createElement('div');
     chip.className = 'file-chip';
+    if (file.inlined === false) {
+      // Worth saying before the send rather than after: the model will not receive the text, and
+      // "why didn't it read my file" is a worse way to find out.
+      chip.title = 'Too large to include in the message. The assistant gets the path and opens it from disk.';
+    }
 
     const icon = document.createElement('span');
     icon.className = 'file-chip-icon';
@@ -1740,10 +1854,7 @@ function createQueueChipAction(label, icon, onClick) {
 /* An attached file arrives in pi's queue as its whole inlined body. The chip wants the sentence the
  * user typed, not 30 KB of PDF transcription. */
 function queueChipLabel(text) {
-  const withoutFiles = String(text)
-    .replace(/\s*<file name="([^"]*)">[\s\S]*?<\/file>/g, ' $1')
-    .replace(/\s+/g, ' ')
-    .trim();
+  const withoutFiles = stripAttachments(text).replace(/\s+/g, ' ').trim();
   return withoutFiles.length > 72 ? `${withoutFiles.slice(0, 71)}…` : withoutFiles;
 }
 

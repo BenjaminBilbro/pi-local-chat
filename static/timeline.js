@@ -292,3 +292,30 @@ export function setMarkdownContent(item, text) {
     ),
   );
 }
+
+/** The file chips inside a user bubble, built once for both render paths.
+ *
+ * A document attachment has no bytes in the session file, so its only surviving record is the
+ * `<file>` tag in the stored prompt (`parseAttachments()` in `utils.js` reads it back). The live view
+ * has the same list from the composer. Drawing one from the composer and the other from the tags is
+ * how a reload changes what your own message looks like, which is the parity break this function
+ * exists to prevent: both now hand the same shape here.
+ *
+ * `files` is `[{ name, path, inlined }]`. Images are not here: those really are in the session, and
+ * both paths paint them from the message's own content blocks.
+ */
+export function createUserFileChips(files) {
+  const fragment = document.createDocumentFragment();
+  for (const file of files || []) {
+    const chip = document.createElement('div');
+    chip.className = 'user-file-label';
+    chip.textContent = file.inlined === false
+      ? `\u{1F4C4} ${file.name} (on disk, not inlined)`
+      : `\u{1F4C4} ${file.name}`;
+    // The path is the thing the agent was handed. Hidden until asked for, because a Windows path is
+    // 90 characters and a chat bubble is not.
+    if (file.path) chip.title = file.path;
+    fragment.appendChild(chip);
+  }
+  return fragment;
+}

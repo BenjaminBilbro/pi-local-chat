@@ -19,7 +19,7 @@ If you change anything in here, run `tools/smoke_test_ws.py` and at least one
 
 | Type | Purpose |
 |------|---------|
-| `prompt` | Send text and optional images to pi; `delivery` is `"queue"` (default, waits for the run) or `"now"` (steer at the next boundary) |
+| `prompt` | Send text and optional images to pi; `delivery` is `"queue"` (default, waits for the run) or `"now"` (steer at the next boundary). `images[]` may carry a `filename`, `attachments[]` are `{ref, name, mimeType, text}` where `ref` is a reference `/api/upload-file` minted, and `uploadScope` is this tab's upload directory: the server writes the bytes and appends their paths to the text, because pi has no field for where a file came from (`docs/attachments.md`) |
 | `steer_now` | Promote one queued message to steering: `{kind, index, text}` |
 | `retract_queued` | Pull one queued message out of pi's queue: `{kind, index, text}` |
 | `new_session` | Start a clean pi session without replacing the process |

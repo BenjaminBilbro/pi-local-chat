@@ -29,6 +29,14 @@ Object.assign(globalThis, {
   Element: window.Element,
   HTMLElement: window.HTMLElement,
   Node: window.Node,
+  // Without these three the parity suite has been quietly lying since the 2026-11-18 scroll-follow
+  // mitigation. Node has its own `CustomEvent`, jsdom refuses it as an argument to `dispatchEvent`, and
+  // jsdom reports an exception thrown inside an event listener instead of propagating it: so
+  // `announceFollowChange()` died mid-handler, `sendCommand` was never reached, and a composer check
+  // failed with "did not ask to steer: []" - which reads like an app defect and is a missing global.
+  Event: window.Event,
+  CustomEvent: window.CustomEvent,
+  KeyboardEvent: window.KeyboardEvent,
 });
 
 window.eval(
@@ -189,6 +197,16 @@ const assistantHtml = Array.from(
   (element) => element.outerHTML,
 );
 
+/* The reader's own turns, for the same reason: a prompt that carried a file is stored with the
+ * attachment block the server appended, and only the tags say what was attached (the bytes never
+ * entered the session). So the live echo and the replay both rebuild the chips from that text, and a
+ * bubble that differs between the two means one of them stopped calling `parseAttachments()`.
+ * `tools/test_attachment_render.mjs` holds that claim. */
+const userHtml = Array.from(
+  messagesElement.querySelectorAll('.message.user'),
+  (element) => element.outerHTML,
+);
+
 /* The last assistant block is the one under test for structure: a test replays one run into it, and
  * a group's position within that run is what has to survive settlement. */
 const lastTimeline = Array.from(
@@ -197,6 +215,7 @@ const lastTimeline = Array.from(
 
 process.stdout.write(JSON.stringify({
   assistantHtml,
+  userHtml,
   sendDisabled: document.getElementById('send-btn').disabled,
   focusedToolCallId: document.activeElement
     ?.closest?.('[data-tool-call-id]')

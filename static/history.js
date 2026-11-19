@@ -7,13 +7,14 @@ import {
   appendTimelineItem,
   createAssistantTimeline,
   createErrorItem,
+  createUserFileChips,
   createTextItem,
   createThinkingItem,
   createToolItem,
   resetTimeline,
   toolStatusFromResult,
 } from './timeline.js';
-import { isSystemEnvelope } from './utils.js';
+import { isSystemEnvelope, parseAttachments } from './utils.js';
 
 /** The plain text of a stored message, whether pi recorded it as a string or as content blocks. */
 function messageTextOf(message) {
@@ -71,7 +72,14 @@ function renderUserMessage(message, messagesElement) {
   // A voice-mode marker is a user turn the person did not type, and a reloaded session would otherwise
   // print the whole instruction about speaking style as if it were something he said. The tag is the
   // contract; `systemEnvelope` in utils.js writes it and this is where the replay path drops it.
-  if (isSystemEnvelope(messageTextOf(message))) return;
+  const rawText = messageTextOf(message);
+  if (isSystemEnvelope(rawText)) return;
+
+  /* The other thing stored that was never typed: the attachment block, whose paths are what the model
+   * was handed. Printing it would put a 90-character path and possibly 30 KB of PDF transcription in
+   * the bubble, while the live view had shown one chip - and the chip is the only record an attached
+   * document has, because its bytes never entered the session. So the tags are what rebuild it here. */
+  const parsed = parseAttachments(rawText);
 
   removeWelcome(messagesElement);
 
@@ -85,6 +93,13 @@ function renderUserMessage(message, messagesElement) {
   const bubble = document.createElement('div');
   bubble.className = 'message-bubble';
 
+  // Text, then images, then document chips: the order `createUserMessage` in `chat.js` uses on the
+  // live path, which is the whole parity requirement for a bubble.
+  if (parsed.text) {
+    const text = document.createElement('span');
+    text.textContent = parsed.text;
+    bubble.appendChild(text);
+  }
   if (Array.isArray(message.content)) {
     for (const item of message.content) {
       if (item.type === 'image' && item.data) {
@@ -92,15 +107,10 @@ function renderUserMessage(message, messagesElement) {
         image.className = 'user-image';
         image.src = `data:${item.mimeType || 'image/png'};base64,${item.data}`;
         bubble.appendChild(image);
-      } else if (item.type === 'text' && item.text) {
-        const text = document.createElement('span');
-        text.textContent = item.text;
-        bubble.appendChild(text);
       }
     }
-  } else if (typeof message.content === 'string') {
-    bubble.textContent = message.content;
   }
+  bubble.appendChild(createUserFileChips(parsed.files.filter((file) => file.kind === 'file')));
 
   container.append(label, bubble);
   messagesElement.appendChild(container);
