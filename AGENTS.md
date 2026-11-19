@@ -17,6 +17,7 @@ more than once a day. Everything else lives in `docs/`, and the split is deliber
 | The timeline renderer, or anything that could make live and history render differently | `docs/rendering-parity.md` |
 | The composer: its two-row card, the one button with three functions, or anything that could resize the field | `docs/composer.md` |
 | The preview pane: its tabs, its file watcher, the `preview` tool, or who may read a path | `docs/preview-pane-handoff.md` |
+| The image placeholder, its states, the dot matrix, zoom and download | `docs/image-preview.md` |
 | How to run, test, screenshot, or debug this on a machine | `docs/dev-workflow.md` |
 | "It did something and I cannot reproduce it" | debug-mode audit log: `PI_CHAT_AUDIT=1`, read with `tools/audit.py` | `docs/dev-workflow.md` |
 | Getting a change applied without restarting by hand | hot reload: `PI_CHAT_DEV=1` runs a supervisor, and the page offers Reload or Restart server | `docs/dev-workflow.md` |
@@ -55,6 +56,7 @@ more than once a day. Everything else lives in `docs/`, and the split is deliber
 | Document preview pane | shipped, and a permanent right column since S6. **S8 (2026-11-19): following is per document (a human click outranks the assistant's `watch` flag), and four defects are fixed: alternating reloads, tab switches not moving the visible view, a dot claiming a disk check it never did, and the pane-state secret never reaching a new chat.** One poll covers the active document only, a tab switch always re-reads, and the tool no longer has to re-send a document to revise it | `docs/preview-pane-handoff.md` |
 | STT latency defaults | measured 2026-11-18 with `tools/stt_probe.py`, defaults set from the table; re-measure before changing a model or a silence window | `docs/stt-latency.md` |
 | Voice Mode (S9) | shipped: composer button, full-bleed orb surface (previews still open above it), readiness chips for both engines, mode markers both directions, barge-in armed only on an echo-cancelled mic. The `<PI-CHAT-SYSTEM-MESSAGE>` tag is what keeps the markers from rendering, on echo AND on reload | `docs/voice-mode.md` |
+| Image generation in the pane | shipped 2026-11-19: the tab opens with a dot-matrix placeholder at the requested canvas the moment the tool knows the output path, the percent comes live from sd-cli, and the PNG swaps into **the same rectangle** (`--stage image` fails past 2 px of drift, and checks that the conversation did not move either). Zoom, pan, download, cancelled and stalled states | `docs/image-preview.md` |
 | Open TODO: `questionnaire` over RPC | pi's `questionnaire` tool has no surface in `pi --mode rpc`, so a model that asks a question through pi-chat gets a failure where a person would have got a dialog (hit 2026-11-18 with `Cannot read properties of undefined (reading 'cancelled')`). Needs the request handler on pi's side and an answering dialog on this one, and it is the reason a voice-mode session cannot ask a clarifying question | `~/.pi/agent/memories/projects/pi-chat.md` |
 | Composer redesign (2026-11-18) | **shipped**: the field on top with a fixed 44px control line under it at every width, and one 44px button that is Voice Mode, Send or Stop. It is the fix for the streaming flicker Ben reported verbally, and `tools/screenshot_ui.mjs` measures the invariant in a real browser rather than asserting it in prose | `docs/composer.md` |
 | Streaming stutter (mitigated 2026-11-18) | **typing now releases the scroll follow**, measured: 8 reversals per 4 KB answer to 0, and the block's height still oscillates while nothing moves. Root cause open: the whole streaming block re-renders per batch, partial markdown is not monotonic in height, and bottom-pinned scroll clamps on the shrink. Watching an answer without typing still jitters; the cure is a frozen-prefix render | `docs/rendering-parity.md`, `static/stream-follow.js`, `tools/stream_stutter_probe.mjs` |
@@ -140,6 +142,9 @@ These are non-negotiable. Violating any of these will break the application:
 13. Login is throttled per profile (5 wrong answers per 300 s, `auth.py`). While a profile is in the
     window its password is not verified at all, because the verification is the only thing a
     brute-force run receives back per request.
+14. Tool progress reaches the browser on `tool_execution_update` and is **never persisted**. The pane may
+    not claim 100%, fetch bytes for a document that says it is still rendering, or show a file it has not
+    loaded: the persisted entry is the only thing that says a document exists (`docs/image-preview.md`).
 
 **Reconnect behavior:** An automatic WebSocket reconnect creates a new `PiProcess`. The browser may still display messages from the previous connection, but the replacement process does not have that conversation context. After an unexpected reconnect, load a saved session or start a new conversation.
 

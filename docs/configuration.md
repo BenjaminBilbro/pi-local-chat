@@ -120,7 +120,7 @@ audits.
 | `PI_CHAT_DOWNLOAD_ROOT` | `str(Path.home() / "huggingface"` | `tools/stt_probe.py` | Other |  |
 | `PI_CHAT_SCRUB_LITERALS` | `*unset*` | `tools/scrub_captures.py` | Other | one or more `literal = replacement` pairs, bar-separated, for `tools/scrub_captures.py`; machine-local like `.scrub-literals`, and for the same reason (a note in this table cannot contain the bar itself) |
 | `PI_CHAT_PREVIEW_BASE_DIR` | `str(PROJECT_ROOT / "previews")` | `config.py`, `tools/smoke_test_ws.py` | Previews | server side; the child gets `PI_CHAT_PREVIEW_DIR`, a different name |
-| `PI_CHAT_PREVIEW_DIR` | `*unset*` | `pi_chat/preview.py`, `pi_chat/process.py`, `tools/capture.py` | Previews |  |
+| `PI_CHAT_PREVIEW_DIR` | `*unset*` | `pi_chat/preview.py`, `pi_chat/process.py`, `tools/capture.py`, `tools/fake_rpc_pi.py` | Previews |  |
 | `PI_CHAT_PREVIEW_MAX_DOC_MB` | `"25"` | `config.py` | Previews |  |
 | `PI_CHAT_PREVIEW_MAX_MB` | `"200"` | `config.py` | Previews |  |
 | `PI_CHAT_PREVIEW_ROOTS` | `""` | `config.py` | Previews |  |

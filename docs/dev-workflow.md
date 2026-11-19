@@ -266,7 +266,8 @@ node tools/screenshot_ui.mjs --url http://127.0.0.1:9018 --stage chat \
 ```
 
 `--stage login|chat|voice` (voice opens the settings dialog), `--stage queue|queue-landed` (see
-Mid-run Message Delivery), `--stage stream-render` (see below), `--theme light|dark`,
+Mid-run Message Delivery), `--stage stream-render` (see below), `--stage image|image-cancel` (see
+Image States Below), `--theme light|dark`,
 `--mascot pie|pi`, `--viewport 1440x900`, `--password test-only`, `--pane open|closed` (drives the preview column's toggle, so both resting states are pinnable). `--landing` clicks New session and waits for the landing card, which is a state of the chat screen rather than a stage, and the composer renders inside it at every width. Prefs are seeded through
 localStorage before the second navigation, so theme and mascot apply on load. Always pass
 `PI_CHAT_PI_BIN=tools/fake_rpc_pi.py` to the server: the chat stage spawns a real pi child, and a
@@ -277,6 +278,16 @@ happened once on 2026-11-09, see `docs/audit/README.md`). Assistant text lands i
 command line carried `--remote-debugging-port=93`; never kill by image name on this box, and do not
 filter processes by a `server.py` command-line pattern either, because Strata runs
 `Strata/serve/server.py` and that is not yours to stop.
+
+`--stage image` and `--stage image-cancel` drive a generated image through the real wire: the server
+needs `PI_CHAT_PI_BIN=$PWD/tools/fake_rpc_pi.py FAKE_RPC_IMAGE=1`, and the cancelled variant adds
+`FAKE_RPC_IMAGE_ABORT_AFTER=3`. The stub replays the event sequence copied out of
+`data-samples/imagegen_rpc_capture.jsonl` and writes a real PNG into the connection's preview store, so
+the fetch is the authenticated route and not a stub. `image` writes two shots (`--out` and `--out` with
+`-render` before the extension) and asserts what a picture cannot: the placeholder's aspect equals the
+requested canvas, no bytes are fetched while the document says `rendering`, the swap moves the image by
+under 2 px, and a wheel zoom plus a drag leaves `#messages` exactly where it was. Details in
+`docs/image-preview.md`.
 
 `--stage stream-render` is the WP-06 regression guard: it wraps the `innerHTML` setter and an
 animation-frame counter, streams a long stub answer, and asserts there are never more renders than

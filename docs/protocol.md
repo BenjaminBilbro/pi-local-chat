@@ -183,7 +183,7 @@ All streaming updates wrap an `assistantMessageEvent`:
 | Event | Description |
 |-------|-------------|
 | `tool_execution_start` | Tool begins executing. Has `toolCallId`, `toolName`, `args`. |
-| `tool_execution_update` | Progress during execution. May have `partialResult`. |
+| `tool_execution_update` | Progress during execution. May have `partialResult`. Ephemeral: forwarded to the browser, never written to the session file. `preview.js` reads `partialResult.details.doc` to attach a progress tick to a preview tab, which is the only way an image pane can show a percent while sd-cli draws (`docs/image-preview.md`). |
 | `tool_execution_end` | Tool execution complete. Has `result` with content and `isError`. |
 
 ### Full Flow Sequence

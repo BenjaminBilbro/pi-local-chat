@@ -4,6 +4,10 @@
 the foot first, then S7. Everything above them is history, still accurate except where those two say
 otherwise (S6 already superseded the "appears and disappears" description).
 
+An **image** is a fourth kind now, and it earned its own document: `docs/image-preview.md` is current for
+the placeholder, the states, the dot matrix and the zoom, because a document that arrives in stages does
+not fit a hand-off written for documents that arrive complete.
+
 Suite state now: **788 passed, 2 skipped** pytest. `npm test` has 25 passing and 2 failing
 (`mid-run message did not ask to queue`, `send-now did not ask to steer`): those are the known QA-03
 re-capture item and reproduce with all S7 work stashed, so they are not preview work.
