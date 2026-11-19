@@ -61,6 +61,7 @@ NOTES = {
     "PI_CHAT_TTS_PHONON_LIVE_CATALOG": "1 asks the Hub for the voice catalog instead of the committed snapshot",
     "PI_CHAT_STT_ENABLED": "on by default; the transcriber loads on first use (`uv sync --extra stt` installs it)",
     "PI_CHAT_SESSION_TTL": "seconds; a restart is required either way, so the value is read once at import",
+    "PI_CHAT_PREVIEW_TOKEN": "not a knob: minted per spawn by the server and handed to the child, for the preview pane-state channel",
 }
 
 # Names that are not `config.py` knobs but are still part of the configuration story, because they cross the
@@ -79,6 +80,12 @@ CHILD_SIDE = [
     ("PI_CHAT_ACCOUNT", "server writes for the child",
      "only when the account is not `main`. This is the whole seam between this app and the local memory "
      "extension, which keys persona and memory off it"),
+    ("PI_CHAT_PREVIEW_TOKEN", "server writes for the child",
+     "a 32 hex secret minted per spawn, the child's credential for the preview pane-state channel. Not a "
+     "knob: setting it yourself does nothing, because the server compares against the one it minted"),
+    ("PI_CHAT_PORT", "server writes for the child",
+     "the port the child should call back on, so the preview extension can ask the server what the browser "
+     "is showing. Set by the server, not chosen; the same value `config.py` binds uvicorn to"),
 ]
 PROCESS_SOURCE = ROOT / "pi_chat" / "process.py"
 
