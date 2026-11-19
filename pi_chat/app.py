@@ -6,12 +6,13 @@ import json
 import logging
 import os
 import subprocess
+import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Form, HTTPException, Query, Request, Response, UploadFile, WebSocket
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
@@ -43,6 +44,37 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 log = logging.getLogger("pi-chat")
+
+
+# ---------------------------------------------------------------------------
+# Preview pane state, held in memory only
+# (plan: ~/.pi/agent/plans/pi-chat-preview-interactive.md, WP-3)
+# ---------------------------------------------------------------------------
+
+# How long a pane report may sit here. It only has to outlive the gap between the browser saying
+# something and the model asking about it, so a connection's lifetime is generous already and the
+# sweep exists purely so the dictionary cannot grow across a long-running server.
+PANE_STATE_TTL_SECONDS = 60 * 60
+
+# Keyed by the per-spawn token, never by a name a browser chose. Value is (view, last_write).
+PANE_STATE: dict[str, tuple[dict, float]] = {}
+
+# What a browser may report about its own pane, and the whole of it. The model reads these strings
+# as facts about the user's screen, so an unbounded field or an invented one would be a memory leak
+# and a gullibility bug at the same time.
+#
+# `fileToken` rather than `token` on purpose: the credential that authenticates this report is also
+# in the body, and one key cannot carry both. The first version named this field `token`, and the
+# report silently failed its own secret check.
+PANE_STATE_FIELDS = frozenset(
+    {"open", "activeDocId", "width", "watching", "revision", "fileToken"}
+)
+
+
+def _sweep_pane_state(now: float) -> None:
+    for token, (_, written) in list(PANE_STATE.items()):
+        if now - written > PANE_STATE_TTL_SECONDS:
+            PANE_STATE.pop(token, None)
 
 
 class LoginCredentials(BaseModel):
@@ -340,6 +372,132 @@ def create_app(
             "content": text,
             "mimeType": mime_type,
         }
+
+    # The pane is the only witness to what the human can actually see: which tab is in front,
+    # whether the column is open at all. The browser POSTs that here; the preview child reads it.
+    # Identity is the per-spawn token in `x-preview-token` rather than a cookie, because a child
+    # process has no cookie to present and must not be able to read another session's pane. That
+    # is a 128-bit secret minted per spawn, which is the same class of credential the session
+    # bearer already is, and the payload it unlocks is display metadata about documents this
+    # connection already wrote.
+    @application.get("/api/preview/state")
+    async def preview_state_read(
+        request: Request,
+        x_preview_token: str | None = None,
+    ):
+        """Report what a connection's preview pane is showing, to the child that owns it."""
+        token = (x_preview_token or request.headers.get("x-preview-token") or "").strip()
+        if not token:
+            raise HTTPException(status_code=401, detail="Preview state needs the connection token")
+        entry = PANE_STATE.get(token)
+        if entry is None:
+            # Same shape as the freshness route's denial: nothing to report, and no clue about which
+            # tokens exist.
+            raise HTTPException(status_code=404, detail="No pane state recorded")
+        view, _ = entry
+        return JSONResponse({**view, "ageSeconds": round(time.time() - entry[1], 1)})
+
+    @application.post("/api/preview/state")
+    async def preview_state_write(
+        request: Request,
+        body: dict,
+    ):
+        """Record what a pane is showing. The field set is closed on purpose.
+
+        Two rules that are easy to get wrong and cheap to get right here:
+
+        - A key is stored when the body carried it and the value passed, or when the body carried it
+          and the value is legitimately ``None`` (no active tab, nothing being watched). A key the
+          body never sent stays absent, so a reader can tell "nothing is open in the pane" from
+          "this browser does not report widths".
+        - Nothing is stored unless at least one field was recognised. The alternative is that any
+          authenticated request with a valid token can append a permanent empty entry per token, and
+          the sweep that bounds the map only runs on a write that stores something.
+        """
+        _require_account(request, auth)
+        token = str(body.get("token") or "") if isinstance(body, dict) else ""
+        token = token.strip()
+        if len(token) != 32 or any(character not in "0123456789abcdef" for character in token):
+            raise HTTPException(status_code=400, detail="Preview state needs the connection token")
+
+        def reported(name: str) -> bool:
+            return isinstance(body, dict) and name in body
+
+        def accept(name: str, value, *, kind: str, limit: int | None = None) -> None:
+            """Store one reported field under the one rule that applies to all of them.
+
+            A field the body carried is always recorded. What passes is the value; what does not is
+            recorded as ``None``, which reads as "unknown" rather than silently keeping whatever the
+            last report said. A pane that stops sending a field, or starts sending a bad one, must
+            not leave the model reading yesterday's document id.
+
+            `kind` is explicit per field rather than inferred from the value. An earlier version
+            inferred it from which limits were passed, and a field declared with no limit then
+            accepted anything: `{"open": "yes"}` arrived as a truthy string and the pane reported
+            itself open to the model.
+            """
+            if not reported(name):
+                return
+            if kind == "bool":
+                ok = isinstance(value, bool)
+            elif kind == "id":
+                ok = isinstance(value, str) and 0 < len(value) <= (limit or 64)
+            elif kind == "count":
+                ok = isinstance(value, int) and not isinstance(value, bool) and 0 <= value < (limit or 0)
+            else:
+                ok = False
+            view[name] = value if ok else None
+
+        view: dict = {}
+        accept("open", body.get("open"), kind="bool")
+        for name in ("activeDocId", "watching", "fileToken"):
+            accept(name, body.get(name), kind="id", limit=64)
+        accept("width", body.get("width"), kind="count", limit=8192)
+        accept("revision", body.get("revision"), kind="count", limit=1_000_000)
+
+        if not view:
+            raise HTTPException(status_code=400, detail="Preview state needs at least one field")
+
+        now = time.time()
+        _sweep_pane_state(now)
+        PANE_STATE[token] = (view, now)
+        return JSONResponse({"ok": True, "fields": sorted(view)})
+
+    # Registration order is load-bearing: Starlette matches in order, so a literal path that also
+    # fits `/api/preview/{doc_id}` must be declared first. Below it, `/api/preview/fresh` gets
+    # swallowed as `doc_id="fresh"` and answers a 404 the pane cannot tell from a dead document
+    # (measured 2026-11-19: `test_it_is_routed_ahead_of_the_document_id_route`).
+    @application.get("/api/preview/fresh")
+    async def preview_freshness(
+        request: Request,
+        doc: str | None = Query(None, description="Stored document id, as returned by action=open"),
+        path: str | None = Query(None, description="Referenced file, exactly as the pane is showing it"),
+        kind: str | None = Query(None, description="Kind the pane expects; narrows a stored doc id"),
+    ):
+        """Has the file behind a preview changed? Answers with a validator, and never with bytes.
+
+        One call is one ``stat``: the pane polls this for the active document only, and re-fetches
+        from ``/api/preview/{doc_id}`` only when the returned ``token`` moves (plan:
+        ``~/.pi/agent/plans/pi-chat-preview-interactive.md``). The response is small and JSON, so it
+        is never framed and the site-wide CSP is correct for it as it stands.
+
+        This is deliberately not a wider read than the serving route: it resolves through
+        ``preview.head``, which calls the same allowlist and scope functions with the same preference
+        order, so anything it can report on is already fetchable by this caller. "Nothing there" and
+        "not allowed" share one answer for the same reason the route answers 404 rather than 403.
+        """
+        account = _require_account(request, auth)
+        if kind is not None and kind not in preview.KIND_EXTENSIONS:
+            raise HTTPException(status_code=400, detail="Unsupported preview kind")
+        if not (doc or path):
+            # A malformed request, not a missing document: 404 would tell a caller that an empty
+            # query is a real answer about a file.
+            raise HTTPException(status_code=400, detail="Preview freshness needs doc or path")
+
+        return JSONResponse(
+            preview.head(account, doc_id=doc, kind=kind, path=path),
+            headers={"Cache-Control": "no-store"},
+        )
 
     @application.get("/api/preview/{doc_id}")
     async def preview_document(

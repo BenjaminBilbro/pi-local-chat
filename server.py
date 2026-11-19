@@ -6,7 +6,7 @@ import os
 from pi_chat import devtools
 from pi_chat.app import app
 from pi_chat.auth import require_configured_accounts
-from pi_chat.config import DEV_MODE, log_env_diagnostics
+from pi_chat.config import DEV_MODE, PORT, log_env_diagnostics
 
 # All interfaces by default so the app is reachable from a phone over Tailscale. Two things
 # keep that honest: the desktop's Ethernet sits on the Windows Public firewall profile (inbound
@@ -14,8 +14,9 @@ from pi_chat.config import DEV_MODE, log_env_diagnostics
 # set PI_CHAT_HOST=100.x.y.z (the Tailscale address) or 127.0.0.1 for local-only. Put a tunnel
 # with auth in front of it for anything outside your own tail (see README "Cloudflare Tunnel").
 HOST = os.environ.get("PI_CHAT_HOST", "0.0.0.0")
-PORT = int(os.environ.get("PI_CHAT_PORT", "9000"))
-
+# PORT comes from config so that the port uvicorn binds is the same number `process.py` puts in a
+# child's environment. Two independent reads of `PI_CHAT_PORT` would agree today and drift the day
+# one of them grows a default.
 LOOPBACK_HOSTS = devtools.LOOPBACK_HOSTS
 
 

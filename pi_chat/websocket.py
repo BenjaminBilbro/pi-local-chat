@@ -542,6 +542,12 @@ async def _load_session(pi: PiProcess, account: str, session_path: str) -> None:
             "sessionId": pi.session_id,
             "messageCount": len(messages),
             "previews": previews,
+            # What the pane sends back to POST /api/preview/state. Without it the browser cannot
+            # report what it is showing, and `preview(action:"state")` has nothing to answer with.
+            # `getattr`, not an attribute: the session-loading tests drive this path with a minimal
+            # stand-in for PiProcess, and "this connection has no state channel" is a value the
+            # browser already handles rather than a reason to demand one from every stub.
+            "previewToken": getattr(pi.proc, "preview_token", None) if pi.proc else None,
         }
     )
 

@@ -28,14 +28,15 @@
 
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, extname, join } from "node:path";
+import { basename, dirname, extname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 
 import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 const ENTRY_TYPE = "pichat_preview";
-const PROTOCOL_VERSION = 1;
+/** Mirrored in pi_chat/preview.py (`ENTRY_FIELDS`) and static/preview.js (`normalize`). */
+const PROTOCOL_VERSION = 2;
 /** Keep in step with PI_CHAT_PREVIEW_MAX_DOC_MB on the server. */
 const MAX_DOC_BYTES = 25 * 1024 * 1024;
 
@@ -65,39 +66,81 @@ interface DocState {
   /** Set when this extension wrote the bytes into the preview directory. */
   file?: string;
   note?: string;
+  /** The stored bytes are a copy of `path`, taken because the server would not serve the original. */
+  copied?: boolean;
+  /** Opted in to the pane's disk staleness poll. Absent means "follow the pane's Follow-files setting". */
+  watch?: boolean;
 }
 
+/**
+ * The flow the parameters exist to support, stated once here because every action is a step in it:
+ *
+ *   write or edit the file with the normal file tools -> preview { action:"open", path } -> the pane
+ *   re-renders itself on every save, no further tool calls.
+ *
+ * Sending `content` is how you *invent* a document that has no file yet. Once it has one, stop.
+ */
 const PreviewParams = Type.Object({
   action: Type.Union([
     Type.Literal("open"),
     Type.Literal("update"),
     Type.Literal("close"),
     Type.Literal("list"),
+    Type.Literal("state"),
+    Type.Literal("watch"),
+    Type.Literal("sync"),
     Type.Literal("clear"),
-  ]),
+  ], {
+    description:
+      "open: show a document, mints the docId every other action needs. update: revise an open "
+      + "document in its existing tab; pass no content to re-read the file from disk. close: one tab "
+      + "(needs docId). list: what this extension has open. state: list plus what the user can actually "
+      + "see right now (active tab, pane open). watch: turn disk following on or off for an open doc. "
+      + "sync: re-copy the source file over a stored copy. clear: every tab.",
+  }),
   kind: Type.Optional(
     Type.Union([Type.Literal("markdown"), Type.Literal("html"), Type.Literal("pdf")], {
-      description: "Document kind. Required with action=open unless path names a supported suffix.",
+      description:
+        "Document kind. Omit it: with `path` it comes from the file suffix, with `content` it defaults "
+        + "to markdown. Only pass it to force a suffix the table above does not cover.",
     }),
   ),
   title: Type.Optional(Type.String({ description: "Short title shown on the tab and in the pane header." })),
   content: Type.Optional(
     Type.String({
       description:
-        "Complete document text for markdown/html. Replaces the whole document, so send it in full.",
+        "Complete document text, for a document that has no file on disk yet, or to store a copy over a "
+        + "referenced one. It REPLACES the document, so send it whole. For anything already on disk, "
+        + "write the file and let the pane follow it instead: content costs context on every revision.",
     }),
   ),
   path: Type.Optional(
     Type.String({
       description:
-        "Absolute path of an existing file to show. Required for pdf. Nothing is copied and the file is never modified.",
+        "Absolute path of an existing file to show. Works for every kind, markdown and html included, and "
+        + "this is the preferred backing whenever you intend to iterate: the pane watches it and a "
+        + "`write`/`edit` to that path re-renders with no tool call. Nothing is copied and this tool "
+        + "never writes to it. Outside the server's allowed roots the bytes are copied into the store "
+        + "instead, which the receipt says out loud and which does not follow later edits.",
     }),
   ),
   docId: Type.Optional(
-    Type.String({ description: "Document to update or close. Returned by action=open as doc=..." }),
+    Type.String({ description: "Document to act on. Returned by action=open as doc=..." }),
   ),
   note: Type.Optional(
     Type.String({ description: "One line shown at the foot of the pane, e.g. 'draft, unreviewed'." }),
+  ),
+  watch: Type.Optional(
+    Type.Boolean({
+      description:
+        "With open or watch: re-check the file every second and re-render on its own, so you never send "
+        + "content again. Set it true when you know the file will keep changing (a draft you are "
+        + "iterating on, a render target). Omit it to let the pane's own Follow-files setting decide; "
+        + "false pins this document off.",
+    }),
+  ),
+  on: Type.Optional(
+    Type.Boolean({ description: "With action=watch: true to follow the file, false to stop." }),
   ),
 });
 
@@ -118,14 +161,27 @@ export default function (pi: ExtensionAPI) {
     name: "preview",
     label: "Preview",
     description:
-      "Show a document in the user's preview pane and keep it in sync as you work. "
-      + "Use action=open once, then action=update with the FULL replacement content after each "
-      + "substantial edit. Do not paste the same text into chat as well: the pane is where the "
-      + "user reads it. markdown and html take `content`; pdf takes `path` to an existing file.",
-    promptSnippet: "preview(kind|content|path, title) - open or update a document in the preview pane",
+      "Show a document in the user's preview pane and keep it in sync as you work.\n"
+      + "Two backings, and the choice between them is the whole decision. A STORED document is text you "
+      + "sent in `content`: the pane shows a copy this extension wrote, and revising it means sending the "
+      + "entire document again. A PATH document is a file that already exists: the pane reads it from "
+      + "disk, and if it is being watched a `write` or `edit` to that file re-renders it with no tool "
+      + "call at all.\n"
+      + "So the flow to prefer: write the file with the normal file tools, then `open` it by `path`, then "
+      + "keep editing the file. Use `content` only to invent a document that has no file yet, because "
+      + "full-content updates put the whole document back through your context on every revision.\n"
+      + "Actions in one line each: open (mints doc=...), update (revise in place; no content = re-read "
+      + "from disk), watch (follow the file on or off), sync (re-copy the source over a stored copy), "
+      + "state (what is open AND what the user is looking at), list, close, clear.\n"
+      + "Never paste the same text into chat as well: the pane is where the user reads it.",
+    promptSnippet:
+      "preview(open|update|watch|sync|state|list|close|clear, path|content, title) - show and track a document in the preview pane",
     promptGuidelines: [
       "Open a preview for any document longer than about 15 lines, and for any file the user asks to see.",
-      "Revise with action=update and the complete new text; never send a partial diff.",
+      "To iterate, write the file and `open` it by `path`, with `watch:true` when you know it will change again. Do not re-send the document through `content` when an edit to the file does the job.",
+      "`update` with no `content` re-reads a file-backed document in place; use it instead of `open` when a doc needs refreshing, since `open` mints a second tab.",
+      "Call `state` before saying anything about what the user is looking at: `list` reports what you opened, `state` reports what they can see and which tab is in front.",
+      "Revise a stored document with action=update and the complete new text; never send a partial diff.",
       "Preview documents are sandboxed: self-contained HTML only (inline CSS/SVG, data: URIs; no remote images, no fetch, no localStorage).",
       "Markdown relative image paths do not resolve; inline SVG or data: URIs instead.",
     ],
@@ -139,7 +195,7 @@ export default function (pi: ExtensionAPI) {
     },
 
     async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
-      const outcome = run(params);
+      const outcome = await run(params);
       return {
         content: [{ type: "text", text: outcome.text }],
         details: outcome.details ?? { action: params.action },
@@ -160,7 +216,7 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       if (verb === "clear") {
-        run({ action: "clear" });
+        await run({ action: "clear" });
         ctx.ui.notify("Preview cleared.", "info");
         return;
       }
@@ -169,8 +225,8 @@ export default function (pi: ExtensionAPI) {
         // how the tool closes, because a model should say which document it meant.
         const target = parts[1];
         const outcome = target
-          ? run({ action: "close", docId: target })
-          : run({ action: "clear" });
+          ? await run({ action: "close", docId: target })
+          : await run({ action: "clear" });
         ctx.ui.notify(outcome.text, outcome.failed ? "error" : "info");
         return;
       }
@@ -181,14 +237,14 @@ export default function (pi: ExtensionAPI) {
         ctx.ui.notify("Usage: /preview <path> | store <path> | list | close [all]", "warning");
         return;
       }
-      const outcome = run({ action: "open", path: raw, ...(stored ? { store: true } : {}) });
+      const outcome = await run({ action: "open", path: raw, ...(stored ? { store: true } : {}) });
       ctx.ui.notify(outcome.text, outcome.failed ? "error" : "info");
     },
   });
 
   /* ── The one implementation both entry points share ───────────── */
 
-  function run(params: {
+  async function run(params: {
     action: string;
     kind?: DocKind;
     title?: string;
@@ -196,9 +252,14 @@ export default function (pi: ExtensionAPI) {
     path?: string;
     docId?: string;
     note?: string;
+    watch?: boolean;
+    on?: boolean;
     /** Command-only: copy the file into the store instead of referencing it. */
     store?: boolean;
-  }): { text: string; failed?: boolean; details?: PreviewEntry } {
+  }): Promise<{ text: string; failed?: boolean; details?: PreviewEntry }> {
+    // Awaiting inside the switch is only safe because nothing else can re-enter run(): the tool sets
+    // `executionMode: "sequential"`, and the slash command handler's await lands in an RPC dispatch
+    // that pi already serializes. If run() ever becomes concurrent, the `docs` map needs a lock.
     switch (params.action) {
       case "clear": {
         docs.clear();
@@ -237,12 +298,34 @@ export default function (pi: ExtensionAPI) {
           };
         }
         if (typeof params.content !== "string") {
-          return { text: "action=update needs the complete new `content`.", failed: true };
+          // No content means "what is on disk is newer than what you last sent me", which is the
+          // common case now that the pane follows files on its own. This re-reads the existing
+          // backing in place and bumps the revision, which is what busts the frame. It is also the
+          // only way to refresh a PDF: a PDF has no content to send, and re-opening one used to
+          // stack a second tab beside the first (docs/preview-pane-handoff.md gap 6).
+          if (!doc.file && !doc.path) {
+            return {
+              text: `${doc.title} has no file behind it, so action=update needs the complete new \`content\`.`,
+              failed: true,
+            };
+          }
+          doc.revision += 1;
+          if (params.title) doc.title = params.title;
+          if (params.note !== undefined) doc.note = params.note;
+          const reread = entryFor(doc, "update");
+          emit(reread);
+          return {
+            text: `Re-read ${doc.title} (revision ${doc.revision}) from disk in the preview pane.\n${receipt(doc)}`,
+            details: reread,
+          };
         }
         // A referenced file is never rewritten: the new text becomes a stored copy and the pane
         // follows it. The user's original stays exactly as it was.
         const written = writeDoc(doc.id, doc.kind, params.content);
         if (!written) return { text: `Document is too large (limit is ${MAX_DOC_BYTES} bytes).`, failed: true };
+        // `copied` means "stored bytes standing in for a file the server would not serve", so writing
+        // text over an auto-copy keeps the flag and writing over a live reference clears it.
+        if (doc.path) doc.copied = doc.copied === true;
         doc.file = written;
         doc.revision += 1;
         if (params.title) doc.title = params.title;
@@ -250,7 +333,7 @@ export default function (pi: ExtensionAPI) {
         const entry = entryFor(doc, "update");
         emit(entry);
         return {
-          text: `Updated ${doc.title} (revision ${doc.revision}) in the preview pane.`,
+          text: `Updated ${doc.title} (revision ${doc.revision}) in the preview pane.\n${receipt(doc)}`,
           details: entry,
         };
       }
@@ -270,48 +353,66 @@ export default function (pi: ExtensionAPI) {
               failed: true,
             };
           }
+          let size = 0;
+          try {
+            const info = statSync(path);
+            if (!info.isFile()) return { text: `No file at ${path}.`, failed: true };
+            size = info.size;
+          } catch {
+            return { text: `No file at ${path}.`, failed: true };
+          }
+          // A PDF cannot be written from text at all, so `content` beside a PDF path is not a
+          // redundant parameter but a misunderstanding, and the wrong one to paper over.
           if (kind === "pdf" && typeof params.content === "string") {
             return {
               text: "PDFs are shown from `path` only; a PDF cannot be written from text.",
               failed: true,
             };
           }
-          if (!existsSync(path) || !statSync(path).isFile()) {
-            return { text: `No file at ${path}.`, failed: true };
+          if (size > MAX_DOC_BYTES) {
+            return {
+              text: `${basename(path)} is ${humanBytes(size)}, over the ${MAX_DOC_BYTES} byte preview limit.`,
+              failed: true,
+            };
           }
 
-          if (params.store) {
-            // Explicit copy: for a file outside the server's allowed roots, or one that the user
-            // is editing while the pane shows it.
-            let bytes: Buffer;
+          // Reference where the browser can reach the file, copy where the server says it cannot (R1,
+          // plans/pi-chat-preview-pdf-roots.md). `/preview store` forces the copy. Copying narrows
+          // the browser-reachable surface to an id inside this scope; it places no limit on this
+          // extension, which runs as pi and can already read anything.
+          //
+          // "The server could not be asked" is treated as fetchable, not as a refusal: a bare `pi -e`
+          // run has no pane to render in either way, so there is nothing to rescue with a copy, and
+          // silently duplicating a file the user is editing would be the worse mistake. A real
+          // pi-chat child always has the token, so that branch is the only one that can decide.
+          let file: string | undefined;
+          let copied = false;
+          let copyReason: string | null = null;
+          const id = randomUUID().replace(/-/g, "");
+          if (params.store === true || (await pathIsFetchable(path)) === false) {
             try {
-              bytes = readFileSync(path);
+              // The id is minted before the copy, not inside it: the stored file is named
+              // `<docId>.<suffix>` and the route resolves a doc id to that path, so an id per side
+              // would produce a tab whose document cannot be fetched (caught by
+              // `test_store_mode_copies_the_bytes_into_the_connection_scope`).
+              file = writeBytes(id, kind, readFileSync(path));
             } catch (error) {
               return { text: `Could not read ${path}: ${describe(error)}`, failed: true };
             }
-            const id = randomUUID().replace(/-/g, "");
-            const file = writeBytes(id, kind, bytes);
             if (!file) return { text: "Document is too large to preview.", failed: true };
-            const doc: DocState = {
-              id,
-              kind,
-              title: params.title || basename(path),
-              revision: 1,
-              file,
-              note: params.note,
-            };
-            docs.set(id, doc);
-            const entry = entryFor(doc, "open");
-            emit(entry);
-            return { text: openedMessage(doc), details: entry };
+            copied = true;
+            copyReason = params.store ? "you asked for a copy" : "it is outside the server's allowed roots";
           }
 
           const doc: DocState = {
-            id: randomUUID().replace(/-/g, ""),
+            id,
             kind,
             title: params.title || basename(path),
             revision: 1,
-            path,
+            ...(file ? { file } : {}),
+            // A copy is the thing being shown, so the pane must not poll the original it cannot read.
+            ...(copied ? { copied: true } : { path }),
+            ...(typeof params.watch === "boolean" ? { watch: params.watch } : {}),
             note: params.note,
           };
           docs.set(doc.id, doc);
@@ -333,12 +434,85 @@ export default function (pi: ExtensionAPI) {
           title: params.title || defaultTitle(kind),
           revision: 1,
           file,
+          ...(typeof params.watch === "boolean" ? { watch: params.watch } : {}),
           note: params.note,
         };
         docs.set(id, doc);
         const entry = entryFor(doc, "open");
         emit(entry);
         return { text: openedMessage(doc), details: entry };
+      }
+
+      case "state": {
+        // `list` can only ever report what this process opened. Everything the user can actually see
+        // (which tab is in front, whether the column is even open) lives in the browser, and the pane
+        // POSTs it here. Without this action, "what do you see?" gets answered by a guess.
+        const view = await fetchPaneState();
+        if (view === null) {
+          return {
+            text:
+              `${summary() || "No documents are open in the preview pane."}\n`
+              + "What the user can actually see is unavailable: no PI_CHAT_PORT or PI_CHAT_PREVIEW_TOKEN "
+              + "in this environment, which is a plain `pi -e` run rather than a pi-chat connection.",
+          };
+        }
+        const lines = [
+          `pane: ${view.open ? "open" : "closed"}`
+          + `${view.activeDocId ? `, active tab doc=${view.activeDocId}` : ", no active tab"}`
+          + `${typeof view.width === "number" ? `, ${view.width}px wide` : ""}`,
+          summary() || "No documents are open in the preview pane.",
+        ];
+        return { text: lines.join("\n"), details: { v: PROTOCOL_VERSION, op: "state", ...view } };
+      }
+
+      case "watch": {
+        if (!params.docId || !docs.has(params.docId)) {
+          return { text: "action=watch needs the docId of an open document.", failed: true };
+        }
+        if (typeof params.on !== "boolean") {
+          return { text: "action=watch needs `on`: true follows the file, false stops.", failed: true };
+        }
+        const doc = docs.get(params.docId) as DocState;
+        doc.watch = params.on;
+        const entry = entryFor(doc, "update");
+        emit(entry);
+        return {
+          text:
+            `${doc.title}: ${doc.watch ? "watching" : "not watching"}`
+            + `${doc.path ? " the file on disk" : " (no file behind this document, nothing to watch)"}.`,
+          details: entry,
+        };
+      }
+
+      case "sync": {
+        if (!params.docId || !docs.has(params.docId)) {
+          return { text: "action=sync needs the docId of an open document.", failed: true };
+        }
+        const doc = docs.get(params.docId) as DocState;
+        if (!doc.path) {
+          return { text: `${doc.title} has no source file to sync from.`, failed: true };
+        }
+        if (!existsSync(doc.path) || !statSync(doc.path).isFile()) {
+          return { text: `No file at ${doc.path}.`, failed: true };
+        }
+        let bytes: Buffer;
+        try {
+          bytes = readFileSync(doc.path);
+        } catch (error) {
+          return { text: `Could not read ${doc.path}: ${describe(error)}`, failed: true };
+        }
+        const file = writeBytes(doc.id, doc.kind, bytes);
+        if (!file) return { text: `Document is too large (limit is ${MAX_DOC_BYTES} bytes).`, failed: true };
+        doc.file = file;
+        doc.copied = true;
+        doc.revision += 1;
+        if (params.note !== undefined) doc.note = params.note;
+        const entry = entryFor(doc, "update");
+        emit(entry);
+        return {
+          text: `Synced ${doc.title} (revision ${doc.revision}) from ${doc.path} into the preview store.`,
+          details: entry,
+        };
       }
 
       default:
@@ -372,7 +546,7 @@ export default function (pi: ExtensionAPI) {
     return name;
   }
 
-  function entryFor(doc: DocState, op: "open" | "update" | "close"): PreviewEntry {
+  function entryFor(doc: DocState, op: "open" | "update"): PreviewEntry {
     return {
       v: PROTOCOL_VERSION,
       op,
@@ -383,6 +557,11 @@ export default function (pi: ExtensionAPI) {
       ...(doc.path ? { path: doc.path } : {}),
       ...(doc.file ? { file: doc.file } : {}),
       ...(doc.note ? { note: doc.note } : {}),
+      // Only the affirmative is written. A stored doc carries `watch: false`, but a document the
+      // model never mentioned carries nothing, which is how the pane's own Follow-files default gets
+      // its vote rather than being overridden by an absent flag.
+      ...(doc.copied ? { copied: true } : {}),
+      ...(doc.watch === true ? { watch: true } : doc.watch === false ? { watch: false } : {}),
     };
   }
 
@@ -411,24 +590,127 @@ export default function (pi: ExtensionAPI) {
       ...(data.path ? { path: String(data.path) } : {}),
       ...(data.file ? { file: String(data.file) } : {}),
       ...(data.note ? { note: String(data.note) } : {}),
+      ...(data.copied ? { copied: true } : {}),
+      ...(typeof data.watch === "boolean" ? { watch: data.watch } : {}),
     });
   }
 
   function summary(): string {
     return [...docs.values()]
-      .map((doc) => `${doc.id}  ${doc.kind}  r${doc.revision}  ${doc.title}`)
+      .map((doc) =>
+        `${doc.id}  ${doc.kind}  r${doc.revision}  ${doc.title}`
+        + `${doc.copied ? "  [copy]" : doc.path ? "  [file]" : "  [stored]"}`
+        + `${doc.watch === true ? "  [watching]" : ""}`)
       .join("\n");
   }
 
-  function openedMessage(doc: DocState): string {
-    return `Opened ${doc.title} (${doc.kind}) in the preview pane as doc=${doc.id}. `
-      + `Update it with preview action=update, docId="${doc.id}", content=<the whole new document>.`;
+  /* ── One hop to the browser ────────────────────────────────── */
+
+  interface PaneView {
+    open?: boolean;
+    activeDocId?: string | null;
+    width?: number | null;
+    watching?: string | null;
+    revision?: number | null;
+    fileToken?: string | null;
+  }
+
+  function paneEndpoint(query?: Record<string, string>): string | null {
+    // `process.py` hands the child the port it spawned against plus a per-connection secret, which
+    // is the only credential this process can present: a child has no browser cookie, and the
+    // endpoint must not be readable by whatever else can reach the loopback port.
+    const port = (process.env.PI_CHAT_PORT || "").trim();
+    const token = (process.env.PI_CHAT_PREVIEW_TOKEN || "").trim();
+    if (!/^\d{1,5}$/.test(port) || !token) return null;
+    const url = new URL(`http://127.0.0.1:${port}/api/preview/state`);
+    for (const [key, value] of Object.entries(query || {})) url.searchParams.set(key, value);
+    return `${url.toString()}|${token}`;
+  }
+
+  async function fetchPaneState(): Promise<PaneView | null> {
+    const endpoint = paneEndpoint();
+    if (!endpoint) return null;
+    const [url, token] = endpoint.split("|");
+    try {
+      const response = await fetch(url, {
+        headers: { "x-preview-token": token },
+        signal: AbortSignal.timeout(1500),
+      });
+      if (!response.ok) return null;
+      const body = await response.json();
+      return body && typeof body === "object" ? (body as PaneView) : null;
+    } catch {
+      // A pane that is not reachable is not a failure to report: `list` and `state` differ in one
+      // line, and a dead browser must not fail the document work the caller came to do.
+      return null;
+    }
+  }
+
+  /**
+   * Can the browser fetch this path itself? The server is the only thing that knows its allowed
+   * roots and its `PI_CHAT_DEV` relaxation, so it is the only honest witness, and the freshness
+   * route is exactly that question. null means "could not ask", and the caller treats that as
+   * unfetchable, because a copy that renders beats a reference that paints an error body.
+   */
+  async function pathIsFetchable(path: string): Promise<boolean | null> {
+    if ((process.env.PI_CHAT_DEV || "").trim()) return true;
+    const endpoint = paneEndpoint({ path });
+    if (!endpoint) return null;
+    const [url, token] = endpoint.split("|");
+    try {
+      const response = await fetch(url, {
+        headers: { "x-preview-token": token },
+        signal: AbortSignal.timeout(1500),
+      });
+      if (!response.ok) return false;
+      const body = (await response.json()) as { served?: boolean };
+      return body?.served === true;
+    } catch {
+      return null;
+    }
+  }
+
+  function openedMessage(doc: DocState, copyReason: string | null = null): string {
+    return `Opened ${doc.title} (${doc.kind}) in the preview pane as doc=${doc.id}.\n${receipt(doc, copyReason)}`;
+  }
+
+  /**
+   * What to do next, which used to be one string for all three kinds and therefore wrong for two of
+   * them (docs/preview-pane-handoff.md gaps 5 and 6): it told callers to send `content` for a PDF,
+   * which is impossible, and to re-send a whole document that was sitting in a file all along.
+   */
+  function receipt(doc: DocState, copyReason: string | null = null): string {
+    const id = doc.id;
+    if (doc.path) {
+      const stamp = fileStamp(doc.path);
+      const watching = doc.watch === true
+        ? "Watching it: an edit re-renders the pane on its own."
+        : doc.watch === false
+          ? "Not watching it: `watch` with on=true to follow edits."
+          : "If the pane's Follow-files is on it re-renders on each save; `watch` with on=true to force it.";
+      return (
+        `Backed by ${doc.path}${stamp ? ` (${stamp})` : ""}. The pane reads that file. ${watching}\n`
+        + `Edit it with the normal file tools instead of sending \`content\` again. `
+        + `action=update with no \`content\` re-reads it in place; action=sync stores a copy of it.`
+      );
+    }
+    if (doc.copied) {
+      return (
+        `This is a copy of ${doc.path || "the source file"}${copyReason ? ` because ${copyReason}` : ""}, `
+        + `so it will not follow later edits. action=sync re-copies the source; `
+        + `action=update with \`content\` replaces these bytes.`
+      );
+    }
+    return (
+      `Stored document, no file behind it. action=update with the COMPLETE new text replaces it `
+      + `(partial text is not merged); action=close takes the tab away.`
+    );
   }
 }
 
 interface PreviewEntry {
   v: number;
-  op: "open" | "update" | "close" | "clear";
+  op: "open" | "update" | "close" | "clear" | "state";
   docId?: string;
   kind?: DocKind;
   title?: string;
@@ -436,10 +718,36 @@ interface PreviewEntry {
   path?: string;
   file?: string;
   note?: string;
+  copied?: boolean;
+  watch?: boolean;
+  /** From `state`, which is not about one document: what the user has in front of them. */
+  open?: boolean;
+  activeDocId?: string | null;
+  width?: number | null;
+  watching?: string | null;
+  fileToken?: string | null;
 }
 
 function kindFromPath(path: string): DocKind | null {
   return KIND_BY_SUFFIX[extname(path).toLowerCase()] ?? null;
+}
+
+/** "476 KB" beside a path, so a receipt about a big file says something about its size. */
+function humanBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${kb < 10 ? kb.toFixed(1) : Math.round(kb)} KB`;
+  return `${(kb / 1024).toFixed(1)} MB`;
+}
+
+/** What the file behind a document looks like right now, for a receipt. Never throws. */
+function fileStamp(path: string): string | null {
+  try {
+    const info = statSync(path);
+    return `${humanBytes(info.size)}, last written ${info.mtime.toISOString()}`;
+  } catch {
+    return null;
+  }
 }
 
 function defaultTitle(kind: DocKind): string {

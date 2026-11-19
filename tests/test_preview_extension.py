@@ -198,7 +198,9 @@ class TestPreviewCommand:
         client.send({"type": "prompt", "message": f"/preview {documents['notes']}"})
         entry = client.preview_entry(lambda data: data.get("op") == "open")
 
-        assert entry["v"] == 1
+        # v2 added `copied`/`watch` and the `state` op. `test_preview_replay.py` keeps feeding v1
+        # fixtures on purpose: a session written before this bump must still rebuild the pane.
+        assert entry["v"] == 2
         assert entry["kind"] == "markdown"
         assert entry["path"] == str(documents["notes"])
         assert entry["title"] == "notes.md"
@@ -264,7 +266,7 @@ class TestPreviewCommand:
         # Everything the extension did is in the session file, which is what lets a reopened
         # session rebuild the pane without a live pi.
         assert "open" in ops and "clear" in ops
-        assert all(entry["data"]["v"] == 1 for entry in previews)
+        assert all(entry["data"]["v"] == 2 for entry in previews)
 
 
 class TestRegistration:

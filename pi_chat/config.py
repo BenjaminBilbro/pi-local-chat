@@ -366,6 +366,11 @@ if PREVIEW_MAX_MB < PREVIEW_MAX_DOC_MB:
 # Debug-mode audit log
 # ---------------------------------------------------------------------------
 
+# The port this app listens on. `server.py` binds uvicorn to the same value, and `process.py` hands
+# it to each child, because a child that talks back to the server (the preview extension's `state`
+# and freshness probes) would otherwise have to guess which port the human started it on.
+PORT = int(os.environ.get("PI_CHAT_PORT", "9000"))
+
 # Write one JSONL file per browser connection recording what happened: every command in, every message out,
 # the audio byte totals in both directions, and the voice and browser events that never cross the wire.
 # Deliberately NOT implied by PI_CHAT_DEV: the log is a record of a conversation, so it costs a second

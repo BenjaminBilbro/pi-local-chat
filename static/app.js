@@ -526,6 +526,11 @@ function routeServerMessage(message) {
     voiceMode?.reinject();
   } else if (message.type === 'session_loaded') {
     sessions.handleSessionLoaded(message);
+    // The pane reports what it is showing with this secret, which is what lets `preview(action:
+    // "state")` answer what the human can actually see rather than what the model happened to open.
+    // Absent means this load came from a path with no child, so the pane stays silent rather than
+    // POSTing a token it was never given.
+    if (message.previewToken) docPane.setPreviewToken(message.previewToken);
     voiceMode?.reinject();
   } else if (message.type === 'messages_retrieved') {
     sessions.handleMessagesRetrieved(message);

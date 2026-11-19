@@ -3138,6 +3138,74 @@ body.hide-header-mascot #chat-screen .header-mascot {
   margin-right: 4px;
 }
 
+/* ── Disk following: the header control, the reload notice, and the per-tab freshness dot ──
+ *
+ * Three separate signals, because they answer three different questions. The button is "does this
+ * pane follow files at all" (one choice, remembered). The chip is "this re-rendered on its own a
+ * moment ago" (transient proof the pane is alive, since a disk edit cannot be attributed to a
+ * writer). The dot is "how current is the render in this tab" (a background tab is stale by
+ * construction, because exactly one document is polled, so say so rather than pretending).
+ */
+
+.doc-chip {
+  font-size: var(--font-size-xs);
+  font-weight: 500;
+  color: var(--text-muted);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 1px 6px;
+  margin-right: 4px;
+  cursor: pointer;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.doc-chip:hover {
+  color: var(--text-subtle);
+}
+
+.btn-icon[data-doc-follow][data-active="true"] {
+  color: var(--success);
+  border-color: var(--success);
+  background: var(--success-surface);
+}
+
+/* The dot is decoration next to a title that already carries the sentence in its tooltip, so it is
+   out of the reading order and sized to the existing kind label rather than to the type scale. */
+.doc-tab-fresh {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-left: 6px;
+  background: transparent;
+  border: 1px solid var(--border);
+}
+
+.doc-tab-fresh[data-freshness="watching"],
+.doc-tab-fresh[data-freshness="fresh"] {
+  background: var(--success);
+  border-color: var(--success);
+}
+
+.doc-tab-fresh[data-freshness="stale"] {
+  background: var(--text-subtle);
+  border-color: var(--text-subtle);
+}
+
+.doc-tab-fresh[data-freshness="gone"] {
+  background: transparent;
+  border-color: var(--accent);
+}
+
+.doc-tab-fresh[data-freshness="snapshot"],
+.doc-tab-fresh[data-freshness="unknown"] {
+  border-style: dashed;
+}
+
 /* ── Tab strip ────────────────────────────────────────────────── */
 
 .doc-tabs {

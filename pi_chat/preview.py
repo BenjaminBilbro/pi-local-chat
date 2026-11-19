@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import secrets
 import time
 import uuid
 from collections.abc import Iterable
@@ -149,6 +150,18 @@ def connection_scope_dir(account: str | None, session_id: str) -> Path:
 
 def new_doc_id() -> str:
     return uuid.uuid4().hex
+
+
+def new_state_token() -> str:
+    """Secret for one connection's pane-state channel.
+
+    The preview extension runs as a child of the server and cannot present the browser's cookie, so
+    it needs a credential of its own to ask "which document is the human looking at". Minting it per
+    spawn keeps that channel closed to any other local process and to any other session: a child may
+    read the pane state its own connection reported and nothing else. Handed to the child in the
+    environment and to the browser in `session_loaded`, which is the same disclosure either way.
+    """
+    return secrets.token_hex(16)
 
 
 def document_path(scope: Path, doc_id: str, kind: str) -> Path:
@@ -281,6 +294,86 @@ def content_type_for(path: Path) -> str | None:
 
 def kind_for(path: Path) -> str | None:
     return _SUFFIX_KINDS.get(Path(path).suffix.lower())
+
+
+# What a caller gets when there is nothing to watch. Identical for "outside the roots", "another
+# profile's document", "wrong kind" and "deleted since the last poll": the staleness route must not be
+# a path oracle any more than the serving route is, so those four cannot be told apart from here.
+NOT_FOUND: dict = {"served": False, "bytes": None, "mtime": None, "token": None}
+
+
+def head(
+    account: str,
+    *,
+    doc_id: str | None = None,
+    kind: str | None = None,
+    path: str | None = None,
+) -> dict:
+    """Stat the bytes one pane would fetch, without fetching them.
+
+    This is the whole staleness primitive behind ``GET /api/preview/fresh``: the pane compares the
+    returned ``token`` against the one it rendered, and re-fetches only when it moves. It resolves
+    through the same two functions as the serving route (``resolve_external_path`` for a referenced
+    file, ``find_stored_document`` for a stored one) and in the same preference order as
+    ``previewUrl`` and ``_entry_location``, because judging the other pointer would report freshness
+    for bytes the browser never asks for. So this cannot name a file the caller could not already
+    fetch: it is a cheaper read of the same permission, not a wider one.
+
+    ``token`` is ``f"{st_mtime_ns}-{st_size}"``, the same pairing ``devtools._stamp`` settled on:
+    two saves inside one clock tick are separated by the byte count, and an edit that preserves the
+    byte count is rare enough that the mtime ends the argument. It is a validator, not a timestamp:
+    it is compared for equality and never ordered.
+
+    ``doc_id`` is a *stored* document id. A doc that was updated after being opened by ``path``
+    carries both, and the caller passes the ``path`` it shows rather than the stored copy, which is
+    the one the route would serve. Callers that hold an entry should go through ``head_for_entry``.
+    """
+    if isinstance(path, str) and path:
+        location = resolve_external_path(path, account)
+    else:
+        # A kind that is present but unknown must not widen the search to "any kind": the pane asked
+        # about one specific document, and answering for a sibling file with the same id would drive
+        # a reload of bytes it was never given. Absence of `kind` is different and legitimate (a
+        # replayed entry from before the field existed), and there the newest match is what the
+        # serving route itself would hand back.
+        if kind is not None and kind not in KIND_EXTENSIONS:
+            return dict(NOT_FOUND)
+        if not isinstance(doc_id, str) or not DOC_ID_RE.match(doc_id):
+            return dict(NOT_FOUND)
+        location = find_stored_document(account, doc_id, kind)
+
+    if location is None:
+        return dict(NOT_FOUND)
+    try:
+        if not location.is_file():
+            return dict(NOT_FOUND)
+        info = location.stat()
+    except OSError:
+        return dict(NOT_FOUND)
+    return {
+        "served": True,
+        "bytes": info.st_size,
+        "mtime": datetime.fromtimestamp(info.st_mtime, timezone.utc).isoformat(timespec="seconds"),
+        "token": f"{info.st_mtime_ns}-{info.st_size}",
+    }
+
+
+def head_for_entry(account: str, entry: dict) -> dict:
+    """``head`` for a persisted preview entry, using the entry's own pointers.
+
+    Exists so the pane's two callers (a live entry, a replayed one) ask the same question the same
+    way as ``_entry_location`` does, instead of each re-deriving which of ``path`` and ``file`` wins.
+    """
+    if not isinstance(entry, dict):
+        return dict(NOT_FOUND)
+    raw_path = entry.get("path")
+    kind = entry.get("kind") if entry.get("kind") in KIND_EXTENSIONS else None
+    return head(
+        account,
+        doc_id=str(entry.get("docId") or "") or None,
+        kind=kind,
+        path=raw_path if isinstance(raw_path, str) and raw_path else None,
+    )
 
 
 def document_headers(path: Path) -> dict[str, str]:

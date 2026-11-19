@@ -15,7 +15,7 @@ from typing import Awaitable, Callable
 from fastapi import WebSocket
 
 from . import preview as preview_store
-from .config import CHILD_CONTEXT_FILES, PROJECT_ROOT
+from .config import CHILD_CONTEXT_FILES, PORT, PROJECT_ROOT
 
 log = logging.getLogger("pi-chat")
 
@@ -158,6 +158,9 @@ class PiProcess:
         self.ws: WebSocket | None = None
         self.session_id = self._new_session_id()
         self.account: str | None = None
+        # Secret for this connection's pane-state channel, minted per spawn and shared with the child
+        # (environment) and the browser (`session_loaded`). See `preview.new_state_token`.
+        self.preview_token = preview_store.new_state_token()
         # Debug-mode audit log (`pi_chat/audit.py`), attached by `websocket.handle_websocket` when
         # PI_CHAT_AUDIT is set. Everything the browser receives passes through this class, which makes it the
         # only place that can tell "never synthesized" apart from "synthesized and never delivered".
@@ -218,6 +221,11 @@ class PiProcess:
         environment = dict(os.environ)
         preview_dir = preview_store.connection_scope_dir(self.account, self.session_id)
         environment["PI_CHAT_PREVIEW_DIR"] = str(preview_dir)
+        # The child's one way to ask the server what the human is looking at. The port is what the
+        # child must not guess, and the token is what the child must not be able to forge: without a
+        # cookie it needs its own credential, and minting it per spawn keeps sessions apart.
+        environment["PI_CHAT_PORT"] = str(PORT)
+        environment["PI_CHAT_PREVIEW_TOKEN"] = self.preview_token
         if self.account:
             # The one thing in the child's environment that says which profile it is talking to. Profile
             # `r`'s turns arrive as plain text, so nothing in the transcript identifies the person, and the

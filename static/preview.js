@@ -11,10 +11,26 @@
  * CSP sandbox directive, so neither the attribute nor the header has to hold the line alone. */
 
 import { setMarkdownContent } from './timeline.js';
+import {
+  MAX_POLL_FAILURES,
+  backingFor,
+  freshnessQuery,
+  observeToken,
+  pollInterval,
+  shouldPoll,
+  tabFreshness,
+  watchingFor,
+} from './preview-watch.js';
 
 const WIDTH_KEY = 'pi-chat-doc-width';
 const OPEN_KEY = 'pi-chat-doc-open';
 const AUTO_OPEN_KEY = 'pi-chat-doc-auto-open';
+const FOLLOW_FILES_KEY = 'pi-chat-doc-follow-files';
+const RELOAD_CHIP_KEY = 'pi-chat-doc-reload-chip';
+/* On by default: the interesting case is a person editing a file in their own editor, where there is
+   no tool call anywhere in the loop for the assistant to have flagged. The model can still pin one
+   document off with `watch:false`. */
+const FOLLOW_FILES_DEFAULT = true;
 const MIN_WIDTH = 420;
 const MAX_WIDTH = 1100;
 /* The conversation is readable down to this. Past it, the pane stops being the priority. */
@@ -25,6 +41,16 @@ const RESIZE_STEP = 40;
 
 const KIND_LABELS = { markdown: 'md', html: 'html', pdf: 'pdf' };
 const KIND_TITLES = { markdown: 'Markdown', html: 'HTML', pdf: 'PDF' };
+/* What a tab's dot means, and the only honest answer for a document that is not on screen: nothing is
+ * polling it, so what is rendered is whatever was there when it last was. */
+const FRESHNESS_TITLES = {
+  watching: 'Watching this file: it re-renders when the file changes',
+  fresh: 'Checked against the file since you last looked at it',
+  stale: 'Showing the version from when you last opened this tab',
+  snapshot: 'A snapshot: these bytes are not backed by a file the pane can follow',
+  gone: 'This file is no longer on disk',
+  unknown: '',
+};
 
 export function previewUrl(doc) {
   const params = new URLSearchParams({ kind: doc.kind });
@@ -65,6 +91,8 @@ export function createDocPane({ onError } = {}) {
   const tabsEl = pane.querySelector('[data-doc-tabs]');
   const emptyEl = pane.querySelector('[data-doc-empty]');
   const noteEl = pane.querySelector('[data-doc-note]');
+  const followBtn = pane.querySelector('[data-doc-follow]');
+  const chipEl = pane.querySelector('[data-doc-chip]');
   const markdownView = pane.querySelector('[data-doc-view="markdown"]');
   const sourceView = pane.querySelector('[data-doc-view="source"]');
   const sourcePre = sourceView ? sourceView.querySelector('pre') : null;
@@ -85,6 +113,19 @@ export function createDocPane({ onError } = {}) {
   /* True only while `replay()` walks a session's recorded entries. Rebuilding a session is not an
      event that should slide a document over the conversation the user just came back to read. */
   let replaying = false;
+
+  /* ── File watching state ───────────────────────────────────────
+   * One timer, one document: the active one. See static/preview-watch.js for the rules and why the
+   * token is compared across two polls rather than one. */
+  let pollTimer = null;
+  let pollState = { seen: null, pending: null, seenPending: 0, failures: 0 };
+  let pollInFlight = false;
+  /* The secret this connection reports pane state with, from `session_loaded`. Without it the pane
+     cannot tell the assistant what it is showing, which is survivable; the watcher needs no secret,
+     because `/api/preview/fresh` is the authenticated browser's own route. */
+  let stateToken = null;
+  let reportTimer = null;
+  let chipTimer = null;
 
   applyStoredWidth();
 
@@ -111,6 +152,10 @@ export function createDocPane({ onError } = {}) {
     const wasActive = activeId === doc.id;
     docs.set(doc.id, { ...previous, ...doc });
     if (activate || !activeId) activeId = doc.id;
+    // Whatever the tool just wrote is now the truth, so the watcher starts from here. Without this
+    // the pane would wait two polls and then "reload from disk" a document it was handed seconds
+    // ago, which is the flicker this feature must not add.
+    resetPoll();
 
     renderTabs();
     // A background tab's document changed: the tabs know, the body does not need to re-render.
@@ -183,6 +228,10 @@ export function createDocPane({ onError } = {}) {
     if (wanted === open) return;
     open = wanted;
     applyOpenState();
+    // Opening starts the one poll; closing stops it dead. A column nobody is looking at has no
+    // reason to wake the network once a second.
+    resetPoll();
+    reportState();
     try {
       localStorage.setItem(OPEN_KEY, open ? 'open' : 'closed');
     } catch {
@@ -279,7 +328,12 @@ export function createDocPane({ onError } = {}) {
       if (!docs.has(id)) return;
       activeId = id;
       renderTabs();
-      renderActive();
+      // A hard re-read, not a re-paint: this tab has had no poll since it stopped being active, so
+      // what it is holding may be many minutes old. Making a background tab correct the moment it is
+      // looked at is what allows the pane to poll exactly one document.
+      loadActive(true);
+      resetPoll();
+      reportState();
       lastFocusBeforeOpen = lastFocusBeforeOpen || document.activeElement;
       setOpen(true);
     },
@@ -298,6 +352,16 @@ export function createDocPane({ onError } = {}) {
       return Boolean(value);
     },
     reload: () => loadActive(true),
+    /** The connection secret `session_loaded` carries; without it the pane cannot report its state. */
+    setPreviewToken(value) {
+      const next = typeof value === 'string' && value ? value : null;
+      if (next === stateToken) return;
+      stateToken = next;
+      // Report once on adoption, or the assistant can ask `state` before the first change and be
+      // told nothing while a document is plainly on screen.
+      reportState();
+    },
+    follow: (value) => (value === undefined ? followFiles() : setFollowFiles(value)),
     replay,
     setWidth,
     width: () => currentWidth(),
@@ -327,9 +391,217 @@ export function createDocPane({ onError } = {}) {
       available: entry.available === undefined ? undefined : Boolean(entry.available),
       bytes: typeof entry.bytes === 'number' ? entry.bytes : null,
       mtime: typeof entry.mtime === 'string' ? entry.mtime : null,
+      // v2. `copied` says the stored bytes stand in for a file the server will not serve; `watch` is
+      // the model's explicit opinion, and absence means Follow-files decides. Both feed `watching`.
+      copied: Boolean(entry.copied),
+      watch: typeof entry.watch === 'boolean' ? entry.watch : undefined,
+      backing: backingFor(entry),
+      // The staleness token the pane last rendered against. `tabFreshness` compares a background
+      // tab's recorded token against this to say "fresh" rather than "stale".
+      token: typeof entry.token === 'string' ? entry.token : null,
     };
+    doc.watching = watchingFor(doc, followFiles());
     doc.url = previewUrl(doc);
     return doc;
+  }
+
+  /* ── File watching ───────────────────────────────────────────
+   *
+   * The pane asks the server one question per second, about one file: is what I am showing still the
+   * bytes on disk. A "yes" costs a `stat` on a loopback route. A "no" costs a re-render, and no
+   * inference at all, which is the entire point: the loop that used to be "edit the file, call the
+   * tool, send the whole document again" becomes "edit the file". */
+
+  function followFiles() {
+    try {
+      const stored = localStorage.getItem(FOLLOW_FILES_KEY);
+      return stored === null ? FOLLOW_FILES_DEFAULT : stored === '1';
+    } catch {
+      return FOLLOW_FILES_DEFAULT;
+    }
+  }
+
+  function setFollowFiles(next) {
+    const wanted = Boolean(next);
+    try {
+      localStorage.setItem(FOLLOW_FILES_KEY, wanted ? '1' : '0');
+    } catch {
+      /* Private mode: the choice holds for this page view. */
+    }
+    // Documents already open are re-evaluated: Follow-files is the default for a document the model
+    // had no opinion about, and that opinion can be formed after the document arrived.
+    for (const [id, doc] of docs) docs.set(id, { ...doc, watching: watchingFor(doc, wanted) });
+    applyFollowButton();
+    resetPoll();
+    renderTabs();
+    reportState();
+    return wanted;
+  }
+
+  function applyFollowButton() {
+    if (!followBtn) return;
+    const on = followFiles();
+    followBtn.dataset.active = on ? 'true' : 'false';
+    followBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    followBtn.setAttribute(
+      'aria-label',
+      on ? 'Stop following files on disk' : 'Follow files on disk and re-render when they change',
+    );
+    followBtn.title = on
+      ? 'Following files: a file the pane is watching re-renders when it changes'
+      : 'Not following files: nothing re-renders until you ask';
+  }
+
+  function activeDoc() {
+    return activeId ? docs.get(activeId) || null : null;
+  }
+
+  function stopPollTimer() {
+    if (pollTimer === null) return;
+    clearTimeout(pollTimer);
+    pollTimer = null;
+  }
+
+  function armPollTimer() {
+    stopPollTimer();
+    if (!shouldPoll({
+      open,
+      visible: document.visibilityState,
+      doc: activeDoc(),
+      watching: activeDoc()?.watching,
+      inFlight: pollInFlight,
+      failures: pollState.failures,
+    })) {
+      return;
+    }
+    pollTimer = setTimeout(pollNow, pollInterval(pollState.failures));
+  }
+
+  /** A different document, or a document rewritten by the tool: the next answer is a baseline. */
+  function resetPoll() {
+    pollState = { seen: null, pending: null, seenPending: 0, failures: 0 };
+    armPollTimer();
+  }
+
+  async function pollNow() {
+    pollTimer = null;
+    const doc = activeDoc();
+    if (!shouldPoll({
+      open,
+      visible: document.visibilityState,
+      doc,
+      watching: doc.watching,
+      inFlight: pollInFlight,
+      failures: pollState.failures,
+    })) {
+      armPollTimer();
+      return;
+    }
+    const query = freshnessQuery(doc);
+    if (!query) {
+      armPollTimer();
+      return;
+    }
+
+    pollInFlight = true;
+    let body = null;
+    try {
+      const response = await fetch(query, { credentials: 'same-origin', cache: 'no-store' });
+      if (response.ok) body = await response.json();
+    } catch {
+      /* A failed poll is a missed second, not an error to show. The backoff is the signal. */
+    } finally {
+      pollInFlight = false;
+    }
+
+    // The tab may have moved on while that was in flight. The answer belongs to the document it was
+    // asked about, so it is dropped rather than applied to whatever is in front now.
+    if (activeId !== doc.id) {
+      armPollTimer();
+      return;
+    }
+
+    const outcome = body
+      ? observeToken(pollState, body.served ? body.token : null)
+      : observeToken(pollState, null);
+    pollState = {
+      seen: outcome.seen,
+      pending: outcome.pending,
+      seenPending: outcome.seenPending || 0,
+      failures: outcome.failures,
+    };
+
+    if (body && body.served === false && doc.available !== false) {
+      // The file is gone. Recorded rather than fetched, which is the same treatment a replayed
+      // document from a cleaned-up scope gets.
+      docs.set(doc.id, { ...doc, available: false, bytes: body.bytes ?? doc.bytes });
+      renderTabs();
+      renderActive();
+    } else if (outcome.outcome === 'reload') {
+      docs.set(doc.id, { ...doc, token: outcome.seen, bytes: body.bytes ?? doc.bytes });
+      loadActive(true);
+      showChip(`Reloaded from disk ${clockTime()}`, doc.id);
+    } else if (outcome.outcome === 'error' && pollState.failures >= MAX_POLL_FAILURES) {
+      showChip('Stopped checking this file', doc.id);
+    }
+
+    renderTabs();
+    reportState();
+    armPollTimer();
+  }
+
+  function clockTime() {
+    return new Date().toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  }
+
+  function showChip(text, forDocId) {
+    if (!chipEl) return;
+    chipEl.textContent = text;
+    chipEl.dataset.forDoc = forDocId || '';
+    chipEl.hidden = false;
+    // The chip is proof the pane is alive after a change it could not attribute, not a notice to
+    // read. It goes away on its own, and a reload of a different document replaces it.
+    if (chipTimer !== null) clearTimeout(chipTimer);
+    chipTimer = setTimeout(() => {
+      chipTimer = null;
+      hideChip();
+    }, 6000);
+  }
+
+  function hideChip() {
+    if (!chipEl) return;
+    if (chipTimer !== null) {
+      clearTimeout(chipTimer);
+      chipTimer = null;
+    }
+    chipEl.hidden = true;
+    chipEl.textContent = '';
+  }
+
+  /** Tell the assistant what the human can see. Debounced: a resize drag is dozens of moves. */
+  function reportState() {
+    if (!stateToken) return;
+    if (reportTimer !== null) clearTimeout(reportTimer);
+    reportTimer = setTimeout(() => {
+      reportTimer = null;
+      const doc = activeDoc();
+      fetch('/api/preview/state', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          token: stateToken,
+          open,
+          activeDocId: activeId,
+          width: currentWidth(),
+          watching: doc && doc.watching && doc.backing === 'path' ? doc.id : null,
+          revision: doc ? doc.revision ?? null : null,
+          fileToken: doc ? doc.token ?? null : null,
+        }),
+      }).catch(() => {
+        /* Nothing depends on this landing. The next state change reports again. */
+      });
+    }, 250);
   }
 
   /* ── Rendering ──────────────────────────────────────────────── */
@@ -360,7 +632,18 @@ export function createDocPane({ onError } = {}) {
       const label = document.createElement('span');
       label.className = 'doc-tab-label';
       label.textContent = doc.title;
-      tab.append(kind, label);
+      const dot = document.createElement('span');
+      const freshness = tabFreshness({
+        doc,
+        watching: followFiles(),
+        isWatching: doc.id === activeId && doc.watching && doc.backing === 'path',
+        knownToken: doc.token,
+      });
+      dot.className = `doc-tab-fresh is-${freshness}`;
+      dot.dataset.freshness = freshness;
+      dot.title = FRESHNESS_TITLES[freshness] || '';
+      tab.append(kind, label, dot);
+      group.dataset.freshness = freshness;
 
       const close = document.createElement('button');
       close.type = 'button';
@@ -394,8 +677,15 @@ export function createDocPane({ onError } = {}) {
       noteEl.hidden = !note;
       noteEl.textContent = note || '';
     }
+    if (followBtn) followBtn.hidden = !doc || doc.backing !== 'path';
+    // The chip describes one document's last disk-driven reload. Showing it above a different tab
+    // would be a claim about a file that did not change.
+    if (chipEl && !chipEl.hidden && chipEl.dataset.forDoc && chipEl.dataset.forDoc !== activeId) {
+      hideChip();
+    }
     if (!doc) {
       showView(null);
+      hideChip();
       if (emptyEl) {
         emptyEl.hidden = false;
         // Kept word-for-word in the markup too, so the column says the same thing before this runs as after.
@@ -616,6 +906,14 @@ export function createDocPane({ onError } = {}) {
   if (toggleBtn) toggleBtn.addEventListener('click', toggleOpen);
   if (closeBtn) closeBtn.addEventListener('click', () => setOpen(false));
   if (reloadBtn) reloadBtn.addEventListener('click', () => loadActive(true));
+  if (followBtn) {
+    followBtn.addEventListener('click', () => setFollowFiles(!followFiles()));
+    applyFollowButton();
+  }
+  if (chipEl) {
+    chipEl.hidden = true;
+    chipEl.addEventListener('click', hideChip);
+  }
   if (sourceBtn) {
     sourceBtn.addEventListener('click', () => {
       const showingSource = sourceView.dataset.showingSource === 'true';
@@ -676,6 +974,16 @@ export function createDocPane({ onError } = {}) {
     const width = currentWidth();
     const clamped = clampWidth(width);
     if (clamped !== width) chatScreen.style.setProperty('--doc-pane-width', `${clamped}px`);
+    reportState();
+  });
+
+  /* A hidden page stops the timer dead rather than idling it: a tab nobody can see has no reason to
+     wake the network, the server or its own process every second. Coming back re-reads immediately,
+     because the first thing you want after switching back is the current file, not the old one. */
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') loadActive(true);
+    resetPoll();
+    reportState();
   });
 
   function setupResize() {
@@ -703,6 +1011,7 @@ export function createDocPane({ onError } = {}) {
       if (pointerId === null || (event && event.pointerId !== pointerId)) return;
       chatScreen.classList.remove('resizing');
       setWidth(currentWidth());
+      reportState();
       pointerId = null;
     };
     resizer.addEventListener('pointerup', finish);
@@ -810,6 +1119,8 @@ function inertHandle() {
     select: noop,
     reload: noop,
     setWidth: noop,
+    setPreviewToken: noop,
+    follow: () => true,
     autoOpen: () => true,
     width: () => 0,
     isOpen: false,

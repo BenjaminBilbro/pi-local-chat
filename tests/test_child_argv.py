@@ -75,6 +75,52 @@ def flags(argv: list[str], flag: str) -> list[str]:
     return [argv[i + 1] for i, item in enumerate(argv) if item == flag]
 
 
+class TestPreviewChannel:
+    """The two values a child needs to ask the server what the human is looking at.
+
+    `preview(action:"state")` and the extension's "can the browser read this path" probe are both a
+    loopback call from the child back to this server. They cannot work without a port to call and a
+    credential to call with, and neither survives a spawn that forgets to pass them.
+    """
+
+    async def test_the_child_is_told_which_port_to_call_back_on(
+        self, captured_argv, monkeypatch, tmp_path
+    ):
+        monkeypatch.setattr(process_module, "PORT", 9123)
+
+        await spawn(captured_argv, monkeypatch, "b", tmp_path)
+
+        assert captured_argv["env"]["PI_CHAT_PORT"] == "9123"
+
+    async def test_the_child_gets_a_fresh_state_secret_per_connection(
+        self, captured_argv, monkeypatch, tmp_path
+    ):
+        tokens = set()
+        for _ in range(3):
+            pi = await spawn(captured_argv, monkeypatch, "b", tmp_path)
+            token = captured_argv["env"]["PI_CHAT_PREVIEW_TOKEN"]
+            assert len(token) == 32 and all(c in "0123456789abcdef" for c in token)
+            # The value handed to the child is the one the server holds on the PiProcess, because
+            # that is the pair the state routes compare.
+            assert token == pi.preview_token
+            tokens.add(token)
+
+        assert len(tokens) == 3, "a per-connection secret that repeats is not per-connection"
+
+    async def test_every_spawn_replaces_both_rather_than_inheriting_a_previous_one(
+        self, captured_argv, monkeypatch, tmp_path
+    ):
+        # A stale inherited value would be worse than an absent one: the child would talk about some
+        # other connection's pane and nobody would notice.
+        monkeypatch.setenv("PI_CHAT_PORT", "1")
+        monkeypatch.setenv("PI_CHAT_PREVIEW_TOKEN", "deadbeef" * 4)
+        monkeypatch.setattr(process_module, "PORT", 9123)
+
+        await spawn(captured_argv, monkeypatch, "b", tmp_path)
+
+        assert captured_argv["env"]["PI_CHAT_PORT"] == "9123"
+        assert captured_argv["env"]["PI_CHAT_PREVIEW_TOKEN"] != "deadbeef" * 4
+
 async def spawn(captured_argv, monkeypatch, account: str, project_root: Path) -> PiProcess:
     pi = PiProcess(project_root=project_root)
     pi.account = account
