@@ -12,6 +12,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 from .config import DEV_MODE
 from . import audit as audit_log
+from . import ui_relay
 from . import uploads
 from .process import PiProcess, parse_queue_snapshot
 from .preview import describe_preview_entries
@@ -68,6 +69,10 @@ async def handle_websocket(
     await websocket.accept()
     pi.ws = websocket
     pi.account = account
+    # An extension that wants to ask the human something has to find the tab, and the only name a child
+    # knows for it is the token it was spawned with. Registered here and released in the `finally` below:
+    # a question asked to a tab that has gone is a tool call that never comes back.
+    ui_relay.register(pi)
 
     # The debug-mode audit log, opened per connection so a report about one tab reads as one file.
     # None unless PI_CHAT_AUDIT is set, and every call site below is guarded rather than the class being
@@ -126,6 +131,9 @@ async def handle_websocket(
     except Exception as error:
         log.error("WebSocket error: %s", error)
     finally:
+        # Before the kill: the connection is the only thing that could ever have answered, so everything
+        # still waiting on it is cancelled while its child is still around to be told.
+        await ui_relay.unregister(pi)
         if audit is not None:
             audit.close("disconnect")
         pi.audit = None
@@ -212,6 +220,9 @@ async def _dispatch_command(
         elif command_type == "abort":
             if voice is not None:
                 await voice.stop_current(reason="stopped")
+            # A dialog still on screen belongs to the run that was just cancelled, and pi never answers
+            # one whose run is gone. Leaving it up invites an answer that goes nowhere.
+            await ui_relay.cancel(pi, reason="aborted")
             await pi.send({"type": "abort"})
         elif command_type == "cancel_tool":
             if voice is not None:
@@ -269,6 +280,31 @@ async def _dispatch_command(
             # could never have caught the mute button, which sent a command and never touched the microphone.
             if pi.audit is not None:
                 pi.audit.client_event(str(message.get("kind") or "event"), message.get("data"))
+        elif command_type == "questionnaire_answer":
+            # Resolves the future the child's own HTTP request is parked on (`pi_chat/ui_relay.py`). An
+            # id nobody is waiting on is not worth an error message: it means Stop won the race, and the
+            # run has already moved on without this answer.
+            request_id = str(message.get("id") or "")
+            settled = ui_relay.answer(request_id, {
+                "cancelled": message.get("cancelled") is True,
+                "answers": message.get("answers") if isinstance(message.get("answers"), list) else [],
+            })
+            if pi.audit is not None:
+                pi.audit.out("command", type="questionnaire_answer", id=request_id, settled=settled)
+
+        elif command_type == "ui_response":
+            # An answer to one of pi's own dialog methods, handed straight back down the pipe. The id is
+            # pi's, minted in the `extension_ui_request` this connection was told about, and pi matches
+            # the response on it - so it travels unchanged and nothing here invents one.
+            response = ui_relay.dialog_response(message)
+            if response is None:
+                await _send_error(pi, "That dialog answer is missing its id, its method, or its value")
+            elif not pi.proc:
+                await _send_error(pi, "No pi process is running")
+            else:
+                await pi.send(response)
+            if pi.audit is not None:
+                pi.audit.out("command", type="ui_response", method=message.get("method"))
         else:
             log.warning("WebSocket: unknown command type %r", command_type)
             if pi.audit is not None:

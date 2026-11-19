@@ -19,6 +19,7 @@ import { createGeometryWatch } from './geometry-watch.js';
 import { createSocket } from './socket.js';
 import { createDocPane } from './preview.js';
 import { createToolDetail } from './toolDetail.js';
+import { createUiDialog } from './ui-dialog.js';
 import { setupTheme } from './theme.js';
 import { setupMascots } from './mascots.js';
 import { createVoiceController } from './voice.js';
@@ -89,6 +90,15 @@ const drainAfterSettle = () => {
 /* The tool detail dialog is app.js's to own, like the preview pane: chat.js hands it a call record
    and never reaches in, so a control exists in exactly one place. */
 const toolDetail = createToolDetail({ sendCommand });
+
+/* A question the child process wants answered. Also app.js's to own, for the same reason as the detail
+   view and the pane: one place holds the dialog, so a request, its answer, and the moment it is
+   withdrawn cannot disagree with each other. The audit hook is why it reports at all - "the form never
+   showed" and "I closed the form" look identical in a server log that only sees the HTTP request. */
+const questions = createUiDialog({
+  sendCommand,
+  onAudit: (kind, data) => sendCommand({ type: 'audit_event', kind: `question_${kind}`, data }),
+});
 
 setupChat({
   sendCommand,
@@ -521,6 +531,7 @@ function applyPreviewEntry(entry) {
 function routeServerMessage(message) {
   if (message.type === 'session_started') {
     connected = true;
+    questions.discard();
     setConnectionStatus(true);
     // The pane-state secret arrives here as well as on `session_loaded`, because a brand new chat
     // never loads a session and a dev re-attach does not always spawn in time for that message.
@@ -528,6 +539,9 @@ function routeServerMessage(message) {
     // A fresh conversation does not remember the instruction that said "answer as speech".
     voiceMode?.reinject();
   } else if (message.type === 'session_loaded') {
+    // Whichever run asked it is gone; so is the question. Closing without an answer is right here: the
+    // child that asked has been told, and this tab is about to show a different conversation.
+    questions.discard();
     sessions.handleSessionLoaded(message);
     // The pane reports what it is showing with this secret, which is what lets `preview(action:
     // "state")` answer what the human can actually see rather than what the model happened to open.
@@ -548,6 +562,14 @@ function routeServerMessage(message) {
     // Queued text the server took back out of pi, handed to the composer instead of resent.
     handleCancelResult(message);
     toolDetail.noteCancelSent();
+  } else if (message.type === 'questionnaire_request') {
+    questions.openQuestionnaire(message);
+  } else if (message.type === 'ui_request') {
+    questions.openDialog(message);
+  } else if (message.type === 'ui_cancel') {
+    // The server has already released the request - Stop, a disconnect, or its own clock - so the
+    // dialog closes without answering. An answer now would be a reply to a run that has moved on.
+    questions.withdrawn(message.id);
   } else if (message.type === 'pi_event') {
     handlePiEvent(message.event);
     buddy?.onPiEvent(message.event);

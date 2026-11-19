@@ -1,0 +1,67 @@
+{
+  "captured_at": "2026-11-19T10:12:17.549-08:00",
+  "tool": "tools/capture.py",
+  "argv": [
+    "node",
+    "C:\\Users\\Local User\\AppData\\Roaming\\npm\\node_modules\\@earendil-works\\pi-coding-agent\\dist\\bundle\\cli.js",
+    "--mode",
+    "rpc",
+    "--approve",
+    "--no-context-files",
+    "--no-skills",
+    "-e",
+    "C:\\Users\\Local User\\pi-chat\\tests\\fixtures\\questionnaire_probe.ts"
+  ],
+  "scenario": "questionnaire_dialogs",
+  "cwd": "C:\\Users\\Local User\\pi-chat\\data-samples\\capture-workspace",
+  "workspace_files": [
+    "notes.md",
+    "seed.txt"
+  ],
+  "preview_scope": null,
+  "capture": "C:\\Users\\Local User\\pi-chat\\data-samples\\questionnaire_dialog_rpc_capture.jsonl",
+  "raw": "C:\\Users\\Local User\\pi-chat\\data-samples\\questionnaire_dialog_rpc_capture.jsonl.gz",
+  "raw_bytes": 802,
+  "session_file": null,
+  "session_header": null,
+  "result": {
+    "seconds": 18.1,
+    "events": 15,
+    "steps": [
+      {
+        "label": "select",
+        "settled": true,
+        "aborted_by_us": false,
+        "last_event": "response",
+        "events": 6
+      },
+      {
+        "label": "confirm",
+        "settled": true,
+        "aborted_by_us": false,
+        "last_event": "response",
+        "events": 9
+      },
+      {
+        "label": "input",
+        "settled": true,
+        "aborted_by_us": false,
+        "last_event": "response",
+        "events": 12
+      },
+      {
+        "label": "editor",
+        "settled": true,
+        "aborted_by_us": false,
+        "last_event": "response",
+        "events": 15
+      }
+    ]
+  },
+  "boundary_notes": [
+    "step select: {'label': 'select', 'settled': True, 'aborted_by_us': False, 'last_event': 'response', 'events': 6}",
+    "step confirm: {'label': 'confirm', 'settled': True, 'aborted_by_us': False, 'last_event': 'response', 'events': 9}",
+    "step input: {'label': 'input', 'settled': True, 'aborted_by_us': False, 'last_event': 'response', 'events': 12}",
+    "step editor: {'label': 'editor', 'settled': True, 'aborted_by_us': False, 'last_event': 'response', 'events': 15}"
+  ]
+}

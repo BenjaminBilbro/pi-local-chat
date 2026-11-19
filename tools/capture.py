@@ -313,6 +313,33 @@ SCENARIOS: dict[str, dict] = {
         "copy_native": True,
         "native_output": "data-samples/imagegen_abort_session.jsonl",
     },
+    # pi's extension dialogs on the wire, captured with the answer this application sends back. An
+    # `extension_ui_request` blocks the tool that asked until a client answers, so a capture of a
+    # dialog-bearing extension has to play the client: `auto_answer` replies with the same
+    # `extension_ui_response` a browser click produces in `pi_chat/websocket.py`, and the file shows the
+    # request and its answer as one pair. Zero inference, because a slash command is handled in-process:
+    # `ctx.executeTool` is handed to tools, not to commands, so no probe can call a tool directly, and
+    # the dialog methods need no model to reach the wire.
+    "questionnaire_dialogs": {
+        "description": "ctx.ui select/confirm/input/editor as extension_ui_request, with the client's answers",
+        "pi_flags": ["--mode", "rpc", "--approve", "--no-context-files", "--no-skills"],
+        # A scratch cwd, like every other scenario: run from the repo and the metadata records this
+        # machine's real home directory, which is exactly what `scrub_captures.py --check` fails CI on.
+        "workspace": True,
+        "dialog_probe": True,
+        "auto_answer": {
+            "select": {"value": "Allow"},
+            "confirm": {"confirmed": True},
+            "input": {"value": "feature/dialogs"},
+            "editor": {"value": "a better title"},
+        },
+        "steps": [
+            {"label": name, "commands": [{"type": "prompt", "message": f"/questionnaire-probe {name}"}],
+             "timeout": 30}
+            for name in ("select", "confirm", "input", "editor")
+        ],
+        "output": "data-samples/questionnaire_dialog_rpc_capture.jsonl",
+    },
 }
 
 
@@ -591,7 +618,8 @@ class Capture:
 
     def __init__(self, argv: list[str], steps: list[dict], out_path: Path,
                  raw_path: Path | None, cwd: Path | None,
-                 env: dict[str, str] | None = None) -> None:
+                 env: dict[str, str] | None = None,
+                 auto_answer: dict[str, dict] | None = None) -> None:
         self.argv = argv
         self.steps = steps
         self.out_path = out_path
@@ -607,10 +635,21 @@ class Capture:
         self.first_tool = asyncio.Event()
         self.last_type = ""
         self.boundary_log: list[str] = []
+        # Answers for pi's extension dialogs, keyed by method. A dialog blocks the tool that asked it
+        # until a client answers, so a capture of a dialog-bearing extension has to play the client or
+        # it records one request and a timeout. This is the same response `pi_chat/websocket.py` sends
+        # from a browser click, which is the point: the fixture shows the real pair.
+        self.auto_answer = auto_answer or {}
 
     def observe(self, event: dict) -> None:
         etype = event.get("type", "?")
         self.last_type = etype
+        if etype == "extension_ui_request" and event.get("method") in self.auto_answer:
+            answer = self.auto_answer[str(event.get("method"))]
+            request_id = event.get("id")
+            if isinstance(request_id, str) and request_id:
+                self.send({"type": "extension_ui_response", "id": request_id, **answer})
+                print(f"  -> answered {event.get('method')} dialog {request_id[:8]}")
         if etype == "message_update":
             am = event.get("assistantMessageEvent") or {}
             etype = f"message_update/{am.get('type', '?')}"
@@ -775,6 +814,8 @@ async def run_scenario(name: str, scenario: dict, output_override: str | None,
     flags = list(scenario.get("pi_flags", []))
     if scenario.get("probe"):
         flags += ["-e", str(PROJECT_ROOT / "tests" / "fixtures" / "capture_probe.ts")]
+    if scenario.get("dialog_probe"):
+        flags += ["-e", str(PROJECT_ROOT / "tests" / "fixtures" / "questionnaire_probe.ts")]
     argv = [*resolve_pi_command(), *flags]
     # A preview store, laid out the way `preview.connection_scope_dir` lays one out for a live connection,
     # because that directory is the switch the image tool reads: with it the tool opens a pane, without it the
@@ -791,7 +832,8 @@ async def run_scenario(name: str, scenario: dict, output_override: str | None,
     print(f"previews : {env.get('PI_CHAT_PREVIEW_DIR', '(none: terminal-parity child)')}")
     print(f"capture  : {out_path}\nraw      : {raw_path or '(disabled)'}")
 
-    capture = Capture(argv, [dict(s) for s in scenario["steps"]], out_path, raw_path, cwd, env or None)
+    capture = Capture(argv, [dict(s) for s in scenario["steps"]], out_path, raw_path, cwd, env or None,
+                      auto_answer=scenario.get("auto_answer"))
     result = await capture.run()
 
     if capture.stderr:

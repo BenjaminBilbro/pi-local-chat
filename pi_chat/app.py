@@ -35,6 +35,7 @@ import pdfplumber
 from .config import STT_ENABLED
 from . import config as app_config
 from . import phonon_voices
+from . import ui_relay
 from . import uploads
 from .tts_service import TTSService
 from .voice_store import VoiceStore, MAX_FILE_SIZE as VOICE_MAX_FILE_SIZE
@@ -417,6 +418,47 @@ def create_app(
             "inlined": inlined,
             "inlineLimitChars": uploads.INLINE_MAX_CHARS,
         }
+
+    @application.post("/api/questionnaire")
+    async def questionnaire_ask(
+        request: Request,
+        body: dict,
+        x_preview_token: str | None = None,
+    ):
+        """Ask the human a set of questions, on behalf of the child that owns a connection.
+
+        This exists because `ctx.ui.custom()` returns `undefined` in RPC mode (`pi/docs
+        /rpc-extension-ui.md`), which is the one UI method a multi-question form needs - it is why a
+        questionnaire asked through this application fails with "Cannot read properties of undefined
+        (reading 'cancelled')" while working fine in a terminal. The child has the questions; only the
+        browser has a person in front of it.
+
+        Identity is the same per-spawn token the preview pane uses: a child has no cookie, and it must
+        not be able to interrupt somebody else's tab. The wait is the answer, so the reply is the
+        person's response, hours later or never - which is why the future is released when the tab or
+        the run goes away (`pi_chat/ui_relay.py`).
+        """
+        token = (x_preview_token or request.headers.get("x-preview-token") or "").strip()
+        pi = ui_relay.connection_for_token(token)
+        if pi is None:
+            # 410 rather than 404: the token was real once and the connection is simply gone, which is
+            # the difference between "retry later" and "nobody is going to answer this".
+            raise HTTPException(
+                status_code=410,
+                detail="No browser is connected for this session, so nobody can answer",
+            )
+        try:
+            questions = ui_relay.normalise_questions(body)
+        except ui_relay.QuestionError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+        result = await ui_relay.ask(pi, "questionnaire", {"questions": questions})
+        if result.get("cancelled"):
+            return JSONResponse({"cancelled": True, "reason": result.get("reason") or "cancelled"})
+        return JSONResponse({
+            "cancelled": False,
+            "answers": ui_relay.normalise_answers(questions, result.get("answers")),
+        })
 
     # The pane is the only witness to what the human can actually see: which tab is in front,
     # whether the column is open at all. The browser POSTs that here; the preview child reads it.

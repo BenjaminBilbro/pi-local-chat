@@ -22,6 +22,7 @@ the voice stack never reaches back up into `websocket.py`. That shape is the thi
 | `pi_chat/websocket.py` | Browser command dispatch and higher-level pi RPC workflows |
 | `pi_chat/sessions.py` | Session discovery, account filtering, previews, JSONL parsing |
 | `pi_chat/uploads.py` | Attached files: where they land, what a `ref` may resolve to, the tags the model reads, retention (`docs/attachments.md`) |
+| `pi_chat/ui_relay.py` | A child asking the human something: the pending map, the five ways a request ends, the shape checks on questions and answers (`docs/questionnaire.md`) |
 
 ### Voice Mode Components
 
@@ -116,6 +117,7 @@ pi-chat/
 │   ├── process.py      # pi subprocess lifecycle, RPC responses, event observer
 │   ├── sessions.py     # Session discovery and JSONL message extraction
 │   ├── uploads.py      # Attached files on disk, refs, attachment tags, retention
+│   ├── ui_relay.py     # Questions from the child: pending map, cancellation, validation
 │   ├── websocket.py    # Browser WebSocket command handling (incl. voice cmds)
 │   ├── tts_service.py  # Lazy OmniVoice model, voice cache, serialized inference
 │   ├── tts_chunking.py # Streaming Markdown-aware speech chunker

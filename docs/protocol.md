@@ -25,7 +25,9 @@ If you change anything in here, run `tools/smoke_test_ws.py` and at least one
 | `new_session` | Start a clean pi session without replacing the process |
 | `load_session` | Switch pi to a validated saved session |
 | `get_messages` | Request messages from the current pi session |
-| `abort` | Abort the active pi request |
+| `abort` | Abort the active pi request; also releases any question the child is still waiting on, so no dialog is left asking about a run that is gone |
+| `questionnaire_answer` | Answer or refuse a `questionnaire_request`: `{id, answers[]}` or `{id, cancelled: true}`. Resolves the future the child's own HTTP request is parked on, so an id nobody is waiting on is silence, not an error (`docs/questionnaire.md`) |
+| `ui_response` | Answer one of pi's own dialogs: `{id, method, value}` / `{id, method, confirmed}` / `{id, cancelled}`. Rewritten as `extension_ui_response` on pi's stdin with pi's id unchanged, because pi pairs the response on it |
 | `ping` | Keep the proxied WebSocket active |
 | `voice_enable` | Enable voice output with settings |
 | `voice_disable` | Disable voice output |
@@ -45,6 +47,9 @@ If you change anything in here, run `tools/smoke_test_ws.py` and at least one
 | `session_loaded` | Contains historical messages to render |
 | `messages_retrieved` | Contains messages from an explicit request |
 | `error` | Reports browser-command or pi RPC failure |
+| `questionnaire_request` | A child wants to ask this tab several questions at once: `{id, questions[]}`, normalised server-side so a terminal and a browser cannot be shown two different forms (`docs/questionnaire.md`) |
+| `ui_request` | One of pi's dialog methods, derived from `extension_ui_request` rather than forwarded: `{id, method, title?, message?, options?, placeholder?, prefill?, timeoutMs?}`. pi blocks the tool until `ui_response` comes back, so a request that reaches no interface is a stuck run |
+| `ui_cancel` | Close a request the server has already released (Stop, disconnect, the child died, its own clock). Nothing is answered: an answer for a run that moved on is worse than none |
 | `pong` | Heartbeat response; no UI action |
 | `voice_state` | Voice system state (loading, enabled, disabled, error) |
 | `voice_prepared` | Voice successfully prepared with settings |

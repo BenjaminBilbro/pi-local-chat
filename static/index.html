@@ -314,6 +314,27 @@
   </div>
 </div>
 
+<!-- A question from the child process, asked of the person in front of this tab. The body is built
+     by static/ui-dialog.js from the request payload, and every word of it is written with textContent:
+     the questions are model output, which is untrusted input like any other. -->
+<div class="ui-question-overlay" id="ui-question-overlay" hidden>
+  <div class="ui-question-dialog" id="ui-question-dialog" role="dialog" aria-modal="true"
+       aria-labelledby="ui-question-title" data-ui-question-dialog>
+    <div class="ui-question-head">
+      <h2 class="ui-question-title" id="ui-question-title" data-ui-question-title>Questions</h2>
+      <span class="ui-question-counter" data-ui-question-counter hidden></span>
+    </div>
+    <div class="ui-question-tabs" role="tablist" data-ui-question-tabs hidden></div>
+    <p class="ui-question-prompt" data-ui-question-prompt></p>
+    <div class="ui-question-options" data-ui-question-options></div>
+    <p class="ui-question-note" data-ui-question-note hidden></p>
+    <div class="ui-question-actions">
+      <button class="ui-question-btn" data-ui-question-cancel type="button">Cancel</button>
+      <button class="ui-question-btn primary" data-ui-question-action type="button">Submit answers</button>
+    </div>
+  </div>
+</div>
+
 <div class="voice-settings-dialog" id="voice-settings-dialog" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="voice-settings-title">
   <div class="voice-settings-header">
     <h2 id="voice-settings-title">Settings</h2>

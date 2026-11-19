@@ -910,6 +910,276 @@ body.tool-detail-open {
   overflow: hidden;
 }
 
+/* ---------------------------------------------------------------------------
+   A question from the child (static/ui-dialog.js). Same shell as the tool
+   detail view on purpose: one scrim, one elevated card, one radius, so a
+   dialog appearing mid-run reads as this application speaking rather than as
+   an embed from somewhere else. Every colour is a token; this is the locked
+   ramp and a new hex here is a new theme to maintain.
+   --------------------------------------------------------------------------- */
+.ui-question-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 150;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: var(--scrim);
+  backdrop-filter: blur(2px);
+}
+
+.ui-question-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(560px, 94vw);
+  max-height: 86vh;
+  padding: 16px;
+  /* The card scrolls, not its parts: a questionnaire with nine options and a warning sentence must
+     all be reachable, and clipping the last option is clipping the answer. */
+  overflow: hidden auto;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+}
+
+body.ui-question-open {
+  overflow: hidden;
+}
+
+.ui-question-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ui-question-title {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-base);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.ui-question-counter {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+}
+
+.ui-question-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ui-question-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.ui-question-tab:hover {
+  border-color: var(--border);
+  color: var(--text);
+}
+
+/* The dot is the only way to see at a glance which questions are still owed an answer, and it is the
+   same shape as the queue strip's, so it does not read as a new idea. */
+.ui-question-tab::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--border);
+}
+
+.ui-question-tab[data-answer="yes"]::after {
+  background: var(--success);
+}
+
+.ui-question-tab[aria-selected="true"] {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.ui-question-prompt {
+  margin: 0;
+  font-size: var(--font-size-base);
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.ui-question-hint {
+  display: block;
+  margin-top: 4px;
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+}
+
+.ui-question-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ui-question-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ui-question-option,
+.ui-question-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 11px;
+  text-align: left;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-base);
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.ui-question-option:hover,
+.ui-question-choice:hover {
+  border-color: var(--accent);
+}
+
+.ui-question-option:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--bg-elevated);
+}
+
+.ui-question-option input {
+  margin: 3px 0 0;
+  accent-color: var(--accent);
+  flex: 0 0 auto;
+}
+
+.ui-question-option-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ui-question-option-label {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.ui-question-option-number {
+  flex: 0 0 auto;
+  min-width: 16px;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-subtle);
+}
+
+.ui-question-option-description {
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+}
+
+.ui-question-free textarea {
+  width: 100%;
+  padding: 9px 11px;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-base);
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  resize: vertical;
+}
+
+.ui-question-note {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+}
+
+.ui-question-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+/* Its own button class rather than `.btn-icon`: the mobile rule that drops labels off bar buttons
+   (`font-size: 0` under 600px) would have left two unlabeled pills on a phone. */
+.ui-question-btn {
+  padding: 8px 14px;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.ui-question-btn:hover {
+  border-color: var(--text-muted);
+}
+
+.ui-question-btn.primary {
+  color: var(--accent-contrast);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.ui-question-btn.primary:hover {
+  background: var(--accent-2);
+  border-color: var(--accent-2);
+}
+
+.ui-question-btn[disabled] {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.ui-question-btn:focus-visible,
+.ui-question-tab:focus-visible,
+.ui-question-choice:focus-visible,
+.ui-question-option:focus-within {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+@media (max-width: 600px) {
+  .ui-question-dialog {
+    padding: 14px;
+    gap: 10px;
+  }
+
+  .ui-question-actions .ui-question-btn {
+    flex: 1 1 0;
+  }
+}
+
 @keyframes tool-status-spin {
   to { transform: rotate(360deg); }
 }

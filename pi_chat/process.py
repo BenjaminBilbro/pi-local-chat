@@ -15,6 +15,7 @@ from typing import Awaitable, Callable
 from fastapi import WebSocket
 
 from . import preview as preview_store
+from . import ui_relay
 from .config import CHILD_CONTEXT_FILES, PORT, PROJECT_ROOT
 
 log = logging.getLogger("pi-chat")
@@ -575,6 +576,14 @@ class PiProcess:
                 # Send pi_event to browser using locked send
                 await self.send_browser_json({"type": "pi_event", "event": event})
 
+                if event.get("type") == "extension_ui_request":
+                    # pi blocks the tool until this request is answered, so a dialog that reaches no
+                    # interface is not a missing feature - it is a stuck run. Only the methods that
+                    # expect an answer are relayed; the fire-and-forget ones are display hints.
+                    dialog = ui_relay.dialog_request_payload(event)
+                    if dialog is not None:
+                        await self.send_browser_json(dialog)
+
                 if queue_changed:
                     # A second, smaller message: the browser's queue strip wants the current queue,
                     # not the event log. Same outbox as the event above, so it cannot overtake it.
@@ -632,6 +641,11 @@ class PiProcess:
             if not future.done():
                 future.set_exception(RuntimeError(f"Pi process exited (code {code})"))
         self._pending_requests.clear()
+
+        # A dialog this child asked is now unanswerable by anyone: pi is gone, and the HTTP request that
+        # is holding the tool call open would wait out its fifteen minutes for nobody. Released before
+        # the notice below, so the browser closes a form before it renders a crash.
+        await ui_relay.cancel(self, reason="pi_exited")
 
         # Deliberately the same `error` type the browser already renders, so the reader sees the
         # reason without a frontend change. `code` is there for a later UI that wants to offer a
