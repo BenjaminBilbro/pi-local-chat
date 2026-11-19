@@ -509,10 +509,10 @@ def create_app(
         ),
         kind: str | None = Query(
             None,
-            description="Kind the pane expects (markdown|html|pdf); a mismatch is a 404",
+            description="Kind the pane expects (markdown|html|pdf|image); a mismatch is a 404",
         ),
     ):
-        """Serve one preview-pane document: markdown, HTML, or PDF.
+        """Serve one preview-pane document: markdown, HTML, PDF, or an image.
 
         The store is scoped per profile, so a doc id from another profile's session is a 404. A
         ``path`` request is additionally confined to the roots in ``preview.allowed_roots``, and
@@ -520,7 +520,7 @@ def create_app(
 
         ``kind`` is a contract, not a hint. The renderer and the CSP are chosen from the kind, so
         being handed a different kind than was asked for would put, say, an HTML document through
-        the markdown path. Anything that disagrees is refused.
+        the markdown path, or a stored PNG through the frame. Anything that disagrees is refused.
         """
         account = _require_account(request, auth)
         if kind is not None and kind not in preview.KIND_EXTENSIONS:

@@ -28,7 +28,12 @@ from pi_chat import config
 from pi_chat import preview
 from pi_chat.app import create_app
 from pi_chat.auth import AuthManager, hash_password
-from pi_chat.preview import HTML_DOCUMENT_CSP, PDF_DOCUMENT_CSP, TEXT_DOCUMENT_CSP
+from pi_chat.preview import (
+    HTML_DOCUMENT_CSP,
+    IMAGE_DOCUMENT_CSP,
+    PDF_DOCUMENT_CSP,
+    TEXT_DOCUMENT_CSP,
+)
 
 REPO = Path(__file__).resolve().parents[1]
 INDEX_HTML = REPO / "static" / "index.html"
@@ -37,6 +42,9 @@ PREVIEW_JS = REPO / "static" / "preview.js"
 MARKDOWN = b"# Title\n\nBody **text**\n"
 HTML = b"<!doctype html><html><body><h1>Doc</h1><script>alert(1)</script></body></html>"
 PDF = b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n"
+# Suffixed `.png`, magic-numbered, and never decoded by anything here: the route decides from the
+# suffix, and the whole point of these tests is what arrives around the bytes.
+PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
 
 
 @pytest.fixture
@@ -193,10 +201,26 @@ class TestDocumentHeaders:
 
             assert response.headers["x-content-type-options"] == "nosniff"
 
-    def test_the_three_kinds_do_not_share_a_policy(self):
-        # A tripwire against collapsing these into one string: the markdown policy would break the
-        # viewer, and the pdf policy would make markdown framable.
-        assert len({HTML_DOCUMENT_CSP, PDF_DOCUMENT_CSP, TEXT_DOCUMENT_CSP}) == 3
+    def test_the_four_kinds_do_not_share_a_policy_carelessly(self):
+        # Three policies for four kinds. Markdown and an image genuinely share one: both are read by
+        # the application's own page, so both need only the refusal to be framed. The tripwire is the
+        # other way - collapsing html or pdf into that pair would break the viewer or make model output
+        # framable.
+        assert len({HTML_DOCUMENT_CSP, PDF_DOCUMENT_CSP, TEXT_DOCUMENT_CSP, IMAGE_DOCUMENT_CSP}) == 3
+        assert IMAGE_DOCUMENT_CSP == TEXT_DOCUMENT_CSP
+
+    def test_an_image_arrives_unframable(self, ben, preview_root):
+        doc_id = preview.new_doc_id()
+        store_doc("b", doc_id, "image", PNG)
+
+        response = ben.get(f"/api/preview/{doc_id}")
+        csp = response.headers["content-security-policy"]
+
+        assert csp == IMAGE_DOCUMENT_CSP
+        # An image response is never a document, so it must not gain a sandbox or a framing allowance
+        # by drifting toward the pdf policy - that would be a second origin this app can be framed in.
+        assert "sandbox" not in csp
+        assert "frame-ancestors" in csp
 
 
 class TestKindContractStillHoldsOverHttp:

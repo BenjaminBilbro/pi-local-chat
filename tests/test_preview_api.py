@@ -21,6 +21,9 @@ from pi_chat.auth import AuthManager, hash_password
 MARKDOWN = b"# Title\n\nBody **text**\n"
 HTML = b"<!doctype html><html><body><h1>Doc</h1><script>x=1</script></body></html>"
 PDF = b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n"
+# The route decides a content type from the suffix, so these bytes never need to decode. What matters
+# is the magic number: it is the thing a sniffer would key on if `nosniff` ever stopped being sent.
+PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
 
 
 @pytest.fixture
@@ -361,6 +364,129 @@ class TestStoreHelpers:
     def test_an_unsupported_kind_is_refused(self, preview_root):
         with pytest.raises(preview.PreviewError):
             preview.document_path(preview_root, preview.new_doc_id(), "exe")
+
+    def test_svg_is_not_a_kind_the_store_can_hold(self, preview_root):
+        # An SVG is script. It is absent from the suffix tables on purpose, and a kind that cannot be
+        # named cannot be written, served, or polled for.
+        with pytest.raises(preview.PreviewError):
+            preview.document_path(preview_root, preview.new_doc_id(), "svg")
+        assert preview.kind_for(Path("drawing.svg")) is None
+        assert preview.content_type_for(Path("drawing.svg")) is None
+
+
+class TestImages:
+    """A generated image is a document like any other, and an `<img>` is not a browsing context.
+
+    The pane fetches these into the application's own page, so the interesting properties are that the
+    response cannot be framed, cannot be read across profiles, and cannot be a suffix the tables never
+    listed. The bytes themselves are the image tool's business, not the route's.
+    """
+
+    def test_a_stored_image_is_served_as_png_and_cannot_be_framed(self, ben, preview_root):
+        doc_id = preview.new_doc_id()
+        store_doc("b", doc_id, "image", PNG)
+
+        response = ben.get(f"/api/preview/{doc_id}")
+
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("image/png")
+        assert response.content == PNG
+        assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
+        # Inline with a filename: the pane's download button relies on `download` overriding inline,
+        # and a saved file should not be named after a doc id.
+        disposition = response.headers["content-disposition"]
+        assert disposition.startswith("inline")
+        assert f"{doc_id}.png" in disposition
+
+    def test_an_image_is_not_readable_by_the_other_profile(self, client, preview_root):
+        doc_id = preview.new_doc_id()
+        store_doc("b", doc_id, "image", PNG)
+        assert client.post("/api/login", json={"account": "r", "password": "profile-r-pw"}).status_code == 200
+
+        assert client.get(f"/api/preview/{doc_id}", params={"kind": "image"}).status_code == 404
+
+    def test_an_image_cannot_be_asked_for_as_another_kind(self, ben, preview_root):
+        doc_id = preview.new_doc_id()
+        store_doc("b", doc_id, "image", PNG)
+
+        # The renderer and the CSP both come from `kind`, so a stored PNG fetched by a markdown viewer
+        # would be handed raw bytes to a text renderer that then treats them as model output.
+        assert ben.get(f"/api/preview/{doc_id}", params={"kind": "markdown"}).status_code == 404
+        assert ben.get(f"/api/preview/{doc_id}", params={"kind": "image"}).status_code == 200
+
+    def test_a_png_inside_the_profile_session_tree_is_served_by_path(self, ben, preview_root, tmp_path):
+        tree = tmp_path / "sessions" / "b"
+        tree.mkdir(parents=True, exist_ok=True)
+        photo = tree / "photo.png"
+        photo.write_bytes(PNG)
+
+        response = ben.get("/api/preview/anything", params={"path": str(photo), "kind": "image"})
+
+        assert response.status_code == 200
+        assert response.content == PNG
+
+    def test_a_referenced_svg_is_refused_even_inside_an_allowed_root(self, ben, preview_root, tmp_path):
+        tree = tmp_path / "sessions" / "b"
+        tree.mkdir(parents=True, exist_ok=True)
+        (tree / "diagram.svg").write_bytes(b"<svg xmlns='http://www.w3.org/2000/svg'><script>1</script></svg>")
+
+        assert ben.get(
+            "/api/preview/anything", params={"path": str(tree / "diagram.svg")}
+        ).status_code == 404
+
+    def test_freshness_answers_for_an_image_document(self, ben, preview_root):
+        doc_id = preview.new_doc_id()
+        path = store_doc("b", doc_id, "image", PNG)
+
+        response = ben.get("/api/preview/fresh", params={"doc": doc_id, "kind": "image"})
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["served"] is True
+        assert payload["bytes"] == path.stat().st_size
+        # The pane re-fetches on movement of this token, so it must be the validator and not a display
+        # timestamp - and it must not survive the bytes being deleted.
+        assert payload["token"] == f"{path.stat().st_mtime_ns}-{path.stat().st_size}"
+        path.unlink()
+        assert ben.get("/api/preview/fresh", params={"doc": doc_id, "kind": "image"}).json()["served"] is False
+
+    def test_a_draw_that_has_not_written_yet_is_reported_as_absent_not_as_an_error(self, preview_root):
+        # image-gen opens the document before sd-cli has produced a byte, so "no file" is the normal
+        # state of a `rendering` entry. It has to be the same answer as any other miss, because the
+        # pane decides "still drawing" from `state`, not from a new error shape.
+        doc_id = preview.new_doc_id()
+
+        assert preview.head("b", doc_id=doc_id, kind="image") == preview.NOT_FOUND
+
+    def test_replay_carries_the_stage_and_the_canvas(self, preview_root):
+        # Without this the fields exist only in the live event, and a page reloaded mid-draw would open
+        # a document with neither a shape nor a reason, which is worse than not reopening it at all.
+        doc_id = preview.new_doc_id()
+        store_doc("b", doc_id, "image", PNG)
+        entry = {
+            "v": 2,
+            "op": "open",
+            "docId": doc_id,
+            "kind": "image",
+            "title": "Fox, 2048x2048",
+            "revision": 1,
+            "file": f"{doc_id}.png",
+            "state": "rendering",
+            "canvas": "2048x2048",
+            "watch": False,
+            # pi's own bookkeeping must not reach a browser payload with the rest of the record.
+            "turnId": "t-99",
+        }
+
+        described = preview.describe_preview_entries("b", [entry])
+
+        assert described[0]["state"] == "rendering"
+        assert described[0]["canvas"] == "2048x2048"
+        # Following is per document since S8, and a human's choice has to survive a reload or the pane
+        # starts polling a tab they deliberately froze.
+        assert described[0]["watch"] is False
+        assert described[0]["available"] is True
+        assert "turnId" not in described[0]
 
 
 class TestCleanup:

@@ -36,14 +36,38 @@ from . import config
 
 log = logging.getLogger("pi-chat")
 
-# The kinds Phase 1 renders. This is also the *only* set of suffixes the preview route will serve,
-# which is what keeps an allowed root from becoming "read any file in this tree".
-KIND_EXTENSIONS = {"markdown": ".md", "html": ".html", "pdf": ".pdf"}
+# The kinds the pane renders. This is also the *only* set of suffixes the preview route will serve,
+# which is what keeps an allowed root from becoming "read any file in this tree". A stored image is
+# always written as `.png` (what the image tool emits), while a *referenced* image may also be a
+# jpeg/webp/gif the assistant pointed the pane at: those suffixes appear in `_SUFFIX_KINDS` below and
+# resolve through the same allowed roots. `.svg` is absent on purpose - it is script, and the pane's
+# markdown and HTML paths already assume model output is untrusted input.
+KIND_EXTENSIONS = {"markdown": ".md", "html": ".html", "pdf": ".pdf", "image": ".png"}
 
 # What a browser needs from a persisted preview entry, and nothing else. `file` is the stored copy the
 # extension wrote, `path` an existing file the pane was pointed at; a doc has one, the other, or (after
 # an update to a referenced file) both, and the pane prefers `path`.
-ENTRY_FIELDS = ("v", "op", "docId", "kind", "title", "revision", "file", "path", "note")
+# `state` and `canvas` are what let an image tab render a correctly-shaped placeholder before any
+# bytes exist: `state` is "rendering" | "ready" | "error", and `canvas` is the requested pixel size
+# ("2048x2048"). Both are set by a tool that produces its document in stages - today only
+# `generate_image` / `edit_image` - and a reader that predates them ignores them, so the protocol
+# version did not move. `watch` is here because following became per document in S8: a choice the human
+# made in the pane has to survive a reload, or the pane starts polling a tab they deliberately froze.
+# Both are additive, which is why the protocol version stayed at 2.
+ENTRY_FIELDS = (
+    "v",
+    "op",
+    "docId",
+    "kind",
+    "title",
+    "revision",
+    "file",
+    "path",
+    "note",
+    "watch",
+    "state",
+    "canvas",
+)
 
 _SUFFIX_KINDS = {
     ".md": "markdown",
@@ -51,6 +75,11 @@ _SUFFIX_KINDS = {
     ".html": "html",
     ".htm": "html",
     ".pdf": "pdf",
+    ".png": "image",
+    ".jpg": "image",
+    ".jpeg": "image",
+    ".webp": "image",
+    ".gif": "image",
 }
 
 _CONTENT_TYPES = {
@@ -59,6 +88,11 @@ _CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
     ".htm": "text/html; charset=utf-8",
     ".pdf": "application/pdf",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
 }
 
 # doc ids are uuid4().hex, and the strict check also stops a doc_id from acting as a glob.
@@ -98,6 +132,12 @@ PDF_DOCUMENT_CSP = "default-src 'none'; frame-ancestors 'self'"
 # Markdown is fetched as text and rendered in the parent document after DOMPurify, so it is never a
 # framed document and must not be framable at all.
 TEXT_DOCUMENT_CSP = "default-src 'none'; frame-ancestors 'none'"
+
+# An image is fetched by an `<img>` in the parent document, so it needs nothing beyond not being a
+# frame target. Spelled out separately from the markdown CSP because the two fail differently: a
+# missing framing token breaks a viewer, and this one exists to keep a stored PNG from ever becoming
+# a document with a browsing context of its own.
+IMAGE_DOCUMENT_CSP = "default-src 'none'; frame-ancestors 'none'"
 
 
 class PreviewError(ValueError):
@@ -387,6 +427,8 @@ def document_headers(path: Path) -> dict[str, str]:
         csp = HTML_DOCUMENT_CSP
     elif kind == "pdf":
         csp = PDF_DOCUMENT_CSP
+    elif kind == "image":
+        csp = IMAGE_DOCUMENT_CSP
     else:
         csp = TEXT_DOCUMENT_CSP
     return {

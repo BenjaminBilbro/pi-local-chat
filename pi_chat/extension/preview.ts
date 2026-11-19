@@ -46,15 +46,31 @@ const KIND_BY_SUFFIX: Record<string, DocKind> = {
   ".html": "html",
   ".htm": "html",
   ".pdf": "pdf",
+  ".png": "image",
+  ".jpg": "image",
+  ".jpeg": "image",
+  ".webp": "image",
+  ".gif": "image",
 };
 
+// A stored image is always written under the kind's own suffix, which is what `KIND_EXTENSIONS`
+// maps `image` to in pi_chat/preview.py. A referenced one may be any suffix above.
 const SUFFIX_BY_KIND: Record<DocKind, string> = {
   markdown: ".md",
   html: ".html",
   pdf: ".pdf",
+  image: ".png",
 };
 
-type DocKind = "markdown" | "html" | "pdf";
+type DocKind = "markdown" | "html" | "pdf" | "image";
+
+/** A document that arrives in stages. Only the image tool sets these today. */
+type DocStage = "rendering" | "ready" | "error";
+
+const STAGES: readonly DocStage[] = ["rendering", "ready", "error"];
+
+/** Text is the only thing this tool can write, so these are the kinds `content` may produce. */
+const TEXT_KINDS: readonly DocKind[] = ["markdown", "html"];
 
 interface DocState {
   id: string;
@@ -70,6 +86,14 @@ interface DocState {
   copied?: boolean;
   /** Opted in to the pane's disk staleness poll. Absent means "follow the pane's Follow-files setting". */
   watch?: boolean;
+  /**
+   * Where this document is in being made. Absent means "there is nothing to wait for", which is the
+   * right reading for every kind the tool writes in one shot, and it is why the field is optional
+   * rather than defaulted to `ready`.
+   */
+  state?: DocStage;
+  /** Requested pixel size, "2048x2048", so the pane can draw a correctly shaped box before bytes exist. */
+  canvas?: string;
 }
 
 /**
@@ -99,11 +123,15 @@ const PreviewParams = Type.Object({
       + "sync: re-copy the source file over a stored copy. clear: every tab.",
   }),
   kind: Type.Optional(
-    Type.Union([Type.Literal("markdown"), Type.Literal("html"), Type.Literal("pdf")], {
-      description:
-        "Document kind. Omit it: with `path` it comes from the file suffix, with `content` it defaults "
-        + "to markdown. Only pass it to force a suffix the table above does not cover.",
-    }),
+    Type.Union(
+      [Type.Literal("markdown"), Type.Literal("html"), Type.Literal("pdf"), Type.Literal("image")],
+      {
+        description:
+          "Document kind. Omit it: with `path` it comes from the file suffix, with `content` it defaults "
+          + "to markdown. Only pass it to force a suffix the table above does not cover. Images are read "
+          + "only: an image document comes from `path`, or from a tool that writes its bytes.",
+      },
+    ),
   ),
   title: Type.Optional(Type.String({ description: "Short title shown on the tab and in the pane header." })),
   content: Type.Optional(
@@ -312,6 +340,9 @@ export default function (pi: ExtensionAPI) {
           doc.revision += 1;
           if (params.title) doc.title = params.title;
           if (params.note !== undefined) doc.note = params.note;
+          // A draw that finished is the one case where a document's own stage changes through this
+          // action, and the entry has to say so or the pane keeps pulsing over a finished image.
+          if (doc.state) doc.state = "ready";
           const reread = entryFor(doc, "update");
           emit(reread);
           return {
@@ -321,6 +352,14 @@ export default function (pi: ExtensionAPI) {
         }
         // A referenced file is never rewritten: the new text becomes a stored copy and the pane
         // follows it. The user's original stays exactly as it was.
+        if (!TEXT_KINDS.includes(doc.kind)) {
+          return {
+            text:
+              `${doc.title} is a ${doc.kind}: it has no text to send. action=update with no \`content\` ` +
+              "re-reads the file in place.",
+            failed: true,
+          };
+        }
         const written = writeDoc(doc.id, doc.kind, params.content);
         if (!written) return { text: `Document is too large (limit is ${MAX_DOC_BYTES} bytes).`, failed: true };
         // `copied` means "stored bytes standing in for a file the server would not serve", so writing
@@ -349,7 +388,7 @@ export default function (pi: ExtensionAPI) {
           const kind = params.kind ?? kindFromPath(path);
           if (!kind) {
             return {
-              text: `Cannot preview ${basename(path)}: only .md, .html and .pdf are supported.`,
+              text: `Cannot preview ${basename(path)}: only .md, .html, .pdf and images (.png, .jpg, .webp, .gif) are supported.`,
               failed: true,
             };
           }
@@ -362,10 +401,18 @@ export default function (pi: ExtensionAPI) {
             return { text: `No file at ${path}.`, failed: true };
           }
           // A PDF cannot be written from text at all, so `content` beside a PDF path is not a
-          // redundant parameter but a misunderstanding, and the wrong one to paper over.
+          // redundant parameter but a misunderstanding, and the wrong one to paper over. An image is
+          // the same trap: a model that has decided to paste base64 into `content` needs telling, not
+          // a quiet text document that renders as a broken image.
           if (kind === "pdf" && typeof params.content === "string") {
             return {
               text: "PDFs are shown from `path` only; a PDF cannot be written from text.",
+              failed: true,
+            };
+          }
+          if (kind === "image" && typeof params.content === "string") {
+            return {
+              text: "Images are shown from `path` only; text cannot carry image bytes.",
               failed: true,
             };
           }
@@ -424,6 +471,14 @@ export default function (pi: ExtensionAPI) {
         const kind = params.kind ?? "markdown";
         if (kind === "pdf") {
           return { text: "PDFs are shown from `path`; pass kind markdown or html for content.", failed: true };
+        }
+        if (kind === "image") {
+          return {
+            text:
+              "Images are shown from `path`, or opened by the image tool while it draws. "
+              + "Text cannot carry image bytes.",
+            failed: true,
+          };
         }
         const id = randomUUID().replace(/-/g, "");
         const file = writeBytes(id, kind, Buffer.from(params.content as string, "utf-8"));
@@ -568,6 +623,10 @@ export default function (pi: ExtensionAPI) {
       // its vote rather than being overridden by an absent flag.
       ...(doc.copied ? { copied: true } : {}),
       ...(doc.watch === true ? { watch: true } : doc.watch === false ? { watch: false } : {}),
+      // An absent stage means "nothing is pending", so only a document made in pieces writes one.
+      // `canvas` rides with it because a placeholder needs both the shape and the reason.
+      ...(doc.state ? { state: doc.state } : {}),
+      ...(doc.canvas ? { canvas: doc.canvas } : {}),
     };
   }
 
@@ -587,7 +646,16 @@ export default function (pi: ExtensionAPI) {
       return;
     }
     if (data.op !== "open" && data.op !== "update") return;
-    const kind = data.kind === "html" || data.kind === "pdf" ? data.kind : "markdown";
+    // A kind that is not in the table stays unknown. Coercing it to markdown - which is what this line
+    // used to do for anything that was not html or pdf - filed a document the server happily serves as
+    // a PNG as a text note, so `preview list` lied and `update docId=<image>` would have rewritten a
+    // PNG as text. An unknown kind is also how a future kind arrives in a session written by a newer
+    // build, and dropping that tab beats rendering it wrong.
+    const kind = typeof data.kind === "string" && data.kind in KIND_BY_SUFFIX
+      ? (data.kind as DocKind)
+      : undefined;
+    if (!kind) return;
+    const stage = STAGES.includes(data.state as DocStage) ? (data.state as DocStage) : undefined;
     docs.set(id, {
       id,
       kind,
@@ -598,6 +666,8 @@ export default function (pi: ExtensionAPI) {
       ...(data.note ? { note: String(data.note) } : {}),
       ...(data.copied ? { copied: true } : {}),
       ...(typeof data.watch === "boolean" ? { watch: data.watch } : {}),
+      ...(stage ? { state: stage } : {}),
+      ...(typeof data.canvas === "string" ? { canvas: String(data.canvas) } : {}),
     });
   }
 
@@ -606,7 +676,8 @@ export default function (pi: ExtensionAPI) {
       .map((doc) =>
         `${doc.id}  ${doc.kind}  r${doc.revision}  ${doc.title}`
         + `${doc.copied ? "  [copy]" : doc.path ? "  [file]" : "  [stored]"}`
-        + `${doc.watch === true ? "  [watching]" : ""}`)
+        + `${doc.watch === true ? "  [watching]" : ""}`
+        + `${doc.state && doc.state !== "ready" ? `  [${doc.state}${doc.canvas ? ` ${doc.canvas}` : ""}]` : ""}`)
       .join("\n");
   }
 
@@ -709,6 +780,15 @@ export default function (pi: ExtensionAPI) {
         + `action=update with no \`content\` re-reads it in place; action=sync stores a copy of it.`
       );
     }
+    if (doc.kind === "image") {
+      // Said before the copy branch, because the copy advice is the one thing that cannot apply here:
+      // an image has no `content` to replace its bytes with.
+      return (
+        `Backed by ${doc.file || doc.path}${doc.copied ? " (a copy: action=sync re-copies the source)" : ""}. `
+        + `The pane reads that file. Images are read only: re-write the file, then action=update with `
+        + `no \`content\` re-reads it.`
+      );
+    }
     if (doc.copied) {
       return (
         `This is a copy of ${doc.path || "the source file"}${copyReason ? ` because ${copyReason}` : ""}, `
@@ -735,6 +815,9 @@ interface PreviewEntry {
   note?: string;
   copied?: boolean;
   watch?: boolean;
+  /** Stage of a document made in pieces, and the pixel size it asked for. See `DocState`. */
+  state?: string;
+  canvas?: string;
   /** From `state`, which is not about one document: what the user has in front of them. */
   open?: boolean;
   activeDocId?: string | null;
