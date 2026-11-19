@@ -1,0 +1,60 @@
+{
+  "captured_at": "2026-11-18T20:24:45.977-08:00",
+  "tool": "tools/capture.py",
+  "argv": [
+    "node",
+    "C:\\Users\\Local User\\AppData\\Roaming\\npm\\node_modules\\@earendil-works\\pi-coding-agent\\dist\\bundle\\cli.js",
+    "--mode",
+    "rpc",
+    "--approve",
+    "--no-context-files",
+    "--thinking",
+    "low",
+    "-e",
+    "C:\\Users\\Local User\\pi-chat\\pi_chat\\extension\\preview.ts"
+  ],
+  "scenario": "imagegen",
+  "cwd": "C:\\Users\\Local User\\pi-chat\\data-samples\\capture-workspace",
+  "workspace_files": [
+    "notes.md",
+    "seed.txt"
+  ],
+  "preview_scope": "C:\\Users\\Local User\\pi-chat\\previews\\b\\capture",
+  "capture": "C:\\Users\\Local User\\pi-chat\\data-samples\\imagegen_rpc_capture.jsonl",
+  "raw": "C:\\Users\\Local User\\pi-chat\\data-samples\\imagegen_rpc_capture.jsonl.gz",
+  "raw_bytes": 87467,
+  "session_file": "C:\\Users\\Local User\\.pi\\agent\\sessions\\--C--Users-Local User-pi-chat-data-samples-capture-workspace--\\2026-11-19T04-23-41-124Z_01a1f20b-c943-7449-9c95-cdb3b2834980.jsonl",
+  "session_header": {
+    "type": "session",
+    "version": 3,
+    "id": "01a1f20b-c943-7449-9c95-cdb3b2834980",
+    "timestamp": "2026-11-19T04:23:41.124Z",
+    "cwd": "C:\\Users\\Local User\\pi-chat\\data-samples\\capture-workspace"
+  },
+  "result": {
+    "seconds": 65.1,
+    "events": 481,
+    "steps": [
+      {
+        "label": "generate a square logo",
+        "settled": true,
+        "aborted_by_us": false,
+        "last_event": "agent_settled",
+        "events": 312
+      },
+      {
+        "label": "generate a wide banner",
+        "settled": true,
+        "aborted_by_us": false,
+        "last_event": "agent_settled",
+        "events": 481
+      }
+    ]
+  },
+  "boundary_notes": [
+    "tool_execution_start generate_image",
+    "step generate a square logo: {'label': 'generate a square logo', 'settled': True, 'aborted_by_us': False, 'last_event': 'agent_settled', 'events': 312}",
+    "tool_execution_start generate_image",
+    "step generate a wide banner: {'label': 'generate a wide banner', 'settled': True, 'aborted_by_us': False, 'last_event': 'agent_settled', 'events': 481}"
+  ]
+}

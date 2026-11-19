@@ -120,7 +120,7 @@ audits.
 | `PI_CHAT_DOWNLOAD_ROOT` | `str(Path.home() / "huggingface"` | `tools/stt_probe.py` | Other |  |
 | `PI_CHAT_SCRUB_LITERALS` | `*unset*` | `tools/scrub_captures.py` | Other | one or more `literal = replacement` pairs, bar-separated, for `tools/scrub_captures.py`; machine-local like `.scrub-literals`, and for the same reason (a note in this table cannot contain the bar itself) |
 | `PI_CHAT_PREVIEW_BASE_DIR` | `str(PROJECT_ROOT / "previews")` | `config.py`, `tools/smoke_test_ws.py` | Previews | server side; the child gets `PI_CHAT_PREVIEW_DIR`, a different name |
-| `PI_CHAT_PREVIEW_DIR` | `*unset*` | `pi_chat/preview.py`, `pi_chat/process.py` | Previews |  |
+| `PI_CHAT_PREVIEW_DIR` | `*unset*` | `pi_chat/preview.py`, `pi_chat/process.py`, `tools/capture.py` | Previews |  |
 | `PI_CHAT_PREVIEW_MAX_DOC_MB` | `"25"` | `config.py` | Previews |  |
 | `PI_CHAT_PREVIEW_MAX_MB` | `"200"` | `config.py` | Previews |  |
 | `PI_CHAT_PREVIEW_ROOTS` | `""` | `config.py` | Previews |  |
@@ -135,7 +135,7 @@ audits.
 | `PI_CHAT_LOG_LEVEL` | `*unset*` | `pi_chat/app.py`, `tools/smoke_test_ws.py` | Server and child process |  |
 | `PI_CHAT_PI_ARGS` | `"").strip(` | `pi_chat/process.py`, `tools/smoke_test_ws.py` | Server and child process |  |
 | `PI_CHAT_PI_BIN` | `"").strip(` | `pi_chat/process.py`, `tools/fake_rpc_pi.py`, `tools/smoke_test_ws.py` | Server and child process |  |
-| `PI_CHAT_PORT` | `"9000"` | `config.py`, `pi_chat/process.py`, `server.py`, `tools/smoke_test_ws.py` | Server and child process |  |
+| `PI_CHAT_PORT` | `"9000"` | `config.py`, `pi_chat/process.py`, `server.py`, `tools/capture.py`, `tools/smoke_test_ws.py` | Server and child process |  |
 | `PI_CHAT_SESSION_TTL` | `7 * 24 * 60 * 60` | `config.py` | Server and child process | seconds; a restart is required either way, so the value is read once at import |
 | `PI_CHAT_SMOKE_PORT` | `"9011"` | `tools/smoke_test_ws.py` | Server and child process |  |
 | `PI_CHAT_STT_BEAM_SIZE` | `"1"` | `config.py` | Speech input |  |

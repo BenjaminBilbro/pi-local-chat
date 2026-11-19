@@ -33,6 +33,7 @@ import argparse
 import asyncio
 import gzip
 import json
+import os
 import re
 import shutil
 import sys
@@ -248,6 +249,69 @@ SCENARIOS: dict[str, dict] = {
         "output": "data-samples/nested_subagent_rpc_capture.jsonl",
         "copy_native": True,
         "native_output": "data-samples/nested_subagent_session.jsonl",
+    },
+    # Image generation, captured the way a pi-chat child actually runs: `--no-context-files`, the preview
+    # extension loaded by path, and a preview store directory in the environment. image-gen itself is not
+    # passed with -e: it lives in ~/.pi/agent/extensions and pi auto-loads it there, which is exactly how a
+    # web-UI child gets the tool. The point of this capture is the *sequence*: a `pichat_preview` open with
+    # state "rendering" while the draw is still borrowing VRAM, a run of `tool_execution_update` carrying
+    # sd-cli's phase and percent, then the `update` that hands over the PNG.
+    # `--thinking low` is the one unfaithful flag: it shortens the turns around the draws without touching the image
+    # event sequence, and the rest of the corpus already covers thinking deltas.
+    "imagegen": {
+        "description": "generate_image over sd-cli: rendering entry, progress updates, ready entry, second aspect",
+        "pi_flags": ["--mode", "rpc", "--approve", "--no-context-files", "--thinking", "low",
+                     "-e", str(PROJECT_ROOT / "pi_chat" / "extension" / "preview.ts")],
+        "workspace": True,
+        "preview_scope": "capture",
+        "steps": [
+            {
+                "label": "generate a square logo",
+                "message": (
+                    "Call the generate_image tool exactly once, with size 512x512 and the prompt: "
+                    "a flat vector logo of a single red hexagon centred on a white background, no text. "
+                    "Do not read or write any other file and do not run any other tool. "
+                    "When it returns, reply with only the output path and the pixel size."
+                ),
+                "timeout": 900,
+            },
+            {
+                "label": "generate a wide banner",
+                "message": (
+                    "Call the generate_image tool exactly once more, this time at 1024x512, with the prompt: "
+                    "a wide flat banner of three orange circles on a navy background, no text. No other tools. "
+                    "Reply with only the output path."
+                ),
+                "timeout": 900,
+            },
+        ],
+        "output": "data-samples/imagegen_rpc_capture.jsonl",
+        "copy_native": True,
+        "native_output": "data-samples/imagegen_session.jsonl",
+    },
+    # The shape a user cancel leaves in the middle of a draw: the rendering entry is already out, the tool
+    # never answers with an image, and the tool result says `cancelled` with the VRAM restored. The pane's
+    # "interrupted" state is modelled on this, and so is the rule that a killed sd-cli must give the memory back.
+    "imagegen_abort": {
+        "description": "Abort mid-draw: rendering entry, progress, then a cancelled result",
+        "pi_flags": ["--mode", "rpc", "--approve", "--no-context-files", "--thinking", "low",
+                     "-e", str(PROJECT_ROOT / "pi_chat" / "extension" / "preview.ts")],
+        "workspace": True,
+        "preview_scope": "capture-abort",
+        "steps": [
+            {
+                "label": "abort during a large draw",
+                "message": (
+                    "Call the generate_image tool exactly once at 2048x2048 with the prompt: a photorealistic "
+                    "close-up of a siamese cat's face, soft window light, no text. Then tell me the path."
+                ),
+                "timeout": 900,
+                "abort_after_first_tool": 40.0,
+            },
+        ],
+        "output": "data-samples/imagegen_abort_rpc_capture.jsonl",
+        "copy_native": True,
+        "native_output": "data-samples/imagegen_abort_session.jsonl",
     },
 }
 
@@ -526,12 +590,16 @@ class Capture:
     """One capture run: pi child, recorder, and the settle/abort bookkeeping a scripted run needs."""
 
     def __init__(self, argv: list[str], steps: list[dict], out_path: Path,
-                 raw_path: Path | None, cwd: Path | None) -> None:
+                 raw_path: Path | None, cwd: Path | None,
+                 env: dict[str, str] | None = None) -> None:
         self.argv = argv
         self.steps = steps
         self.out_path = out_path
         self.raw_path = raw_path
         self.cwd = cwd
+        # A child that behaves differently from the one the app spawns is a fixture that models the wrong
+        # thing, so the base is the real environment and a scenario can only add to it.
+        self.env = {**os.environ, **(env or {})} if env else None
         self.proc: asyncio.subprocess.Process | None = None
         self.recorder: StreamRecorder | None = None
         self.stderr: list[str] = []
@@ -600,6 +668,7 @@ class Capture:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=str(self.cwd) if self.cwd else None,
+            env=self.env,
         )
         readers = [asyncio.create_task(self.read_stdout()), asyncio.create_task(self.read_stderr())]
 
@@ -707,11 +776,22 @@ async def run_scenario(name: str, scenario: dict, output_override: str | None,
     if scenario.get("probe"):
         flags += ["-e", str(PROJECT_ROOT / "tests" / "fixtures" / "capture_probe.ts")]
     argv = [*resolve_pi_command(), *flags]
+    # A preview store, laid out the way `preview.connection_scope_dir` lays one out for a live connection,
+    # because that directory is the switch the image tool reads: with it the tool opens a pane, without it the
+    # same call is a terminal draw and emits nothing. `PI_CHAT_PORT`/`_TOKEN` stay unset on purpose: no server
+    # is listening here, and a fixture should show the child's honest "cannot ask the pane" path, not a fake.
+    env: dict[str, str] = {}
+    scope = scenario.get("preview_scope")
+    if scope:
+        scope_dir = PROJECT_ROOT / "previews" / "b" / str(scope)
+        scope_dir.mkdir(parents=True, exist_ok=True)
+        env["PI_CHAT_PREVIEW_DIR"] = str(scope_dir)
     print(f"argv     : {' '.join(argv)}")
     print(f"cwd      : {cwd or '(this directory)'}")
+    print(f"previews : {env.get('PI_CHAT_PREVIEW_DIR', '(none: terminal-parity child)')}")
     print(f"capture  : {out_path}\nraw      : {raw_path or '(disabled)'}")
 
-    capture = Capture(argv, [dict(s) for s in scenario["steps"]], out_path, raw_path, cwd)
+    capture = Capture(argv, [dict(s) for s in scenario["steps"]], out_path, raw_path, cwd, env or None)
     result = await capture.run()
 
     if capture.stderr:
@@ -726,6 +806,7 @@ async def run_scenario(name: str, scenario: dict, output_override: str | None,
         "scenario": name,
         "cwd": str(cwd) if cwd else str(PROJECT_ROOT),
         "workspace_files": sorted(SCRATCH_FILES) if cwd else [],
+        "preview_scope": env.get("PI_CHAT_PREVIEW_DIR"),
         "capture": str(out_path),
         "raw": str(raw_path) if raw_path else None,
         "raw_bytes": raw_path.stat().st_size if raw_path and raw_path.exists() else None,

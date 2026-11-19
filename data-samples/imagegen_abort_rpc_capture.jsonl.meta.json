@@ -1,0 +1,52 @@
+{
+  "captured_at": "2026-11-18T20:25:54.083-08:00",
+  "tool": "tools/capture.py",
+  "argv": [
+    "node",
+    "C:\\Users\\Local User\\AppData\\Roaming\\npm\\node_modules\\@earendil-works\\pi-coding-agent\\dist\\bundle\\cli.js",
+    "--mode",
+    "rpc",
+    "--approve",
+    "--no-context-files",
+    "--thinking",
+    "low",
+    "-e",
+    "C:\\Users\\Local User\\pi-chat\\pi_chat\\extension\\preview.ts"
+  ],
+  "scenario": "imagegen_abort",
+  "cwd": "C:\\Users\\Local User\\pi-chat\\data-samples\\capture-workspace",
+  "workspace_files": [
+    "notes.md",
+    "seed.txt"
+  ],
+  "preview_scope": "C:\\Users\\Local User\\pi-chat\\previews\\b\\capture-abort",
+  "capture": "C:\\Users\\Local User\\pi-chat\\data-samples\\imagegen_abort_rpc_capture.jsonl",
+  "raw": "C:\\Users\\Local User\\pi-chat\\data-samples\\imagegen_abort_rpc_capture.jsonl.gz",
+  "raw_bytes": 95206,
+  "session_file": "C:\\Users\\Local User\\.pi\\agent\\sessions\\--C--Users-Local User-pi-chat-data-samples-capture-workspace--\\2026-11-19T04-24-47-376Z_01a1f20c-cc10-763e-9d55-ac7cc11e017d.jsonl",
+  "session_header": {
+    "type": "session",
+    "version": 3,
+    "id": "01a1f20c-cc10-763e-9d55-ac7cc11e017d",
+    "timestamp": "2026-11-19T04:24:47.376Z",
+    "cwd": "C:\\Users\\Local User\\pi-chat\\data-samples\\capture-workspace"
+  },
+  "result": {
+    "seconds": 67.0,
+    "events": 529,
+    "steps": [
+      {
+        "label": "abort during a large draw",
+        "settled": true,
+        "aborted_by_us": true,
+        "last_event": "response",
+        "events": 529
+      }
+    ]
+  },
+  "boundary_notes": [
+    "tool_execution_start read",
+    "tool_execution_start generate_image",
+    "step abort during a large draw: {'label': 'abort during a large draw', 'settled': True, 'aborted_by_us': True, 'last_event': 'response', 'events': 529}"
+  ]
+}
