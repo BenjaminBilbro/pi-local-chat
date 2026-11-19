@@ -56,9 +56,13 @@ from __future__ import annotations
 import json
 import os
 import queue
+import struct
 import sys
 import threading
 import time
+import uuid
+import zlib
+from pathlib import Path
 
 TEXT = "Fake assistant reply from the RPC stub: alpha beta gamma."
 
@@ -116,6 +120,45 @@ STREAM_MS = int(os.environ.get("FAKE_RPC_STREAM_MS", "0"))
 WRITE_KB = int(os.environ.get("FAKE_RPC_WRITE_KB", "6"))
 # Rounds of thinking -> write -> result in one run. 0 keeps the short turn every older stage expects.
 LONG_RUN = int(os.environ.get("FAKE_RPC_LONG_RUN", "0"))
+
+# Image generation. FAKE_RPC_IMAGE=1 replaces the turn with a `generate_image` call whose event
+# sequence is copied from a real capture (`data-samples/imagegen_rpc_capture.jsonl`), including the two
+# `pichat_preview` entries the tool writes itself and the phase/percent stream it puts on
+# `tool_execution_update`. The whole loading story lives between those two entries, so a stub that
+# emitted only a finished result could not exercise any of it - and the dots are the part Ben asked for.
+IMAGE_MODE = os.environ.get("FAKE_RPC_IMAGE", "") == "1"
+IMAGE_CANVAS = os.environ.get("FAKE_RPC_IMAGE_CANVAS", "512x512")
+# The simulated draw has to outlast the harness's settle time or the screenshot catches the answer
+# instead of the wait. Nine seconds is long enough to shoot mid-draw and short enough to stay boring.
+IMAGE_MS = int(os.environ.get("FAKE_RPC_IMAGE_MS", "9000"))
+# Stop the draw after N progress updates and report it cancelled: the pane's error state, on the same
+# wire shape the abort capture recorded.
+IMAGE_ABORT_AFTER = int(os.environ.get("FAKE_RPC_IMAGE_ABORT_AFTER", "0"))
+# The progress stream of one real 512x512 draw: phase, pct, step, total, eta seconds, in the order
+# sd-cli's stdout produced them. Copied rather than invented because the shape of the middle - the
+# percent that repeats while the weights load, the eta that appears only at the step boundary - is what
+# a placeholder has to survive.
+IMAGE_PROGRESS = (
+    ("borrow", 2, None, None, None),
+    ("prepare", 6, 65, 397, None),
+    ("prepare", 8, 159, 397, None),
+    ("prepare", 10, 254, 397, None),
+    ("prepare", 12, 351, 397, None),
+    ("prepare", 15, 43, 265, None),
+    ("prepare", 16, 100, 265, None),
+    ("prepare", 18, 157, 265, None),
+    ("prepare", 20, 221, 265, None),
+    ("sample", 36, 1, 8, 43),
+    ("sample", 58, 5, 8, 3),
+    ("sample", 74, 8, 8, None),
+    ("sample", 74, 8, 8, None),
+    ("sample", 74, 8, 8, None),
+    ("sample", 74, 8, 8, None),
+    ("decode", 76, 1, 9, 18),
+    ("decode", 88, 6, 9, 1),
+    ("decode", 95, 9, 9, None),
+    ("save", 99, 9, 9, None),
+)
 # Characters of argument JSON per toolcall_delta. Real providers differ; one word is too gentle to
 # catch a UI that only looks at the parsed arguments.
 STREAM_CHUNK = 48
@@ -237,6 +280,10 @@ def run_prompt(prompt_text: str) -> None:
             _run_long_run(LONG_RUN, prompt_text)
             emit({"type": "agent_end", "messages": list(_state["messages"])})
             return
+        if IMAGE_MODE:
+            _run_image_turn(prompt_text)
+            emit({"type": "agent_end", "messages": list(_state["messages"])})
+            return
         # Split so the two-message queue boundary is exercised. For the default reply that split
         # lands after "from the RPC stub", which is what the harness's stub-identity guard reads.
         reply, split = _reply_text()
@@ -275,6 +322,216 @@ def run_prompt(prompt_text: str) -> None:
         _state["abort_ack"] = None
 
     _run_next_queued()
+
+
+def _run_image_turn(prompt_text: str) -> None:
+    """One `generate_image` call, in the order a real one reaches the browser.
+
+    The two preview entries are the point. `open` arrives with a canvas and no bytes, which is the only
+    reason a pane can draw something the right shape before sd-cli has produced anything; `update` arrives
+    with the file, and the pane's job is to be holding the same rectangle by then. Everything between
+    them is `tool_execution_update`, which is deliberately not persisted anywhere.
+    """
+    doc_id = uuid.uuid4().hex
+    call_id = f"call-image-{doc_id[:12]}"
+    prompt = (prompt_text or "A red fox")[:240]
+    title = prompt[:60]
+    model = "q4"
+
+    _begin_turn()
+    emit_user_message(prompt_text)
+    _begin_message()
+    _stream_text(f"Drawing that now: {prompt}")
+
+    emit({
+        "type": "tool_execution_start",
+        "toolCallId": call_id,
+        "toolName": "generate_image",
+        "args": {"prompt": prompt, "size": IMAGE_CANVAS},
+    })
+    _emit_preview({
+        "v": 2,
+        "op": "open",
+        "docId": doc_id,
+        "kind": "image",
+        "title": title,
+        "revision": 1,
+        "state": "rendering",
+        "canvas": IMAGE_CANVAS,
+        "note": "Qwen Turbo - rendering",
+    })
+
+    steps = IMAGE_PROGRESS
+    slice_ms = IMAGE_MS // max(1, len(steps))
+    failed: str | None = None
+    for index, (phase, pct, step, total, eta) in enumerate(steps):
+        if IMAGE_ABORT_AFTER and index >= IMAGE_ABORT_AFTER:
+            failed = "cancelled (restored (cache 14336 MiB, 822 MiB free))"
+            break
+        progress: dict = {"phase": phase, "pct": pct, "canvas": IMAGE_CANVAS, "model": model}
+        if step is not None:
+            progress["step"] = step
+            progress["total"] = total
+        if eta is not None:
+            progress["etaSeconds"] = eta
+        emit({
+            "type": "tool_execution_update",
+            "toolCallId": call_id,
+            "toolName": "generate_image",
+            "args": {"prompt": prompt, "size": IMAGE_CANVAS},
+            "partialResult": {
+                "content": [{"type": "text", "text": f"{phase} {step or 0}/{total or 0} {pct}% ({model} {IMAGE_CANVAS})"}],
+                "details": {
+                    "tool": "generate_image",
+                    "size": IMAGE_CANVAS,
+                    "model": model,
+                    "progress": progress,
+                    "doc": doc_id,
+                },
+            },
+        })
+        _pause_and_serve(slice_ms)
+        _raise_if_aborted()
+
+    if failed:
+        _emit_preview({
+            "v": 2,
+            "op": "update",
+            "docId": doc_id,
+            "kind": "image",
+            "title": title,
+            "revision": 2,
+            "state": "error",
+            "canvas": IMAGE_CANVAS,
+            "note": failed,
+        })
+        emit({
+            "type": "tool_execution_end",
+            "toolCallId": call_id,
+            "toolName": "generate_image",
+            "result": {"content": [{"type": "text", "text": f"generate_image failed: {failed}"}]},
+            "isError": True,
+        })
+    else:
+        written = _write_preview_png(doc_id)
+        _emit_preview({
+            "v": 2,
+            "op": "update",
+            "docId": doc_id,
+            "kind": "image",
+            "title": title,
+            "revision": 2,
+            "state": "ready",
+            **({"file": written} if written else {}),
+            "canvas": IMAGE_CANVAS,
+            "note": f"Qwen Turbo - {IMAGE_CANVAS} - {IMAGE_MS / 1000:.1f}s - seed 545702411",
+        })
+        output = f"Wrote image {doc_id}.png ({IMAGE_CANVAS})"
+        emit({
+            "type": "tool_execution_end",
+            "toolCallId": call_id,
+            "toolName": "generate_image",
+            "result": {"content": [{"type": "text", "text": output}], "details": {"doc": doc_id}},
+            "isError": False,
+        })
+        result = {
+            "role": "toolResult",
+            "toolCallId": call_id,
+            "toolName": "generate_image",
+            "content": [{"type": "text", "text": output}],
+            "isError": False,
+            "timestamp": _now_ms(),
+        }
+        emit({"type": "message_start", "message": result})
+        emit({"type": "message_end", "message": result})
+        _state["messages"].append(result)
+
+    final = assistant_message("Cancelled." if failed else "There it is.")
+    _turn["message_open"] = False
+    _state["messages"].append(final)
+    emit({"type": "message_end", "message": final})
+    _end_turn(final)
+
+
+def _emit_preview(data: dict) -> None:
+    """One persisted preview entry, wrapped the way pi wraps a custom entry.
+
+    The real tool appends these with `pi.appendEntry`, and the server forwards them to the browser inside
+    an `entry_appended` event whose `entry.data` is the payload. The pane reads `data` only, so getting
+    the wrapper right is what makes this stub test the same code path as the tool.
+    """
+    emit({
+        "type": "entry_appended",
+        "entry": {
+            "type": "custom",
+            "customType": "pichat_preview",
+            "data": data,
+            "id": uuid.uuid4().hex[:8],
+            "parentId": uuid.uuid4().hex[:8],
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + ".000Z",
+        },
+    })
+
+
+def _write_preview_png(doc_id: str) -> str | None:
+    """Put real bytes where the server will look for them, and return the file name.
+
+    Without this the `ready` state is only ever tested against a 404, which is the one thing a pane must
+    not be able to pass by accident. The scope directory is the one the server made for this connection
+    and pointed the child at, so writing here is exactly what the image tool does.
+    """
+    directory = (os.environ.get("PI_CHAT_PREVIEW_DIR") or "").strip()
+    if not directory:
+        return None
+    try:
+        Path(directory).mkdir(parents=True, exist_ok=True)
+        wide, tall = (part.strip() for part in IMAGE_CANVAS.lower().replace("\u00d7", "x").split("x"))
+        _sample_png(Path(directory) / f"{doc_id}.png", int(wide), int(tall))
+    except (OSError, ValueError):
+        return None
+    return f"{doc_id}.png"
+
+
+def _sample_png(path: Path, width: int, height: int) -> None:
+    """Write a decodable PNG with no dependencies: a gradient and a hexagon.
+
+    Hand-rolled because the fake must run with nothing installed, and the browser has to be able to
+    decode the result - a `.png` full of zeros would prove the fetch works and nothing else.
+    """
+    width = max(8, min(width, 2048))
+    height = max(8, min(height, 2048))
+    radius = min(width, height) * 0.3
+    centre_x, centre_y = width / 2, height / 2
+    raw = bytearray()
+    for y in range(height):
+        raw.append(0)  # filter type 0 per scanline
+        for x in range(width):
+            t = (x / max(1, width - 1) + y / max(1, height - 1)) / 2
+            red = int(11 + t * (255 - 11))
+            green = int(32 + t * (54 - 32))
+            blue = int(38 + t * (33 - 38))
+            # A soft-edged hexagon in the accent ramp, so a resized image is visibly resized.
+            dx, dy = x - centre_x, y - centre_y
+            distance = max(abs(dx), abs(dx * 0.5 + dy * 0.866), abs(-dx * 0.5 + dy * 0.866))
+            if distance < radius:
+                red, green, blue = 255, 54 + int(120 * (distance / radius)), 33
+            raw += bytes((red, green, blue))
+    chunks = [
+        b"\x89PNG\r\n\x1a\n",
+        _png_chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)),
+        _png_chunk(b"IDAT", zlib.compress(bytes(raw), 6)),
+        _png_chunk(b"IEND", b""),
+    ]
+    path.write_bytes(b"".join(chunks))
+
+
+def _png_chunk(kind: bytes, body: bytes) -> bytes:
+    return (
+        struct.pack(">I", len(body))
+        + kind
+        + body
+        + struct.pack(">I", zlib.crc32(kind + body) & 0xFFFFFFFF)
+    )
 
 
 def _run_long_run(rounds: int, prompt_text: str) -> None:

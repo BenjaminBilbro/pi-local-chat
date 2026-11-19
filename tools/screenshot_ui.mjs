@@ -181,6 +181,14 @@ const STAGE_ENV = {
   },
   'html': { needs: 'a server; bytes are pushed through the preview store, no pi child' },
   'pdf': { needs: 'as --stage html' },
+  'image': {
+    needs: 'PI_CHAT_PI_BIN=$PWD/tools/fake_rpc_pi.py FAKE_RPC_IMAGE=1 (the draw takes FAKE_RPC_IMAGE_MS, default 9000)',
+    breaks: 'FAKE_RPC_IMAGE_ABORT_AFTER: that makes the draw fail on purpose, which is --stage image-cancel',
+  },
+  'image-cancel': {
+    needs: 'as --stage image, plus FAKE_RPC_IMAGE_ABORT_AFTER=3',
+    breaks: 'FAKE_RPC_IMAGE unset: a normal turn has no image and nothing to cancel',
+  },
 };
 
 if (args.includes('--stages')) {
@@ -2107,7 +2115,170 @@ async function runSession(chromeChild) {
       await sleep(STAGE === 'pdf' ? 3500 : 1200);
     }
 
-    if (STAGE !== 'voice-mode') await capture(cdp, OUT, false);
+    if (STAGE === 'image' || STAGE === 'image-cancel') {
+      /* A generated image, arriving over the wire. FAKE_RPC_IMAGE=1 makes the stub emit the sequence a
+       * real draw emits: a preview entry that says `rendering` with a canvas and no bytes, the nineteen
+       * `tool_execution_update` frames copied out of `data-samples/imagegen_rpc_capture.jsonl`, then the
+       * entry that says `ready` with real PNG bytes written into the connection's own store. So this
+       * stage drives app.js's forwarding, the pane's state machine, the loader's canvas and an
+       * authenticated fetch, and it touches no test hook anywhere.
+       *
+       * Three things are asserted that a screenshot cannot show on its own:
+       *   the placeholder is the same rectangle the picture lands in, so the swap moves nothing
+       *   zoom and pan change a transform and nothing else - the conversation must not move
+       *   the percent printed is the percent the tool sent, and it never claims done
+       */
+      const canvas = flag('image-canvas', '512x512');
+      const [wantW, wantH] = canvas.split('x').map(Number);
+      const renderShot = OUT.replace(/\.png$/, '-render.png');
+      await evaluate(
+        cdp,
+        `(() => { const el = document.getElementById('user-input');`
+        + " el.value = 'Draw a red fox sitting on a fence';"
+        + " el.dispatchEvent(new Event('input', { bubbles: true }));"
+        + " el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return true; })()",
+      );
+      await waitFor(
+        cdp,
+        'document.querySelector(\'[data-doc-image-stage][data-state="rendering"]\')',
+        30000,
+      );
+
+      const readStage = async () => JSON.parse(await evaluate(cdp,
+        "(() => { const stage = document.querySelector('[data-doc-image-stage]');"
+        + " const box = stage.querySelector('[data-doc-image-dots]');"
+        + " const img = document.querySelector('[data-doc-image]');"
+        + " const r = (el) => { const b = el.getBoundingClientRect();"
+        + "   return { x: +b.x.toFixed(1), y: +b.y.toFixed(1), w: +b.width.toFixed(1), h: +b.height.toFixed(1) }; };"
+        + " const style = getComputedStyle(box);"
+        + " return JSON.stringify({"
+        + "   state: stage.dataset.state,"
+        + "   stage: r(stage), box: r(box), boxVisible: style.display !== 'none' && !box.hidden,"
+        + "   imgVisible: !img.hidden && Boolean(img.getAttribute('src')),"
+        + "   imgRect: img.getBoundingClientRect ? r(img) : null,"
+        + "   frameVisible: !document.querySelector('[data-doc-view=\"frame\"]').hidden,"
+        + "   emptyVisible: !document.querySelector('[data-doc-empty]').hidden,"
+        + "   barVisible: !document.querySelector('[data-doc-image-bar]').hidden,"
+        + "   downloadHidden: document.querySelector('[data-doc-download]').hidden,"
+        + "   externalHidden: document.querySelector('[data-doc-external]').hidden,"
+        + "   pct: (document.querySelector('[data-doc-image-pct]').textContent || '').trim(),"
+        + "   pctHidden: document.querySelector('[data-doc-image-pct]').hidden,"
+        + "   phase: (document.querySelector('[data-doc-image-phase]').textContent || '').trim(),"
+        + "   detail: (document.querySelector('[data-doc-image-detail]').textContent || '').trim(),"
+        + "   note: (document.querySelector('[data-doc-image-note]').textContent || '').trim(),"
+        + "   chat: r(document.getElementById('messages')),"
+        + " }); })()"));
+
+      const first = await readStage();
+      if (first.state !== 'rendering') throw new Error(`stage state is ${first.state}, not rendering`);
+      if (!first.boxVisible) throw new Error('the dot matrix is not on screen during a draw');
+      if (first.imgVisible) throw new Error('the pane fetched bytes for a draw that has produced none');
+      if (first.emptyVisible) throw new Error('the empty state leaked over a document that is arriving');
+      if (first.frameVisible) throw new Error('an image opened a frame; this kind refuses to be framed');
+      if (!first.downloadHidden || !first.externalHidden) {
+        throw new Error('Save and Open are offered for a file that does not exist yet');
+      }
+      const aspect = (box) => box.w / box.h;
+      const wanted = wantW / wantH;
+      if (Math.abs(aspect(first.box) - wanted) > 0.03) {
+        throw new Error(`placeholder aspect is ${aspect(first.box).toFixed(3)} for a ${canvas} request (${wanted.toFixed(3)})`);
+      }
+      if (first.box.w > first.stage.w + 1 || first.box.h > first.stage.h + 1) {
+        throw new Error(`the placeholder overflows its stage: ${first.box.w}x${first.box.h} in ${first.stage.w}x${first.stage.h}`);
+      }
+      console.log(`placeholder: ${first.box.w}x${first.box.h} for ${canvas}, aspect ${aspect(first.box).toFixed(3)}`);
+
+      if (STAGE === 'image') {
+        // A number before the shot, or the screenshot shows a phase word where the percent belongs and
+        // the review of this stage becomes a discussion about whether the animation ever gets a percent.
+        await waitFor(cdp,
+          "(() => { const t = document.querySelector('[data-doc-image-pct]').textContent || '';"
+          + '  return parseInt(t, 10) >= 30; })()', 30000);
+        const mid = await readStage();
+        console.log(`mid-draw: ${mid.pct} ${mid.phase} (${mid.detail})`);
+        await capture(cdp, renderShot, false);
+
+        await waitFor(cdp,
+          "(() => { const stage = document.querySelector('[data-doc-image-stage]');"
+          + "  const img = document.querySelector('[data-doc-image]');"
+          + "  return stage.dataset.state === 'ready' && img.complete && img.naturalWidth > 0; })()", 60000);
+        const done = await readStage();
+        if (done.boxVisible) throw new Error('the dots are still on screen after the picture arrived');
+        if (!done.barVisible) throw new Error('a finished image has no zoom controls');
+        if (done.downloadHidden) throw new Error('the download button did not appear');
+        if (done.pctHidden !== true) throw new Error('a finished document still prints a percent');
+        // The claim the whole placeholder design exists for: same rectangle, so nothing moves.
+        const drift = Math.max(
+          Math.abs(done.imgRect.w - first.box.w),
+          Math.abs(done.imgRect.h - first.box.h),
+        );
+        if (drift > 2) {
+          throw new Error(`the swap moved the picture by ${drift.toFixed(1)}px: box ${first.box.w}x${first.box.h}`
+            + ` vs image ${done.imgRect.w}x${done.imgRect.h}`);
+        }
+        const saved = await evaluate(cdp,
+          "(() => { const a = document.querySelector('[data-doc-download]');"
+          + ' return JSON.stringify({ href: a.getAttribute(\'href\'), name: a.getAttribute(\'download\') }); })()');
+        const { href, name } = JSON.parse(saved);
+        if (!/kind=image/.test(href)) throw new Error(`download href is not this kind: ${href}`);
+        if (!String(name).endsWith(`${wantW}x${wantH}.png`)) {
+          throw new Error(`download name should carry the size, got ${name}`);
+        }
+        console.log(`swap: image ${done.imgRect.w}x${done.imgRect.h}, drift ${drift.toFixed(1)}px, saves as ${name}`);
+        await capture(cdp, OUT, false);
+
+        // Zoom is a transform. If this ever resizes the conversation column, the invariant that made the
+        // composer two lines is broken, and this is the only place that catches it in a real browser.
+        const before = await readStage();
+        await evaluate(cdp,
+          "(() => { const stage = document.querySelector('[data-doc-image-stage]');"
+          + '  const r = stage.getBoundingClientRect();'
+          + "  stage.dispatchEvent(new WheelEvent('wheel', { deltaY: -500, clientX: r.x + r.width / 2,"
+          + '    clientY: r.y + r.height / 2, bubbles: true, cancelable: true })); return true; })()');
+        await sleep(200);
+        const zoomed = await evaluate(cdp,
+          "(() => { const img = document.querySelector('[data-doc-image]');"
+          + "  const chat = document.getElementById('messages').getBoundingClientRect();"
+          + "  const stage = document.querySelector('[data-doc-image-stage]');"
+          + "  const r = stage.getBoundingClientRect();"
+          + "  stage.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: r.x + 40, clientY: r.y + 40 }));"
+          + "  stage.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: r.x + 140, clientY: r.y + 90 }));"
+          + "  stage.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientX: r.x + 140, clientY: r.y + 90 }));"
+          + "  return JSON.stringify({ transform: img.style.transform, scale: document.querySelector('[data-doc-image-scale]').textContent, chat: { x: chat.x, y: chat.y, w: chat.width, h: chat.height } }); })()");
+        const moved = JSON.parse(zoomed);
+        if (!/scale\(/.test(moved.transform)) throw new Error(`wheel did not scale the image: ${moved.transform}`);
+        await sleep(120);
+        const after = await readStage();
+        if (Math.abs(after.chat.w - before.chat.w) > 0.5 || Math.abs(after.chat.x - before.chat.x) > 0.5) {
+          throw new Error(`zooming an image resized the conversation: ${before.chat.w}@${before.chat.x} -> ${after.chat.w}@${after.chat.x}`);
+        }
+        await evaluate(cdp,
+          "(() => { const stage = document.querySelector('[data-doc-image-stage]');"
+          + "  stage.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); return true; })()");
+        const fitted = await evaluate(cdp,
+          "(() => { const img = document.querySelector('[data-doc-image]');"
+          + "  return JSON.stringify({ transform: img.style.transform, scale: document.querySelector('[data-doc-image-scale]').textContent }); })()");
+        const fit = JSON.parse(fitted);
+        if (fit.transform !== '' || fit.scale.trim() !== '100%') {
+          throw new Error(`double-click should fit to the identity, got ${JSON.stringify(fit)}`);
+        }
+        console.log(`zoom: ${moved.scale} then fit ${fit.scale}; conversation still ${after.chat.w}px at x${after.chat.x}`);
+      } else {
+        await waitFor(cdp,
+          'document.querySelector(\'[data-doc-image-stage][data-state="error"]\')', 30000);
+        const failed = await readStage();
+        if (!/cancelled/.test(failed.note)) throw new Error(`the tool's reason did not reach the pane: ${failed.note}`);
+        if (failed.boxVisible) throw new Error('a cancelled draw keeps pulsing');
+        if (failed.imgVisible) throw new Error('a cancelled draw shows an image');
+        if (!failed.downloadHidden) throw new Error('Save is offered for a draw that produced nothing');
+        console.log(`cancelled: ${failed.phase} - ${failed.note}`);
+        await capture(cdp, OUT, false);
+      }
+    }
+
+    if (STAGE !== 'voice-mode' && STAGE !== 'image' && STAGE !== 'image-cancel') {
+      await capture(cdp, OUT, false);
+    }
 
     // After the capture, so a failing stage still leaves the screenshot behind.
     if (pageErrors.length > 0) {
