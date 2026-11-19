@@ -11,6 +11,7 @@ import {
   setupChat,
   setSTTController,
   showChatError,
+  streamFollow,
 } from './chat.js';
 import { createSessionPanel } from './sessions.js';
 import { createDevReload } from './devreload.js';
@@ -325,10 +326,17 @@ function setupJumpToBottom() {
   const update = () => {
     const distance = messages.scrollHeight - messages.scrollTop - messages.clientHeight;
     const hasScrollableContent = messages.scrollHeight - messages.clientHeight > 400;
-    button.classList.toggle('visible', distance > 240 && hasScrollableContent);
+    /* The threshold comes from the follow state: while the transcript has stopped chasing the bottom because
+     * the reader is typing, 240px of unread text is too polite a bar for the only control that gets them back. */
+    button.classList.toggle('visible', streamFollow.pillShouldShow({
+      distanceFromBottomPx: distance,
+      hasScrollableContent,
+    }));
   };
 
   messages.addEventListener('scroll', update, { passive: true });
+  /* Releasing the follow scrolls nothing, so no scroll event would tell the pill it is now needed. */
+  messages.addEventListener('pi-chat:follow', update);
   button.addEventListener('click', () => {
     messages.scrollTo({
       top: messages.scrollHeight,

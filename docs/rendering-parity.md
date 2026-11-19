@@ -44,7 +44,7 @@ Always prefer the structured `receipt` object. Some older captures contain Pytho
 - A successful prompt response that produces no `agent_start` (e.g., a handled extension command) also unlocks after a short grace period.
 
 
-## Open: a streaming answer jumps up and down
+## A streaming answer jumps up and down (mitigated 2026-11-18, cause still open)
 
 Reported verbally by Ben on 2026-11-18 and reproduced the same day: while an answer streams, the text already
 on screen jumps up and down by about 28 px, repeatedly. Only on long answers, and only while streaming.
@@ -95,3 +95,26 @@ Re-run the measurement with:
 
 The answer has to be long enough to overflow the viewport. A 952-character answer produced zero reversals with
 the defect present, which is how the first measurement of this bug misled me.
+
+### The mitigation that shipped, and what it does not cure
+
+Ben picked the cheap trade on 2026-11-18 and it is the right one: **the moment you type while an answer is
+streaming, the transcript stops following the bottom.** Your reading position becomes yours, and the `Latest`
+pill is how you get back. `static/stream-follow.js` owns the rules (typing during a run releases the follow;
+scrolling to the bottom, sending, or the run settling takes it again), and the pill threshold drops from 240px
+to 40px while it is released, because it is the only way back and 240px is too polite a bar for that.
+
+Re-measured with the same harness, same server, same 14 KB answer:
+
+```
+                    before the fix      after
+while typing        2 reversals         0
+after typing        8 reversals         0     (block height still reverses 8 times, nothing moves)
+frames that moved   108                 11    (only the window before the first keystroke)
+```
+
+The block's height oscillates exactly as much as before. What changed is that the scroll position no longer
+takes the oscillation, so the jump is gone in the case that made it worth reporting: reading an answer while
+sending another one. **Watching an answer with the follow still engaged still jitters**, and the cure for that
+is the frozen-prefix render described above. It is worth doing on its own terms for the sanitizer cost alone,
+but it is not urgent now that typing is calm.

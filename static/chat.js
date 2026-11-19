@@ -25,10 +25,25 @@ import {
 import { escapeHtml, isSystemEnvelope } from './utils.js';
 import { randomMascotSrc } from './mascots.js';
 import { primaryMode, primaryText } from './composer-mode.js';
+import { createStreamFollow } from './stream-follow.js';
 
 const PROMPT_START_GRACE_MS = 2_000;
 
 const messagesElement = document.getElementById('messages');
+
+/* Whether the transcript is still allowed to chase the bottom. It stops the moment you type during a streamed
+ * answer, because the answer's own height oscillates as markdown resolves and following it drags the text you
+ * have already read up and down. `static/stream-follow.js` owns the rules and the pill threshold. */
+export const streamFollow = createStreamFollow({
+  onSuspend: () => announceFollowChange(false),
+  onResume: () => announceFollowChange(true),
+});
+
+/* The pill in static/app.js needs to know the follow was released, and a scroll that does not happen emits no
+ * scroll event. So the release is announced, and the pill re-decides itself. */
+function announceFollowChange(following) {
+  messagesElement.dispatchEvent(new CustomEvent('pi-chat:follow', { detail: { following } }));
+}
 const userInput = document.getElementById('user-input');
 const sendButton = document.getElementById('send-btn');
 const statusDot = document.getElementById('status-dot');
@@ -171,6 +186,13 @@ export function setupChat(options) {
   attachButton.addEventListener('click', () => fileInput.click());
   fileInput.addEventListener('change', handleFileSelection);
   removeImageButton.addEventListener('click', removePendingImage);
+  /* Scrolling back to the bottom is how the reader says "follow me again", and once typing has released the
+   * follow it is the only way back. Passive, because this fires on every frame of a trackpad flick. */
+  messagesElement.addEventListener('scroll', () => {
+    streamFollow.scrolled({
+      distanceFromBottomPx: messagesElement.scrollHeight - messagesElement.scrollTop - messagesElement.clientHeight,
+    });
+  }, { passive: true });
   userInput.addEventListener('input', handleComposerInput);
   userInput.addEventListener('keydown', handleComposerKeydown);
   sendButton.addEventListener('click', () => handlePrimaryClick());
@@ -1152,6 +1174,10 @@ function submitPrompt(delivery = 'queue') {
   const text = userInput.value.trim();
   if (!text && pendingFiles.length === 0) return;
 
+  /* Typing may have released the follow, and this is the other half of that bargain: the reader is about to be
+   * at the bottom with a new message of their own, so the transcript starts chasing it again. */
+  streamFollow.sent();
+
   hideLanding();
 
   // Build message with file content appended
@@ -1394,6 +1420,7 @@ function autosizeComposer() {
 }
 
 function handleComposerInput() {
+  streamFollow.typed({ running: isAgentRunning });
   autosizeComposer();
   updateSendButton();
 }
@@ -1494,6 +1521,9 @@ function clearConversation() {
 }
 
 function resetStreamingState() {
+  /* Whatever the run was doing is over, or the session underneath it changed, so the transcript may follow the
+   * bottom again. If the reader is still typing, the next keystroke suspends it once more. */
+  streamFollow.settled();
   clearTimeout(promptStartTimer);
   promptStartTimer = null;
   timeline = null;
@@ -1761,6 +1791,10 @@ function hideWaiting() {
 }
 
 function scrollToBottom() {
+  /* The reader is typing during a streamed answer. Their position is theirs until they scroll back down, send
+   * something, or the run ends; `static/stream-follow.js` says why that is the fix and not a workaround. */
+  if (!streamFollow.shouldFollow) return;
+
   // Only auto-scroll if user is already near the bottom (~150px threshold)
   const nearBottom = messagesElement.scrollHeight - messagesElement.scrollTop - messagesElement.clientHeight < 150;
   if (nearBottom) {
