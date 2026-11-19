@@ -1,4 +1,16 @@
-# Preview pane hand-off (2026-11-09)
+# Preview pane hand-off
+
+**Current as of S7, 2026-11-18: the pane follows files on disk.** Read the S7 section at the foot of this
+file first; everything above it is history, still accurate except where S7 says otherwise (S6 already
+superseded the "appears and disappears" description).
+
+Suite state now: **788 passed, 2 skipped** pytest. `npm test` has 25 passing and 2 failing
+(`mid-run message did not ask to queue`, `send-now did not ask to steer`): those are the known QA-03
+re-capture item and reproduce with all S7 work stashed, so they are not preview work.
+
+---
+
+## Phase 1, 2026-11-09
 
 State of the document-preview-pane work for a session that starts with no context. Phase 1 chunks
 T1-T5 are shipped and committed on `master`. (Every SHA in this file predates the 2026-11-17 history
@@ -56,16 +68,24 @@ and custom entries never enter model context, so a 40 KB document costs no token
 | `tests/test_preview_extension.py` | Real pi, zero inference (7, ~1s) |
 | `tests/test_preview_security.py` | Framing and headers (16) |
 
-## Entry payload v1
+## Entry payload v2 (v1 until S7, 2026-11-18)
 
 Mirrored in three places, bump `v` in all three: `pi_chat/extension/preview.ts` (`PreviewEntry`),
 `pi_chat/preview.py`, `static/preview.js` (`normalize`).
 
 ```json
-{ "v": 1, "op": "open|update|close|clear", "docId": "32 hex", "kind": "markdown|html|pdf",
+{ "v": 2, "op": "open|update|close|clear", "docId": "32 hex", "kind": "markdown|html|pdf",
   "title": "...", "revision": 1, "note": "optional",
-  "path": "set when referenced", "file": "set when stored" }
+  "path": "set when referenced", "file": "set when stored",
+  "copied": true, "watch": true }
 ```
+
+`v2` adds two optional booleans. `copied` says the stored bytes stand in for a file the server would
+not serve, so the pane must not poll the original it cannot fetch. `watch` is the model's explicit
+opt-in to disk following, and **absence is not false**: an entry that omits it defers to the pane's
+Follow-files setting, which is what lets a person drive the watcher without a tool call anywhere.
+Sessions written at `v1` still replay: the pane ignores unknown fields and unknown ops, and the
+replay tests keep feeding `v1` fixtures on purpose.
 
 - Every entry carries `v`, including `clear` and `close`.
 - `path` means "show this existing file" (nothing copied, never modified). `file` means "bytes the
@@ -350,11 +370,16 @@ rewrite rather than growing it again: one line points here today.
    in that mode for the same reason as gap 3.
 5. The `open` receipt for a PDF says `action=update … content=<the whole new document>` when `pdf` takes
    `path`, not `content` (seen 2026-11-09). The success string should branch on kind.
+   **CLOSED in S7 (2026-11-18):** the receipt is `receipt(doc)` in `preview.ts`, branching on backing
+   (live path / copy / stored) and naming the file, its size, whether it is watched, and the next move.
 6. Worse than the wording: `action=update` on a PDF is **unusable**, not just mis-described. The update
    path demands the full `content`, and a PDF can only ever arrive by `path`, so the only way to revise a
    PDF tab is `action=open`, which mints a second tab instead of replacing the first (measured
    2026-11-09: `action=update needs the complete new content`). Fixing the receipt string alone still
    leaves the tool unable to update one of its three kinds.
+   **CLOSED in S7 (2026-11-18):** `action=update` with no `content` re-reads the file backing the
+   document in place and bumps `revision`, which is what busts the frame. Works for all three kinds,
+   and is now the documented way to refresh anything path-backed.
 
 ## S6 (2026-11-18): the pane is a permanent column, `3094837`+
 
@@ -375,3 +400,117 @@ and disappear do not match `static/preview.js` any more. What it does now:
   shell and a column sized against the window used to squeeze the chat to nothing with both open.
 - Guards: `tools/test_preview_pane_state.mjs` (10 claims) with `tests/test_preview_pane_state.py`, and
   `tools/screenshot_ui.mjs --pane open|closed` for the two states a reader can actually be in.
+
+## S7 (2026-11-18): the pane follows files on disk, `d3416ac`
+
+Iterating on a previewed document used to mean sending the whole document again. Now it means editing the
+file. Plan of record: `~/.pi/agent/plans/pi-chat-preview-interactive.md`.
+
+Ben's ask, verbatim, is the spec: *"Really it should be tailored to you as an assistant on how you wanna use
+it. Main goal is snappy and iterative. I wonder if the preview can just watch a file, and if the file is
+updated it renders it automatically, instead of forcing you to make a tool call."* Three requirements fall
+out of one sentence: know what is shown, edit files rather than documents, and stop injecting content. The
+watcher is the mechanism that satisfies all three at once, and it is also the only one that costs zero
+inference per revision.
+
+### Where each piece lives
+
+| File | Responsibility |
+|---|---|
+| `pi_chat/preview.py` | `head()`, `head_for_entry()`, `new_state_token()`. One `stat`, resolved through the same two functions as the serving route |
+| `pi_chat/app.py` | `GET /api/preview/fresh`, `GET`/`POST /api/preview/state`, and the in-memory pane-state map (`PANE_STATE`, `PANE_STATE_FIELDS`) |
+| `pi_chat/process.py` | Hands each child `PI_CHAT_PORT` and a per-spawn `PI_CHAT_PREVIEW_TOKEN`; `PiProcess.preview_token` |
+| `pi_chat/websocket.py` | Puts `previewToken` on `session_loaded`, which is the browser's only way to report |
+| `pi_chat/extension/preview.ts` | Tool actions `open/update/close/list/state/watch/sync/clear`, `receipt()` per backing, the copy-instead-of-refuse fallback, `fetchPaneState()` |
+| `static/preview-watch.js` | **The decisions.** Pure: no DOM, no fetch, no clock. `backingFor`, `watchingFor`, `isPageVisible`, `shouldPoll`, `pollInterval`, `observeToken`, `tabFreshness`, `freshnessQuery` |
+| `static/preview.js` | The I/O over those decisions: the one timer, the reload, the chip, the tab dots, `reportState()`, Follow-files |
+| `static/styles.css` | `.doc-chip`, `.doc-tab-fresh[data-freshness=…]`, the active state of `[data-doc-follow]` |
+
+### Measured, do not re-derive
+
+- `preview.head()` alone: **0.818 ms** per call (2000 iterations, this machine).
+- The whole route through `TestClient`: **2.73 to 2.85 ms** per warm request across three runs, so roughly
+  2 ms of that is harness and middleware. Pinned by
+  `tests/test_preview_fresh.py::TestFreshRouteCost`, which bounds 200 warm reads.
+- At one poll per second that is about **0.08 percent** of an event loop. CPU was never the argument for
+  polling less; **wakeups** are, which is what "one timer, one document, stop when hidden" is for.
+
+### The watcher's rules, in the order they matter
+
+1. **One document is polled: the active one.** Not one per tab. `shouldPoll` is false when the pane is
+   closed, when the page is not *known* visible, when a poll is in flight, when failures hit
+   `MAX_POLL_FAILURES`, or when the active document is not file-backed.
+2. **A tab switch always force-re-reads.** `select()` calls `loadActive(true)`, bypassing the
+   `raw.revision` short-circuit. This is what makes single-document polling honest: a background tab is
+   correct the moment you look at it, and its dot says so until then.
+3. **The settle gate: a new token must be seen twice in a row before anything renders.** One `stat` cannot
+   tell a saved file from a write still in flight, and on Windows the window is real: editors truncate then
+   fill, antivirus reads mid-write, and a PDF pointed at a partial body paints a broken page. Cost is one
+   extra poll (~1.5 s) on a human save. A file that keeps changing (a live render, a build loop) never
+   reaches two consecutive sightings and is therefore never reloaded mid-write.
+4. **`watch` is per document, and absence is not false.** An entry that omits it defers to the pane's
+   Follow-files setting (`pi-chat-doc-follow-files`, **default ON**); an explicit `watch:false` from the
+   model wins. Follow-files re-evaluates open documents when toggled, so a document already on screen can
+   start being watched.
+5. **Only `backing === "path"` is ever watched.** A `copied` document's source is, by construction, a path
+   the server refuses to serve, so polling it would announce changes the pane cannot fetch. `sync` is the
+   verb for that, and it belongs to the model.
+6. **A document the tool just wrote resets the gate.** `show()` calls `resetPoll()`, so the first answer is
+   `baseline`, not `reload`. Without this the pane reloads its own write two polls later, which is precisely
+   the flicker this feature must not add.
+
+### Routes
+
+Three new ones, and the order of two of them is load-bearing:
+
+- `GET /api/preview/fresh?doc=&path=&kind=` answers `{served, bytes, mtime, token}`. `token` is
+  `f"{st_mtime_ns}-{st_size}"`, the pairing `devtools._stamp` already settled on. It resolves through
+  `preview.head`, which calls the same allowlist and the same preference order as the serving route, so it is
+  a cheaper read of the same permission and never a wider one. "Nothing there" and "not allowed" share one
+  answer, for the same reason the route answers 404 rather than 403.
+- `POST /api/preview/state` needs a login (it is the browser) and a closed field set.
+- `GET /api/preview/state` needs `x-preview-token` and nothing else: the child has no cookie, and this is a
+  128-bit secret minted per spawn and known only to this server and the child it spawned.
+
+### Traps, all of them hit and all of them now pinned by a test
+
+- **Registration order.** `/api/preview/fresh` and `/api/preview/state` both also fit `/api/preview/{doc_id}`.
+  Registered after it, Starlette matches the parameterised route first and each answers a 404 that the pane
+  cannot tell from a dead document. Literal paths go above it. Pinned by
+  `TestFreshRoute::test_it_is_routed_ahead_of_the_document_id_route` and `TestRouteOrder`.
+- **A present-but-unknown `kind` must not widen the stored-document lookup.** Passing `kind="exe"` down made
+  `find_stored_document` search every suffix and report a sibling file's freshness. Absence of `kind` is
+  legitimate (a replayed entry predating the field) and still means newest-match; a bad one now means nothing.
+- **`fileToken`, not `token`.** The pane-state field holding the staleness validator collided with the
+  connection secret in the same POST body; the view won the merge and every report failed its own secret check.
+- **Field validation must declare its type.** A helper that inferred it from "which limit was passed" accepted
+  anything for a field declared with no limit, so `{"open": "yes"}` was stored as the pane's open state.
+- **A body with no usable field must store nothing.** The TTL sweep only runs when something is written, so an
+  empty write is a permanent entry per token.
+- **`isPageVisible` means *known* visible.** `document.visibilityState` is `prerender` before first paint and
+  `undefined` under jsdom. Treating anything but `visible` as hidden would silently disable the watcher in a
+  harness while every other claim still passed.
+- **`edit` discipline (mine, twice):** an `oldText` that is only an anchor deletes the code below it if
+  `newText` omits it. It deleted a config line and one test in this session.
+
+### Guards
+
+- `tools/test_preview_watch.mjs` (16 claims, zero inference, no jsdom) via `tests/test_preview_watch.py`. It
+  also asserts `static/preview.js` still *imports* the decision functions, so a fix cannot be duplicated in
+  the DOM half instead of the module.
+- `tests/test_preview_fresh.py` (25): token stability, mtime-only and size-only moves, `path` preferred over
+  the stored copy because that is what the route fetches, all denials identical, per-field kind validation,
+  and the cost bound.
+- `tests/test_preview_state.py` (24): token isolation between connections, TTL sweep, the closed field set
+  asserted *from* `PANE_STATE_FIELDS` so a new allowed field cannot go untested.
+- `tests/test_child_argv.py::TestPreviewChannel`: the child is told the port, gets a fresh secret per spawn,
+  and neither is inherited stale from the parent environment.
+
+### Not done in S7
+
+- The live browser stage (`--stage doc-watch`). The watcher half runs fine on `tools/fake_rpc_pi.py`; the
+  `state` round-trip needs a real child, which costs an inference call, so it waits for Ben.
+- Gap 1 (`update` reached only by a model call) and gap 2 (a slash command leaving no transcript line) are
+  unchanged. Gap 3's root behaviour is now handled by the copy fallback rather than by widening the roots;
+  the roots themselves are deliberately untouched, because `PI_CHAT_PREVIEW_ROOTS` is built identically for
+  both profiles and an extra root is a read granted to Roxy's profile too.

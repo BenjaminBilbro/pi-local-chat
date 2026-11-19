@@ -16,6 +16,7 @@ more than once a day. Everything else lives in `docs/`, and the split is deliber
 | The browser WebSocket, pi's event stream, queue and steer semantics, session file formats | `docs/protocol.md` |
 | The timeline renderer, or anything that could make live and history render differently | `docs/rendering-parity.md` |
 | The composer: its two-row card, the one button with three functions, or anything that could resize the field | `docs/composer.md` |
+| The preview pane: its tabs, its file watcher, the `preview` tool, or who may read a path | `docs/preview-pane-handoff.md` |
 | How to run, test, screenshot, or debug this on a machine | `docs/dev-workflow.md` |
 | "It did something and I cannot reproduce it" | debug-mode audit log: `PI_CHAT_AUDIT=1`, read with `tools/audit.py` | `docs/dev-workflow.md` |
 | Getting a change applied without restarting by hand | hot reload: `PI_CHAT_DEV=1` runs a supervisor, and the page offers Reload or Restart server | `docs/dev-workflow.md` |
@@ -51,7 +52,7 @@ more than once a day. Everything else lives in `docs/`, and the split is deliber
 | Audit fix pass (2026-11-17) | all 15 work packages shipped, documented or deferred. Open: `SEC-05`, QA-03 re-captures (needs a real `pi` child, so an inference box that is free), WP-07 mobile and WP-08 keyboard a11y, both deferred until after Ben's layout refactor | `docs/audit/sweep-2-2026-11-17.md`, local only |
 | Phonon TTS | **default engine** (`config.DEFAULT_TTS_ENGINE`), `ptts` a base dependency. Real-browser voice test passed 2026-11-17: mic transcribed and sent, reply spoken in real time, playback not picked up at speaker max volume | `docs/phonon-tts-engine.md` |
 | Tool call lifecycle | shipped 2026-11-10, with the `--stage stream-render` and `capture.py --census` guards | `docs/tool-call-lifecycle.md` |
-| Document preview pane | shipped, and a permanent right column since S6; PDF root handling is open | `docs/preview-pane-handoff.md` |
+| Document preview pane | shipped, and a permanent right column since S6. **S7 (2026-11-18): it follows files on disk.** One poll covers the active document only, a tab switch always re-reads, and the tool no longer has to re-send a document to revise it | `docs/preview-pane-handoff.md` |
 | STT latency defaults | measured 2026-11-18 with `tools/stt_probe.py`, defaults set from the table; re-measure before changing a model or a silence window | `docs/stt-latency.md` |
 | Voice Mode (S9) | shipped: composer button, full-bleed orb surface (previews still open above it), readiness chips for both engines, mode markers both directions, barge-in armed only on an echo-cancelled mic. The `<PI-CHAT-SYSTEM-MESSAGE>` tag is what keeps the markers from rendering, on echo AND on reload | `docs/voice-mode.md` |
 | Open TODO: `questionnaire` over RPC | pi's `questionnaire` tool has no surface in `pi --mode rpc`, so a model that asks a question through pi-chat gets a failure where a person would have got a dialog (hit 2026-11-18 with `Cannot read properties of undefined (reading 'cancelled')`). Needs the request handler on pi's side and an answering dialog on this one, and it is the reason a voice-mode session cannot ask a clarifying question | `~/.pi/agent/memories/projects/pi-chat.md` |
