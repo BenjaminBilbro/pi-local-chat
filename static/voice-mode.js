@@ -803,8 +803,24 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
     setPhase('listening', { hint: 'Go ahead', say: 'listening' });
   }
 
+  /** Whether this keystroke belongs to something other than the voice surface.
+   *
+   *  The surface binds keydown on window in the **capture** phase, so it sees every key before the page
+   *  does. That is right for a surface whose whole vocabulary is three keys, and wrong the moment a
+   *  dialog opens over it: Escape would leave voice mode instead of answering a question the run is
+   *  blocked on, and a text field in that dialog could not receive a space or the letter m. Typing into
+   *  a field is the general case; an open dialog is the specific one, and both are not ours.
+   */
+  function keystrokeIsNotOurs(event) {
+    const node = event.target;
+    if (node && (node.tagName === 'INPUT' || node.tagName === 'TEXTAREA' || node.isContentEditable)) {
+      return true;
+    }
+    return Boolean(document.querySelector('.ui-question-overlay:not([hidden]), .tool-detail-overlay:not([hidden])'));
+  }
+
   function onKeyDown(event) {
-    if (!active) return;
+    if (!active || keystrokeIsNotOurs(event)) return;
     if (event.key === 'Escape') {
       event.preventDefault();
       event.stopPropagation();

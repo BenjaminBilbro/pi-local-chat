@@ -15,7 +15,7 @@ import pytest
 
 SCRIPT = Path(__file__).resolve().parent.parent / "tools" / "test_questionnaire_dialog.mjs"
 NODE = shutil.which("node")
-CLAIMS = 22
+CLAIMS = 24
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not on PATH")

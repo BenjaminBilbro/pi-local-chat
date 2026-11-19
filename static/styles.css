@@ -917,10 +917,13 @@ body.tool-detail-open {
    an embed from somewhere else. Every colour is a token; this is the locked
    ramp and a new hex here is a new theme to maintain.
    --------------------------------------------------------------------------- */
+/* The one dialog a run is stopped and waiting for, so it is the top layer of this application: it has
+   to clear `.voice-screen` (300) and the document pane while voice mode is up (310), or a child asking a
+   question goes unanswered behind the orb. Reported from a live voice session on 2026-11-19. */
 .ui-question-overlay {
   position: fixed;
   inset: 0;
-  z-index: 150;
+  z-index: 320;
   display: flex;
   align-items: center;
   justify-content: center;

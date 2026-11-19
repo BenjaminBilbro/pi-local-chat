@@ -609,5 +609,60 @@ await check('a failed microphone outranks a voice that is still loading', async 
   h.mode.exit();
 });
 
+// ── 7. keys, when something else is on top ─────────────────────────
+
+/* Voice mode binds keydown on window in the capture phase, so it reads every key before the page does.
+ * That is correct for a surface whose vocabulary is three keys, and it ate the question dialog: Escape left
+ * voice mode instead of answering, and a text field could not receive a space or the letter m. Reported by
+ * Ben on 2026-11-19, in the same session that found the dialog rendering behind the orb. */
+
+const press = (target, init) => {
+  const event = new dom.window.KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init });
+  target.dispatchEvent(event);
+  return event;
+};
+
+await check('Escape with a question on screen belongs to the question', () => {
+  const h = harness();
+  h.mode.enter();
+  const overlay = document.getElementById('ui-question-overlay');
+  overlay.hidden = false;
+  const event = press(document.body, { key: 'Escape' });
+  assert.equal(h.mode.probe().active, true, 'Escape left voice mode while a question was open');
+  assert.equal(event.defaultPrevented, false, 'voice mode swallowed a keystroke that was not its own');
+  overlay.hidden = true;
+  h.mode.exit();
+});
+
+await check('typing in a dialog neither pokes the orb nor mutes the microphone', () => {
+  const h = harness();
+  h.mode.enter();
+  const overlay = document.getElementById('ui-question-overlay');
+  overlay.hidden = false;
+  /* The dialog's free-text row, proxied: the ownership rule keys off the target being a field, and
+   * `static/ui-dialog.js` renders a textarea in this element. */
+  const field = document.createElement('textarea');
+  overlay.appendChild(field);
+  const before = h.mode.probe().phase;
+  const space = press(field, { code: 'Space', key: ' ' });
+  const letter = press(field, { key: 'm' });
+  assert.equal(space.defaultPrevented, false, 'the space bar was eaten while someone was typing');
+  assert.equal(letter.defaultPrevented, false, 'the letter m was eaten while someone was typing');
+  assert.equal(h.mode.probe().phase, before, 'typing into a field changed the orb state');
+  assert.equal(h.mode.probe().muted, false, 'typing the letter m muted the microphone');
+  overlay.removeChild(field);
+  overlay.hidden = true;
+  h.mode.exit();
+});
+
+await check('with nothing on top, the three keys are still the voice surface\'s', () => {
+  const h = harness();
+  h.mode.enter();
+  assert.equal(document.getElementById('ui-question-overlay').hidden, true);
+  const event = press(document.body, { key: 'Escape' });
+  assert.equal(h.mode.probe().active, false, 'Escape stopped leaving voice mode');
+  assert.equal(event.defaultPrevented, true, 'voice mode no longer claims Escape it owns');
+});
+
 console.log(results.join('\n'));
 process.exit(results.some((line) => line.startsWith('FAIL')) ? 1 : 0);

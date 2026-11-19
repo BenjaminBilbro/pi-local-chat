@@ -189,6 +189,22 @@ const STAGE_ENV = {
     needs: 'as --stage image, plus FAKE_RPC_IMAGE_ABORT_AFTER=3',
     breaks: 'FAKE_RPC_IMAGE unset: a normal turn has no image and nothing to cancel',
   },
+  'questionnaire': {
+    needs: 'PI_CHAT_PI_BIN=$PWD/tools/fake_rpc_pi.py FAKE_RPC_QUESTIONNAIRE=1 (the stub plays the extension and waits for this browser)',
+    breaks: 'FAKE_RPC_QUESTIONNAIRE unset: an ordinary turn asks nothing, so no dialog ever opens',
+  },
+  'questionnaire-answered': {
+    needs: 'as --stage questionnaire; clicks an option on each question and reads the answers back in the closing sentence',
+  },
+  'questionnaire-single': {
+    needs: 'as --stage questionnaire, plus FAKE_RPC_QUESTIONNAIRE=single: one closed question, nothing to type',
+  },
+  'questionnaire-cancel': {
+    needs: 'as --stage questionnaire; refuses, and expects the refusal to reach the tool result',
+  },
+  'questionnaire-voice': {
+    needs: 'as --stage questionnaire; opens Voice Mode over it and hit-tests that the question is on top',
+  },
 };
 
 if (args.includes('--stages')) {
@@ -2276,7 +2292,204 @@ async function runSession(chromeChild) {
       }
     }
 
-    if (STAGE !== 'voice-mode' && STAGE !== 'image' && STAGE !== 'image-cancel') {
+    if (STAGE === 'questionnaire' || STAGE === 'questionnaire-answered'
+      || STAGE === 'questionnaire-single' || STAGE === 'questionnaire-cancel'
+      || STAGE === 'questionnaire-voice') {
+      /* A child asking the person something, answered by a click. Needs the stub playing the
+       * extension's half (`tools/fake_rpc_pi.py`, FAKE_RPC_QUESTIONNAIRE=1), which POSTs the questions
+       * to /api/questionnaire with the connection token and blocks until this browser answers. So the
+       * stage drives the real loop: HTTP into the server, a message down the socket, a click back, a
+       * future resolved, the answers reaching the tool and the turn that followed. No inference.
+       *
+       * The invariant worth measuring is that a modal is an overlay and not a reflow: the conversation
+       * underneath must not move by a pixel, which is the same class of bug that made the composer jump
+       * while pi streamed. `questionnaire` screenshots the form; `-answered` clicks through and reads
+       * the answers back in the assistant's own sentence; `-single` is the closed-list shape with
+       * nothing to type; `-cancel` refuses and expects the refusal to reach the tool.
+       */
+      const promptText = STAGE === 'questionnaire-single'
+        ? 'Should I ship this now or after standup?'
+        : 'Ask me how to find out whether the dashboard is used.';
+
+      const geometry = async () => JSON.parse(await evaluate(cdp,
+        "(() => { const overlay = document.getElementById('ui-question-overlay');"
+        + " const dialog = document.getElementById('ui-question-dialog');"
+        + " const messages = document.getElementById('messages');"
+        + " const tabs = Array.from(document.querySelectorAll('.ui-question-tab'));"
+        + " const rows = Array.from(document.querySelectorAll('.ui-question-option, .ui-question-choice'));"
+        + " const action = document.querySelector('[data-ui-question-action]');"
+        + " const b = dialog.getBoundingClientRect(); const m = messages.getBoundingClientRect();"
+        + " const bubbles = Array.from(document.querySelectorAll('#messages .message.assistant'));"
+        + " return JSON.stringify({"
+        + "   open: !overlay.hidden,"
+        + "   dialog: { x: +b.x.toFixed(1), y: +b.y.toFixed(1), w: +b.width.toFixed(1), h: +b.height.toFixed(1) },"
+        + "   chat: { x: +m.x.toFixed(1), w: +m.width.toFixed(1), top: +m.top.toFixed(1) },"
+        + "   tabs: tabs.map((t) => [t.textContent, t.getAttribute('aria-selected'), t.dataset.answer].join(':')),"
+        + "   options: rows.map((r) => r.textContent.replace(/\\s+/g, ' ').trim()),"
+        + "   actionLabel: action ? action.textContent.trim() : null,"
+        + "   actionDisabled: action ? action.disabled : null,"
+        + "   actionHidden: action ? action.hidden : null,"
+        + "   freeText: Boolean(document.querySelector('.ui-question-free textarea')),"
+        + "   assistant: bubbles.length ? bubbles[bubbles.length - 1].textContent.replace(/\\s+/g, ' ').trim() : '',"
+        + "   docScrollWidth: document.documentElement.scrollWidth,"
+        + "   viewport: window.innerWidth,"
+        + " }); })()"));
+      const clickOption = async (index) => {
+        await evaluate(cdp,
+          "(() => { const rows = document.querySelectorAll('.ui-question-option, .ui-question-choice');"
+          + " const row = rows[" + index + "];"
+          + " if (!row) { throw new Error('only ' + rows.length + ' options on screen'); }"
+          + " const input = row.querySelector('input');"
+          + " if (input) { input.checked = true; input.dispatchEvent(new Event('change', { bubbles: true })); }"
+          + " else { row.click(); }"
+          + " return true; })()");
+        await sleep(150);
+      };
+      const clickTab = async (index) => {
+        await evaluate(cdp,
+          "(() => { document.querySelectorAll('.ui-question-tab')[" + index + "].click(); return true; })()");
+        await sleep(150);
+      };
+      const press = (selector) => evaluate(cdp,
+        "(() => { document.querySelector('" + selector + "').click(); return true; })()");
+
+      const before = await geometry();
+      await evaluate(cdp,
+        "(() => { const el = document.getElementById('user-input');"
+        + "  el.value = " + JSON.stringify(promptText) + ";"
+        + "  el.dispatchEvent(new Event('input', { bubbles: true }));"
+        + "  el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));"
+        + "  return true; })()");
+      await waitFor(cdp, "!document.getElementById('ui-question-overlay').hidden", 30000);
+      await sleep(250);
+
+      const open = await geometry();
+      const drift = ['x', 'w', 'top'].filter((key) => Math.abs(open.chat[key] - before.chat[key]) > 0.5);
+      if (drift.length) {
+        throw new Error('a question dialog resized the conversation underneath: ' + drift.join(', ')
+          + ' ' + JSON.stringify(before.chat) + ' to ' + JSON.stringify(open.chat));
+      }
+      if (open.docScrollWidth > open.viewport) {
+        throw new Error('the dialog overflows the viewport: scrollWidth ' + open.docScrollWidth + ' > ' + open.viewport);
+      }
+      if (!open.open) throw new Error('the request never opened the dialog');
+
+      if (STAGE === 'questionnaire-single') {
+        if (open.tabs.length) throw new Error('one question grew a tab strip: ' + open.tabs.join(' | '));
+        if (open.freeText) throw new Error('a closed list (allowOther false) offered a text box');
+        if (open.options.length !== 2) throw new Error('two options expected, saw ' + open.options.join(' | '));
+        if (open.actionHidden !== false) throw new Error('the action button was hidden on a closed list');
+        console.log('closed list: ' + open.options.join(' | ') + '; conversation ' + open.chat.w + 'px at x' + open.chat.x);
+      } else {
+        if (open.tabs.length !== 2) throw new Error('two tabs expected, saw ' + (open.tabs.join(' | ') || '(none)'));
+        if (!open.tabs[0].endsWith(':true:no')) throw new Error('the first tab is not the selected one: ' + open.tabs[0]);
+        if (open.actionDisabled !== true) throw new Error('Submit was live with nothing answered');
+        console.log('form: ' + open.tabs.join(' | ') + '; ' + open.options.length + ' options; Submit disabled');
+      }
+
+      if (STAGE === 'questionnaire-voice') {
+        /* The bug this stage exists for: a child asked something during a voice session and the dialog was
+         * there, working, entirely behind the orb. The CSS claim in `tools/test_questionnaire_dialog.mjs`
+         * cannot see this, because jsdom applies no stylesheet - `elementFromPoint` is the honest version.
+         * Entering voice mode costs a microphone this browser does not have, which is fine: the surface
+         * opens anyway and reports the microphone as failed, and it is the surface that was on top. */
+        await evaluate(cdp, "document.getElementById('voice-mode-btn').click(); true");
+        await waitFor(cdp, "!document.getElementById('voice-screen').hidden", 10000);
+        await sleep(700);
+        const top = JSON.parse(await evaluate(cdp,
+          "(() => { const card = document.getElementById('ui-question-dialog');"
+          + "  const b = card.getBoundingClientRect();"
+          + "  const hits = [[0.5, 0.5], [0.5, 0.08], [0.5, 0.94]].map(([fx, fy]) => {"
+          + "    const node = document.elementFromPoint(b.x + b.width * fx, b.y + b.height * fy);"
+          + "    return node ? (node.id || node.className || node.tagName) : 'nothing'; });"
+          + "  const inside = [[0.5, 0.5], [0.5, 0.08], [0.5, 0.94]].every(([fx, fy]) => document.elementFromPoint("
+          + "    b.x + b.width * fx, b.y + b.height * fy)?.closest('#ui-question-overlay'));"
+          + "  return JSON.stringify({ hits, inside, voiceVisible: !document.getElementById('voice-screen').hidden }); })()"));
+        if (!top.voiceVisible) throw new Error('voice mode never opened, so this stage proved nothing');
+        if (!top.inside) {
+          throw new Error(`the voice surface is on top of the question again: ${top.hits.join(', ')}`);
+        }
+        // The shot a person would recognise: the question sitting on top of the orb. Captured before the
+        // keystroke below, because that keystroke refuses the question and the point of the picture is a
+        // dialog that is still there.
+        await capture(cdp, OUT, false);
+        // And the keyboard: Escape answers the question. It must not leave voice mode, and it must not be
+        // swallowed on the way - the dialog refuses on Escape, so the overlay being gone afterwards is the
+        // proof the keystroke reached it.
+        const keys = JSON.parse(await evaluate(cdp,
+          "(() => { const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });"
+          + "  document.body.dispatchEvent(event);"
+          + "  return JSON.stringify({ stillVoiced: !document.getElementById('voice-screen').hidden,"
+          + "  refused: document.getElementById('ui-question-overlay').hidden }); })()"));
+        if (!keys.stillVoiced) throw new Error('Escape left voice mode with a question on screen');
+        if (!keys.refused) {
+          throw new Error('Escape reached neither the question (which would refuse) nor anything else; the voice surface ate it');
+        }
+        console.log('over voice mode: the dialog is the top layer, and Escape answered it');
+        await capture(cdp, OUT.replace(/\.png$/, '-refused.png'), false);
+      }
+
+      if (STAGE === 'questionnaire') {
+        await capture(cdp, OUT, false);
+        console.log('dialog: ' + open.dialog.w + 'x' + open.dialog.h + ' at ' + open.dialog.x + ',' + open.dialog.y);
+      }
+
+      if (STAGE === 'questionnaire-cancel') {
+        await press('[data-ui-question-cancel]');
+        await waitFor(cdp, "document.getElementById('ui-question-overlay').hidden", 15000);
+        /* A refusal has to reach the run, and a settled tool line carries status rather than text: a
+         * result is only on screen inside the detail dialog. So open it and read what the model reads -
+         * the stage used to wait for this string in the body, which is a claim about a DOM that never
+         * shows tool results, not about a refusal that never arrived. */
+        await waitFor(cdp, "(() => { const row = document.querySelector('.timeline-item.tool');"
+          + " return row && row.dataset.toolStatus === 'ok'; })()", 20000);
+        await press('.timeline-item.tool .tool-line');
+        await waitFor(cdp, "(() => { const overlay = document.getElementById('tool-detail-overlay');"
+          + " return !overlay.hidden"
+          + " && overlay.querySelector('[data-tool-detail-result]').textContent.includes('User cancelled the questionnaire'); })()", 15000);
+        await press('[data-tool-detail-close]');
+        await waitFor(cdp, "document.body.textContent.includes('I will not ask again mid-task')", 20000);
+        console.log('cancelled: the refusal reached the tool, and the turn closed on it');
+        await capture(cdp, OUT, false);
+      }
+
+      if (STAGE === 'questionnaire-answered' || STAGE === 'questionnaire-single') {
+        const chosenLabel = STAGE === 'questionnaire-single' ? 'After standup' : 'Send a short survey';
+        await clickOption(1);
+        if (STAGE === 'questionnaire-single') {
+          const one = await geometry();
+          if (one.actionDisabled !== false) {
+            throw new Error('one answer on a one-question form did not enable Submit');
+          }
+        } else {
+          // One question answered is not the form answered: Submit waits for all of them, and the tab
+          // strip is what tells you so.
+          const half = await geometry();
+          if (half.actionDisabled !== true) throw new Error('Submit went live with the second question unanswered');
+          if (String(half.tabs[0]).split(':')[2] !== 'yes') throw new Error('the answered tab is not marked answered: ' + half.tabs.join(' | '));
+          if (String(half.tabs[1]).split(':')[2] !== 'no') throw new Error('an unanswered tab claims to be answered: ' + half.tabs.join(' | '));
+          await clickTab(1);
+          await clickOption(1);
+        }
+        const ready = await geometry();
+        if (ready.actionDisabled !== false) throw new Error('a fully answered form left Submit dead');
+        await press('[data-ui-question-action]');
+        await waitFor(cdp, "document.getElementById('ui-question-overlay').hidden", 15000);
+        await waitFor(cdp, "document.body.textContent.includes('Noted.')", 20000);
+        const done = await geometry();
+        // The answers are only useful if they reached the run, so look for them in the sentence the
+        // turn closes with rather than trusting that a dialog closed.
+        if (!done.assistant.includes(chosenLabel)) {
+          throw new Error('the answer never reached the turn: assistant said "' + done.assistant.slice(0, 160) + '"');
+        }
+        if (Math.abs(done.chat.w - before.chat.w) > 0.5) throw new Error('answering resized the conversation column');
+        console.log('answered: the turn says "' + done.assistant.slice(0, 90) + '"');
+        await capture(cdp, OUT, false);
+      }
+    }
+
+    if (STAGE !== 'voice-mode' && STAGE !== 'image' && STAGE !== 'image-cancel'
+      && !STAGE.startsWith('questionnaire')) {
       await capture(cdp, OUT, false);
     }
 

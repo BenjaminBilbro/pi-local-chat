@@ -96,13 +96,28 @@ Three routes, one result text:
 Only a transport failure falls back to route 2. A 400 means the questions were malformed and asking them
 one at a time would fail the same way.
 
+## Over the orb
+
+A child asks questions during a voice session too, and the first live test (Ben, 2026-11-19) found the
+form opening completely behind the voice surface: it was there, it worked, and he had to leave voice mode
+to see it. Two fixes, both with a claim behind them:
+
+- The overlay is the top layer of this application at `z-index: 320`. It has to clear `.voice-screen`
+  (300) and the document pane while voice mode is up (310). The dialog is a child of `body`, never of
+  `#chat-screen`, which is the surface voice mode and the preview column mark inert.
+- Voice Mode binds keydown on window in the **capture** phase, so it saw Escape first and left voice mode
+  instead of answering; Space and `m` never reached the dialog's text field. `keystrokeIsNotOurs()` in
+  `static/voice-mode.js` gives up the keystroke when a field has focus or a dialog is open, and still
+  claims all three keys when nothing is on top.
+
 ## What is tested
 
 | Where | Claim |
 |---|---|
 | `tests/test_ui_relay.py` | normalisation both ways, the five endings, one tab's cancel not reaching another, the route's 410 and 400, and a full round trip where the answer comes from a browser command |
 | `tests/test_ui_relay.py::test_the_committed_dialog_capture_still_derives` | pi's real captured `extension_ui_request` bytes still derive, including `editor`'s `prefill` and the methods that must be ignored |
-| `tools/test_questionnaire_dialog.mjs` (22 claims, `tests/test_questionnaire_dialog.py`) | the DOM: options and descriptions, free text under "Type something", multi-select order, Submit dead until every question is answered, Cancel/Escape/backdrop, withdrawn closes silently, deadline closes itself, and no HTML from model text |
+| `tools/test_questionnaire_dialog.mjs` (24 claims, `tests/test_questionnaire_dialog.py`) | the DOM: options and descriptions, free text under "Type something", multi-select order, Submit dead until every question is answered, Cancel/Escape/backdrop, withdrawn closes silently, deadline closes itself, no HTML from model text, and that the overlay's `z-index` clears every voice-mode layer |
+| `node tools/screenshot_ui.mjs --stage questionnaire\|questionnaire-answered\|questionnaire-single\|questionnaire-cancel\|questionnaire-voice` | the round trip in a real browser on stub bytes: the form paints without moving the conversation by a pixel, an answer reaches the turn's own sentence, a refusal reaches the tool's result, and with Voice Mode open over the form `elementFromPoint` says the dialog is on top and Escape answers it |
 | `tools/capture.py --scenario questionnaire_dialogs` | regenerates `data-samples/questionnaire_dialog_rpc_capture.jsonl`: pi's dialog traffic with the client's answers, zero inference, because a slash command is handled in-process |
 
 ## Limits, honestly

@@ -375,5 +375,36 @@ await claim('the markup carries no inline handler and the module builds no HTML'
   assert.doesNotMatch(source, /dangerouslySet|document\.write/, 'the dialog writes markup, not text');
 });
 
+await claim('the question dialog paints above every voice-mode layer', () => {
+  // Comments are stripped first: prose in this file names the layers it is comparing, and a comment that
+  // says `.voice-screen` (300) otherwise becomes a rule that claims to be one.
+  const css = readFileSync(join(ROOT, 'static/styles.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  // Crude rule scan on purpose: the answer is a number in a stylesheet, and a browser would only show the
+  // consequence by leaving a question nobody can see. Nested at-rules are skipped by this pattern, and no
+  // z-index this claim cares about lives inside one.
+  const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+    .map(([, selector, body]) => [selector, Number(body.match(/z-index:\s*(-?\d+)/)?.[1])])
+    .filter(([, z]) => Number.isFinite(z));
+  const highest = (token) => rules.filter(([selector]) => selector.includes(token)).map(([, z]) => z);
+  const overlay = highest('.ui-question-overlay');
+  assert.ok(overlay.length, 'the question overlay declares no z-index at all');
+  /* 300 is the voice surface, and the document pane is lifted to 310 while voice mode is up. A question the
+   * run is stopped for that renders behind the orb is a question nobody can answer; this reached Ben in a
+   * live voice session on 2026-11-19. */
+  for (const [token, name] of [['.voice-screen', 'the voice surface'], ['.doc-pane', 'the document pane']]) {
+    const below = highest(token);
+    assert.ok(below.length, `${name} declares no z-index, so this claim has stopped meaning anything`);
+    assert.ok(Math.min(...overlay) > Math.max(...below),
+      `the dialog sits at ${Math.min(...overlay)}, below ${name} at ${Math.max(...below)}`);
+  }
+});
+
+await claim('the dialog is a child of the body, never of a surface that can go inert', () => {
+  // `#chat-screen` is the surface voice mode and the preview column can mark inert; a dialog inside it
+  // would be untabbable and unscriptable while the run waited for it.
+  const overlay = document.getElementById('ui-question-overlay');
+  assert.equal(overlay.parentElement, document.body, 'the dialog lives inside another element');
+});
+
 console.log(claims.join('\n'));
 console.log(`${passed}/${claims.length} claims`);

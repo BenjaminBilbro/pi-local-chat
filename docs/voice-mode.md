@@ -179,6 +179,16 @@ over the header; the real signal is a document in the tab strip. And on a phone 
 a document side by side at 390 px, so the sheet keeps the whole screen over the orb, and what matters is that
 closing it hands the voice surface back: the stage asserts both directions with `elementFromPoint`.
 
+## Three keys, and who else can have them
+
+The surface binds keydown on window in the **capture** phase: Escape leaves, Space says the microphone is
+aimed at you, `M` mutes. That is right for a surface whose whole vocabulary is three keys, and it was wrong
+the first time a child asked a question during a voice session (Ben, 2026-11-19): Escape left voice mode
+instead of answering, and the form's text field could not receive a space or the letter `m`.
+`keystrokeIsNotOurs()` gives up the keystroke when a field has focus or a dialog is open, and gives up
+nothing when the surface is alone. `--stage questionnaire-voice` is the live version of that claim, and the
+question overlay sits at `z-index: 320` so the form this surface used to cover is the top layer here.
+
 ## States, and what can be pinned
 
 `idle`, `listening`, `thinking`, `speaking`, `barge`. `--voice-state preparing` is not a sixth pin: it is the

@@ -289,6 +289,16 @@ requested canvas, no bytes are fetched while the document says `rendering`, the 
 under 2 px, and a wheel zoom plus a drag leaves `#messages` exactly where it was. Details in
 `docs/image-preview.md`.
 
+`--stage questionnaire`, `-answered`, `-single`, `-cancel` and `-voice` drive a child asking the person
+something through the whole loop with no inference: the stub plays the extension's half
+(`FAKE_RPC_QUESTIONNAIRE=1`, and `=single` for the one closed question), so it POSTs to
+`/api/questionnaire` with the connection token and blocks until this browser clicks. What they measure is
+that a modal is an overlay and not a reflow (`#messages` must not move by a pixel), that an answer reaches
+the sentence the turn closes with, that a refusal reaches the tool's **result** (which is only on screen
+inside the tool detail dialog, so the stage opens it and reads it), and, for `-voice`, that with Voice Mode
+open over the form `elementFromPoint` still answers to the dialog and Escape answers the question instead of
+leaving voice mode. Details in `docs/questionnaire.md`.
+
 `--stage stream-render` is the WP-06 regression guard: it wraps the `innerHTML` setter and an
 animation-frame counter, streams a long stub answer, and asserts there are never more renders than
 frames. It needs a server started with `FAKE_RPC_REPLY_CHARS=4200` and `FAKE_RPC_TURN_MS` unset, since

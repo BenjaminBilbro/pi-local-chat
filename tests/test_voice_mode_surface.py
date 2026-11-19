@@ -45,5 +45,5 @@ def test_voice_mode_surface():
     claims = [line for line in result.stdout.splitlines() if line.startswith(("PASS ", "FAIL "))]
 
     assert not [line for line in claims if line.startswith("FAIL")], result.stdout
-    assert len(claims) == 37, f"expected 37 claims, the script changed shape:\n{result.stdout}"
+    assert len(claims) == 40, f"expected 40 claims, the script changed shape:\n{result.stdout}"
     assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"

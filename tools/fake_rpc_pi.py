@@ -58,6 +58,7 @@ import os
 import queue
 import struct
 import sys
+import urllib.request
 import threading
 import time
 import uuid
@@ -127,6 +128,9 @@ LONG_RUN = int(os.environ.get("FAKE_RPC_LONG_RUN", "0"))
 # `tool_execution_update`. The whole loading story lives between those two entries, so a stub that
 # emitted only a finished result could not exercise any of it - and the dots are the part Ben asked for.
 IMAGE_MODE = os.environ.get("FAKE_RPC_IMAGE", "") == "1"
+# `1` asks the rich two-question form, `single` the smallest closed one. Both wait for a real answer
+# over HTTP, which is the part a local fake could cheat at and the part worth testing.
+QUESTIONNAIRE_MODE = os.environ.get("FAKE_RPC_QUESTIONNAIRE", "").strip().lower()
 IMAGE_CANVAS = os.environ.get("FAKE_RPC_IMAGE_CANVAS", "512x512")
 # The simulated draw has to outlast the harness's settle time or the screenshot catches the answer
 # instead of the wait. Nine seconds is long enough to shoot mid-draw and short enough to stay boring.
@@ -259,6 +263,206 @@ def queue_message(kind: str, text: str) -> None:
     announce_queue()
 
 
+def _questionnaire_questions() -> list[dict]:
+    """The questions this stub asks, in the shape `/api/questionnaire` expects.
+
+    Two shapes, because the browser renders two different forms. `1` is the rich one: a single-select
+    with descriptions, and a multi-select, both open to free text. `single` is the smallest thing that
+    can be asked - a closed list, no free text - which is the case a renderer gets wrong by drawing a
+    text box nobody was offered.
+    """
+    if QUESTIONNAIRE_MODE in {"single", "closed"}:
+        return [
+            {
+                "id": "ship",
+                "label": "Ship",
+                "prompt": "Publish this now, or after standup?",
+                "options": [
+                    {"value": "now", "label": "Now"},
+                    {"value": "standup", "label": "After standup"},
+                ],
+                "allowOther": False,
+                "multiSelect": False,
+            },
+        ]
+    return [
+        {
+            "id": "method",
+            "label": "Method",
+            "prompt": "How should we find out whether the dashboard is used?",
+            "options": [
+                {"value": "analytics", "label": "Read the login analytics",
+                 "description": "Free, two days old, tells you how often nobody logs in"},
+                {"value": "survey", "label": "Send a short survey",
+                 "description": "Reaches the people who stopped using it"},
+                {"value": "interviews", "label": "Interview the three leads",
+                 "description": "Best signal, costs an afternoon"},
+            ],
+            "allowOther": True,
+            "multiSelect": False,
+        },
+        {
+            "id": "who",
+            "label": "Who",
+            "prompt": "Who should hear about it first?",
+            "options": [
+                {"value": "leads", "label": "The data leads"},
+                {"value": "admins", "label": "Workspace admins"},
+                {"value": "all", "label": "Everyone in the tenant"},
+            ],
+            "allowOther": True,
+            "multiSelect": True,
+        },
+    ]
+
+
+def _ask_the_browser(questions: list[dict]) -> dict:
+    """Play the extension's half: POST the questions and wait for the person.
+
+    The token is the one the server spawned this child with, which is the whole point of the shape: a
+    child that is not this connection's child cannot interrupt the tab. The wait is blocking, and that
+    is faithful - the tool blocks too, which is why every way a request can end has to answer it.
+    """
+    port = os.environ.get("PI_CHAT_PORT", "").strip()
+    token = os.environ.get("PI_CHAT_PREVIEW_TOKEN", "").strip()
+    if not port or not token:
+        raise RuntimeError("no PI_CHAT_PORT/PI_CHAT_PREVIEW_TOKEN: this child is not a pi-chat child")
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/api/questionnaire",
+        data=json.dumps({"questions": questions}).encode("utf-8"),
+        headers={"content-type": "application/json", "x-preview-token": token},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=300) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _answer_lines(questions: list[dict], answers: list[dict]) -> list[str]:
+    """What the tool hands back to the model, one line per question."""
+    by_id = {str(answer.get("id")): answer for answer in answers if isinstance(answer, dict)}
+    lines = []
+    for question in questions:
+        answer = by_id.get(question["id"])
+        label = question.get("label") or question["id"]
+        if not answer:
+            lines.append(f"{label}: no answer")
+            continue
+        selections = answer.get("selections")
+        if isinstance(selections, list) and selections:
+            parts = [
+                f"{entry.get('index')}. {entry.get('label')}" if entry.get("index") else str(entry.get("label"))
+                for entry in selections
+            ]
+            lines.append(f"{label}: user selected: {', '.join(parts)}")
+        elif answer.get("wasCustom"):
+            lines.append(f"{label}: user wrote: {answer.get('label')}")
+        else:
+            lines.append(f"{label}: user selected: {answer.get('index')}. {answer.get('label')}")
+    return lines
+
+
+def _run_questionnaire_turn(prompt_text: str) -> None:
+    """One `questionnaire` call: the ask, the wait, the answers, and a sentence that uses them.
+
+    This is the only way to see the form in a browser without spending an inference call, and the wait
+    is the real thing: an HTTP round trip to the server, held open until a tab answers or the run goes
+    away. A stub that faked the answers locally would test the renderer and nothing else.
+    """
+    call_id = f"call-questionnaire-{uuid.uuid4().hex[:12]}"
+    questions = _questionnaire_questions()
+    args = {"questions": questions}
+
+    _begin_turn()
+    emit_user_message(prompt_text)
+    _begin_message()
+    _stream_text("Two things are mine to decide and two are yours. Asking.")
+    # The call is a block in the assistant message, and it has to be: the settled timeline is rebuilt from
+    # the stored messages, so a stub that emits only the live `tool_execution_*` events shows the row while
+    # it runs and loses it the moment the turn ends. Real pi persists the call, and a stub that does not is
+    # a stub the browser stages can pass while the real thing renders something else - which is exactly how
+    # `--stage questionnaire-cancel` lost its own tool row on 2026-11-19.
+    index = len(_turn["blocks"])
+    call_block = {"type": "toolCall", "id": call_id, "name": "questionnaire", "arguments": args}
+    _turn["blocks"].append(call_block)
+    _turn["tool"] = call_block
+    emit({
+        "type": "message_update",
+        "assistantMessageEvent": {
+            "type": "toolcall_start",
+            "contentIndex": index,
+            "id": call_id,
+            "toolName": "questionnaire",
+        },
+    })
+    emit({
+        "type": "message_update",
+        "assistantMessageEvent": {
+            "type": "toolcall_end",
+            "contentIndex": index,
+            "toolCall": dict(call_block),
+        },
+    })
+    _turn["message_open"] = False
+    _finish_message("toolUse")
+    emit({"type": "tool_execution_start", "toolCallId": call_id, "toolName": "questionnaire", "args": args})
+
+    failed_ask = False
+    cancelled = False
+    answered: list[dict] = []
+    try:
+        outcome = _ask_the_browser(questions)
+    except Exception as error:  # noqa: BLE001 - a stub should report the failure, not stack-trace
+        # No server, wrong port, or the tab closed before anybody answered. The real tool gets the same
+        # shape back from the relay, which is why the copy matters: the model reads this line.
+        failed_ask = True
+        output = f"questionnaire failed: {error}"
+    else:
+        answered = outcome.get("answers") or []
+        cancelled = outcome.get("cancelled") is True
+        if cancelled:
+            output = f"User cancelled the questionnaire ({outcome.get('reason') or 'cancelled'})."
+        else:
+            output = "\n".join(_answer_lines(questions, answered))
+
+    emit({
+        "type": "tool_execution_end",
+        "toolCallId": call_id,
+        "toolName": "questionnaire",
+        "result": {
+            "content": [{"type": "text", "text": output}],
+            "details": {"questions": questions, "answers": answered, "cancelled": cancelled},
+        },
+        "isError": failed_ask,
+    })
+    result = {
+        "role": "toolResult",
+        "toolCallId": call_id,
+        "toolName": "questionnaire",
+        "content": [{"type": "text", "text": output}],
+        "isError": False,
+        "timestamp": _now_ms(),
+    }
+    emit({"type": "message_start", "message": result})
+    emit({"type": "message_end", "message": result})
+    # Persisted as well as broadcast: the settled timeline pairs a call with its result by id
+    # (`enrichToolCalls` in `static/subagent.js`) to decide ok versus error, and a result that only lived
+    # in the live events left the row reading as `unknown` the moment the turn ended.
+    _state["messages"].append(result)
+
+    # The closing sentence repeats the first answer on purpose: it is what lets a browser stage prove
+    # the round trip in the DOM, model text included, rather than proving only that a dialog closed.
+    repeat = output.splitlines()[0] if output else ""
+    closing = (
+        "That did not reach you; I will ask in my reply instead." if failed_ask
+        else ("Noted, and I will not ask again mid-task." if cancelled else f"Noted. {repeat}")
+    )
+    _turn["message_open"] = False
+    final = assistant_message(closing)
+    _state["messages"].append(final)
+    emit({"type": "message_end", "message": final})
+    _end_turn(final)
+
+
 def run_prompt(prompt_text: str) -> None:
     """Emit one believable agent turn, serving any command that arrives while it streams.
 
@@ -278,6 +482,10 @@ def run_prompt(prompt_text: str) -> None:
     try:
         if LONG_RUN and STREAM_TOOLS:
             _run_long_run(LONG_RUN, prompt_text)
+            emit({"type": "agent_end", "messages": list(_state["messages"])})
+            return
+        if QUESTIONNAIRE_MODE:
+            _run_questionnaire_turn(prompt_text)
             emit({"type": "agent_end", "messages": list(_state["messages"])})
             return
         if IMAGE_MODE:
