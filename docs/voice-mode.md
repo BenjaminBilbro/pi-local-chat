@@ -87,20 +87,65 @@ non-event.
 
 ## Mute
 
-`M` and `#voice-mute` are one control, and it closes the microphone. `stt.disable()` releases the capture, the
-assistant is stopped, and the button carries the state, because it is the only control that can leave it:
-`aria-pressed`, `data-muted="true"`, an icon swap, and the label becomes `Unmute`. Tapping the orb or pressing
-space while muted is read as the other half of the same intent and opens the capture back up. Leaving voice
-mode while muted hands the text surface the microphone it had when voice mode was entered, rather than a dead
-dictation key.
+`M` and `#voice-mute` are one control, and on 2026-11-19 it was reduced to exactly one effect: **the
+microphone stops feeding the model**. Nothing else. Ben's words, after a live test that found three defects in
+this one button: *"all that I want if mute to stop taking in microphone input. It shouldn't actually cause any
+actions or send signals."*
 
-That is a fix and not a feature, and the old shape is worth keeping on paper because it looked correct from
-the server. The control used to send `voice_stop` and print the word "muted". The capture stayed open, so the
-claim was false. The buffer the browser had already scheduled kept playing, so the assistant did not even go
-quiet. Nothing on the button or the surface showed a state that could be left, so there was no unmute to
-press, because there had never been a mute. `static/voice.js` now stops local playback when a stream ends with
-`reason: "stopped"`, which is also what reports `voice_playback_end` promptly and closes the echo window below
-instead of waiting for its tail timeout.
+`setMuted()` in `static/voice-mode.js` calls `stt.setIngest(false)` and repaints the button. It sends no
+command. `static/stt.js` then returns at the top of `onaudioprocess`, so no packet is encoded and no byte
+leaves the browser. Unmuting is the next audio frame, because nothing was torn down.
+
+What it deliberately does **not** do, each of them a defect he found by using it:
+
+- **It does not send `voice_stop`.** That stopped the assistant mid-sentence. The assistant keeps talking
+  while you are muted, which is a different question from whether it can hear you, and tapping the orb is the
+  control for that.
+- **It does not call `stt.disable()`.** That released the capture and the recorder, so unmuting spent seconds
+  on "warming up the speech model" and asked the phone for the microphone again.
+- **It does not lose a sentence you already finished.** See the flush below.
+- **It does not change the phase.** Muting the microphone says nothing about whether the assistant is
+  mid-sentence, and this surface has exactly one vocabulary for that. The hint changes; the phase does not.
+
+The earlier shape is worth keeping on paper, because this is the second time this button was wrong in the
+same direction. The first version sent `voice_stop`, printed the word "muted", and left the capture open, so
+the claim was false and there was no unmute to press because there had never been a mute; `ab2c02f` fixed
+that by closing the capture for real, which was itself the over-reach this section now corrects. Both
+versions reached for a teardown because the button looked like a switch on the machinery. It is a gate on one
+wire.
+
+### The flush, and the one number the two sides share
+
+The server's endpointer is silence-driven: `post_speech_silence_duration`
+(`PI_CHAT_STT_POST_SPEECH_SILENCE`, 0.6 s by default) is how much quiet it wants after speech before it calls
+an utterance over. So if mute cut the frames the instant it was pressed, a sentence finished at that moment
+would sit in the recorder waiting for silence that never arrives, and would never become a message. That is
+Ben's first reported defect: *"if im speaking and finish speaking, but mute before it gets sent to the model,
+the entire message goes away."*
+
+So closing the gate first hands the recorder `MUTE_FLUSH_MS` (900 ms) of zeros, shaped exactly like live
+packets, and then stops. A constant in a JavaScript file and a float in a Python module, so
+`tests/test_mute_contract.py` is where they are checked against each other, including a margin: raise the
+server's window above the flush and the sentence is stranded again with no error anywhere.
+
+### What muted looks like
+
+The browser's tab still shows the microphone in use, because the device is still claimed and that is the
+price of an instant unmute. The surface answers for it: `micFrame()` returns null while muted, so the orb
+settles to still instead of metering a microphone it is not reading, and the same null disarms the interrupt
+gate through `armed: mic ? mic.cancelled : false` - a microphone you just asked to close must not abort a
+turn because the loudspeaker happened to be loud. The button carries the state (`aria-pressed`,
+`data-muted="true"`, icon swap, label `Unmute`), and tapping the orb or pressing space reads as the other half
+of one intent: he wants to talk, so open the gate.
+
+Leaving voice mode is where the teardown belongs, and it is unchanged: the capture and the server-side session
+close when the surface closes, and a muted exit hands the text surface the dictation microphone it had before,
+rather than a dead one.
+
+Section 8 of `tools/test_voice_mode_surface.mjs` is the contract - five claims, each of which fails against
+the old behaviour, and the interrupt claim proves both halves inside one controller so the only variable is
+the button. `tools/voice_mic_rig.mjs` then repeats it over a real WebSocket with a WAV played as the
+microphone, which is the only way to see the server's side of it.
 
 ## The interrupt
 
@@ -116,11 +161,32 @@ top of a turn that carries on.
 
 ## Checks
 
-    node tools/test_voice_mode_surface.mjs          # 30 claims, jsdom, real index.html, fake stt/voice
+    node tools/test_voice_mode_surface.mjs          # 45 claims, jsdom, real index.html, fake stt/voice
+    node tools/voice_mic_rig.mjs --serve            # mute over a real WebSocket, a WAV as the microphone
     node tools/barge_in_echo.mjs --seconds 8        # both directions of echo cancellation, measured
     node tools/barge_in_echo.mjs --ec on --expect silent
     node tools/screenshot_ui.mjs --stage voice-mode --voice-state barge --viewport 390x844 \
          --url http://127.0.0.1:PORT --password ... # real browser: coverage, geometry, that it animates
+
+The jsdom claims see the controller's calls. The microphone rig sees the wire, which is where mute was wrong
+twice: `--serve` starts its own loopback server with the audit log on, Chrome's
+`--use-file-for-fake-audio-capture` makes a WAV the capture device, `WebSocket.prototype` is wrapped before the
+app's own script runs, and the run mutes **while both directions are streaming**, which is the situation the
+defect was found in. Fifteen checks, and a run reports the numbers rather than a verdict: bytes out before,
+during and after the mute, the flush packet by packet, and the server's own byte totals either side.
+
+Its limits, in its own words: headless Chrome has no speaker, so synthesized speech arrives at the tab as
+bytes and is never played into a room, which means this measures that playback continued and not that it was
+audible; and the audio fixture it synthesizes is voiced noise, enough to keep the endpointer busy and useless
+for words, so `--speech /path/to/16bit-mono.wav` is what you pass when the transcription itself is the
+question. It also refuses to grade what it could not measure: if both directions were never streaming at the
+same moment, the "speech kept arriving" check says it was unmeasured instead of failing the button for it.
+
+Two things it taught the way this file is written. It has to wait for both readiness chips, because a cold
+speech model takes about twelve seconds and the first version drove the whole sequence inside that warm-up,
+where the server read nothing at all; and its thresholds have to be stated in the capture's own units, one
+4096-sample packet roughly every quarter second, because a guessed "twenty packets in 2.6 seconds" failed a
+run that was working perfectly.
 
 The stage asserts what jsdom cannot, because jsdom applies no stylesheets: that `elementFromPoint` at the
 sidebar, the header, the composer and the centre all answer to `#voice-screen` (the message list is still

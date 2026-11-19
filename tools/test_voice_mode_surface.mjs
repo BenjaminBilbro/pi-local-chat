@@ -112,6 +112,9 @@ const modeButton = document.getElementById('voice-mode-btn');
 function fakeStt({ enabled = false, backend } = {}) {
   const state = {
     enabled, commands: [], enables: 0, disables: 0, levels: null,
+    // Mute is a gate on the frame path now, so the fake has to carry it or the claims cannot see the one
+    // thing mute is supposed to do.
+    ingest: true, ingestChanges: 0,
     // 'ready' by default so the older claims see a warm machine; the readiness claims set this.
     backend: backend || 'ready',
   };
@@ -119,8 +122,10 @@ function fakeStt({ enabled = false, backend } = {}) {
     state,
     get enabledState() { return state.enabled; },
     get backendStateValue() { return state.backend; },
+    get ingestState() { return state.ingest; },
     enable() { state.enables += 1; state.enabled = true; },
     disable() { state.disables += 1; state.enabled = false; },
+    setIngest(on) { state.ingestChanges += 1; state.ingest = Boolean(on); },
     getInputLevels: () => state.levels,
   };
 }
@@ -662,6 +667,145 @@ await check('with nothing on top, the three keys are still the voice surface\'s'
   const event = press(document.body, { key: 'Escape' });
   assert.equal(h.mode.probe().active, false, 'Escape stopped leaving voice mode');
   assert.equal(event.defaultPrevented, true, 'voice mode no longer claims Escape it owns');
+});
+
+// ── 8. mute: one effect, no signals ──────────────────────────
+
+/* Ben, from a live test on 2026-11-19, after three defects in one button: "all that I want if mute to stop
+ * taking in microphone input. It shouldn't actually cause any actions or send signals." The button used to
+ * send `voice_stop` (cutting the assistant off mid-sentence), tear the speech model down with `stt.disable()`
+ * (so unmuting spent seconds "warming up"), and discard a sentence he had already finished saying. None of
+ * that was tested, which is how a button that sends a command and never touches the microphone reached his
+ * phone. These claims are the contract: one effect, and nothing else happens. */
+const muteButton = () => document.getElementById('voice-mute');
+
+/** Longer than the interrupt hold (140 ms) plus its cooldown, with room for a slow scheduler. */
+const BARGE_OBSERVATION_MS = 1500;
+
+/* Poll rather than sleep. These claims watch an animation loop and an interrupt hold, and jsdom's rAF runs
+ * at the mercy of the machine it is on: a fixed `wait(450)` passed on a quiet box and failed on a loaded one,
+ * which is the kind of claim that makes a real change look broken. Each poll has a generous deadline and
+ * returns as soon as the condition holds, so it is both slower to fail and faster to pass. */
+async function until(label, predicate, timeoutMs = 3000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (predicate()) return true;
+    if (Date.now() > deadline) throw new Error(`timed out after ${timeoutMs}ms waiting for: ${label}`);
+    await wait(30);
+  }
+}
+
+async function speakInto(h, { mic = null } = {}) {
+  h.voice.state.speaking = true;
+  h.voice.state.levels = { rms: 0.12, freq: new Uint8Array(256).fill(70), sampleRate: 16000 };
+  if (mic !== null) {
+    h.stt.state.levels = { rms: mic, freq: new Uint8Array(256).fill(200), sampleRate: 16000 };
+  }
+  await until('the surface to reach speaking', () => h.mode.probe().phase === 'speaking');
+}
+
+/** Make the microphone loud enough to interrupt. Kept separate from `speakInto` because a loud microphone
+ *  is a race with the gate: `speaking` survives about `BARGE_MS` once the level is over the floor, so a
+ *  claim that wants to assert something *before* an interrupt has to raise the level after it got there. */
+function speakLoudly(h) {
+  h.stt.state.levels = { rms: 0.2, freq: new Uint8Array(256).fill(200), sampleRate: 16000 };
+}
+
+await check('mute closes the microphone gate and sends nothing at all', async () => {
+  const h = harness({ sttEnabled: true, voiceEnabled: true });
+  h.mode.enter();
+  await wait(60);
+  const before = h.commands.length;
+  muteButton().click();
+
+  assert.equal(h.mode.probe().muted, true, 'the button did not mute');
+  assert.equal(h.stt.state.ingest, false, 'mute left the microphone feeding the model');
+  assert.deepEqual(h.commands.slice(before), [], `mute sent ${JSON.stringify(h.commands.slice(before))}`);
+  assert.equal(h.stt.state.disables, 0, 'mute tore the speech model down');
+  h.mode.exit();
+});
+
+await check('unmute reopens the gate without a new session and without a command', async () => {
+  const h = harness({ sttEnabled: true, voiceEnabled: true });
+  h.mode.enter();
+  await wait(60);
+  muteButton().click();
+  const afterMute = h.commands.length;
+  const enables = h.stt.state.enables;
+  muteButton().click();
+
+  assert.equal(h.mode.probe().muted, false, 'the second press did not unmute');
+  assert.equal(h.stt.state.ingest, true, 'the gate stayed closed, so the microphone never came back');
+  assert.equal(h.stt.state.enables, enables, 'unmute opened a second STT session (that is the "warming up" bug)');
+  assert.deepEqual(h.commands.slice(afterMute), [], `unmute sent ${JSON.stringify(h.commands.slice(afterMute))}`);
+  h.mode.exit();
+});
+
+await check('mute leaves the assistant speaking, instead of claiming it stopped', async () => {
+  const h = harness({ sttEnabled: true, voiceEnabled: true });
+  h.mode.enter();
+  await speakInto(h, { mic: null });
+  const before = h.commands.length;
+
+  muteButton().click();
+
+  assert.equal(h.mode.probe().phase, 'speaking', 'mute painted the surface idle while audio was still playing');
+  assert.equal(
+    h.commands.slice(before).filter((c) => c.type === 'voice_stop').length, 0,
+    'mute sent voice_stop, which is the bug it is named in',
+  );
+  h.mode.exit();
+});
+
+await check('a muted microphone cannot interrupt, and unmuting hands that ability straight back', async () => {
+  /* One controller, one microphone, two halves. The earlier shape of this claim built a second harness for
+   * the control and timed out reaching `speaking` in it: two controllers on one shared jsdom document, each
+   * with its own animation loop and its own window listeners, is not the thing under test and it made the
+   * claim flaky on a loaded box. Same instance, mute between the halves, is the tightest version available: 
+   * the only difference between firing and not firing is the button. */
+  const h = harness({ sttEnabled: true, voiceEnabled: true });
+  h.mode.enter();
+  await speakInto(h);
+
+  muteButton().click();
+  await until('the orb to stop reading the muted microphone', () => h.mode.probe().echoCancelled === null);
+  // The level goes up only now: an over-the-floor microphone ends `speaking` after `BARGE_MS`, and this claim
+  // has to be able to say the gate never armed in the first place.
+  speakLoudly(h);
+  // Well past the hold the gate wants (140 ms) and its cooldown, so "it did not fire" means it did not fire.
+  await wait(BARGE_OBSERVATION_MS);
+
+  assert.equal(
+    h.commands.filter((c) => c.type === 'abort').length, 0,
+    'the microphone was muted and the loudspeaker still aborted the turn',
+  );
+  assert.equal(h.mode.probe().phase, 'speaking', 'the interrupt moved the surface while it was muted');
+
+  muteButton().click();
+  await until('the now-unmuted microphone to interrupt', () => h.commands.some((c) => c.type === 'abort'), 6000);
+  assert.ok(true);
+  h.mode.exit();
+});
+
+await check('a muted surface goes still instead of metering a microphone it is not reading', async () => {
+  const h = harness({ sttEnabled: true, voiceEnabled: true });
+  h.mode.enter();
+  h.stt.state.levels = { rms: 0.3, freq: new Uint8Array(256).fill(220), sampleRate: 16000 };
+  await until('the orb to meter the microphone', () => h.mode.probe().orb.level > 0.05);
+  const heard = h.mode.probe();
+  muteButton().click();
+  await until('the microphone frame to stop', () => h.mode.probe().echoCancelled === null);
+  const mute = h.mode.probe();
+
+  assert.ok(heard.orb.level > 0.05, `control broken: the meter never moved while unmuted (${heard.orb.level})`);
+  // `echoCancelled: null` is the probe's way of saying there was no microphone frame at all, which is what
+  // disarms the interrupt gate. A meter still dancing next to a button that says Muted is the surface
+  // claiming it can hear you.
+  assert.equal(mute.echoCancelled, null, 'a muted microphone was still being read for levels');
+  // The level is damped, so it settles to still over a few frames rather than snapping: the claim is that it
+  // arrives, which is also the only version that would catch a producer left wired to the analyser.
+  await until('the orb to settle to still', () => h.mode.probe().orb.level <= 0.05, 4000);
+  h.mode.exit();
 });
 
 console.log(results.join('\n'));

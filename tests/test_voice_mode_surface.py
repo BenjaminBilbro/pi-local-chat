@@ -25,6 +25,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "tools" / "test_voice_mode_surface.mjs"
+CLAIMS = 45  # 40 through S9, +5 on 2026-11-19 for the mute contract Ben asked for.
+
 NODE = shutil.which("node")
 
 pytestmark = pytest.mark.skipif(
@@ -39,11 +41,11 @@ def test_voice_mode_surface():
         capture_output=True,
         text=True,
         encoding="utf-8",
-        timeout=180,
+        timeout=300,
         cwd=ROOT,
     )
     claims = [line for line in result.stdout.splitlines() if line.startswith(("PASS ", "FAIL "))]
 
     assert not [line for line in claims if line.startswith("FAIL")], result.stdout
-    assert len(claims) == 40, f"expected 40 claims, the script changed shape:\n{result.stdout}"
+    assert len(claims) == CLAIMS, f"expected {CLAIMS} claims, the script changed shape:\n{result.stdout}"
     assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"

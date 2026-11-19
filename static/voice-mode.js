@@ -320,6 +320,11 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
   /** Microphone level and spectrum, scaled the way the prototype's were, or nulls when there is no analyser
    *  (permission denied, or the browser refused the capture). */
   function micFrame() {
+    // Muted means the surface is not listening, so it must not look like it is. Returning null takes the
+    // meter down to still and, through `armed: mic ? mic.cancelled : false` in the gate below, disarms the
+    // interrupt as a side effect: a microphone the person just asked to close must not abort a turn because
+    // the loudspeaker happened to be loud.
+    if (muted) return null;
     const data = stt && stt.getInputLevels ? stt.getInputLevels() : null;
     if (!data) return null;
     const settings = stt && stt.getInputSettings ? stt.getInputSettings() : null;
@@ -766,25 +771,34 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
   }
 
   /**
-   * Close the microphone for real, or open it again.
+   * Close the microphone on the model, or open it again. One effect, on purpose.
    *
-   * Muting also stops the assistant, because a person who asks for silence has no use for being talked at
-   * while he reaches for the thing he actually wanted to say. The capture is closed rather than ignored: a
-   * muted microphone that still holds the device open is a red light that is still recording.
+   * Superseded 2026-11-19, and the supersede is the point of this comment. This function used to send
+   * `voice_stop` and call `stt.disable()`, on the reasoning that a person who asks for silence does not want
+   * to be talked at, and that a capture left open is a red light that is still recording. Both halves were
+   * wrong in ways Ben found by using it: the stop cut the assistant off mid-sentence, the disable took the
+   * speech model down so unmuting spent seconds "warming up", and the combination discarded a sentence he
+   * had already finished saying. What he asked for instead, in his words: stop taking in microphone input,
+   * nothing else, no signals.
+   *
+   * So: `stt.setIngest()`, and no command. The assistant keeps speaking, because that is a different thing
+   * he can stop by tapping the orb. The phase is left alone for the same reason - muting the microphone says
+   * nothing about whether the assistant is mid-sentence, and this surface has exactly one vocabulary for
+   * that. What still belongs to a teardown is the capture itself, and that happens on leaving voice mode.
    */
   function setMuted(next, { say = true } = {}) {
     if (next === muted) return;
     muted = next;
     paintMuted();
     if (demo) return; // a pinned state is a photograph: there is no capture here to open or close
-    if (muted) {
-      sendCommand({ type: 'voice_stop' });
-      if (stt && stt.enabledState) stt.disable();
-      setPhase('idle', { hint: 'Muted. Tap Unmute or press M', say: say ? 'muted' : undefined });
-    } else {
-      if (stt && !stt.enabledState) stt.enable(getSocket());
-      setPhase('idle', { hint: 'Go ahead', say: say ? 'unmuted' : undefined });
-    }
+    if (stt && stt.setIngest) stt.setIngest(!muted);
+    const speaking = phase === 'speaking' || phase === 'barge';
+    setPhase(phase, {
+      hint: muted
+        ? 'Muted. Tap the orb or press M to listen again'
+        : speaking ? 'Tap the orb or press space to interrupt' : 'Say something',
+      say: say ? (muted ? 'muted' : 'unmuted') : undefined,
+    });
   }
 
   /** Tapping the orb, or space. It does two real things: it stops the assistant if it is talking, and it

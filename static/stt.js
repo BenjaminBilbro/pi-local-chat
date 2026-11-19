@@ -42,6 +42,35 @@ export function createSTTController({
   let onRealtimeTextChange = null;
   let onError = null;
 
+  /* Mute, and why it is a gate on the frame path rather than a teardown.
+   *
+   * Ben, from a live test on 2026-11-19: "all that I want if mute to stop taking in microphone input. It
+   * shouldn't actually cause any actions or send signals." Mute used to send `voice_stop` (which cut the
+   * assistant off mid-sentence) and `stt.disable()` (which took the speech model down, so unmuting said
+   * "warming up the speech model" and cost seconds). Both were actions. This flag is not.
+   *
+   * The device stays claimed and the graph stays live, so unmuting is the next audio frame rather than a
+   * reload of whisper. The cost of that choice is honest and stated where it is visible: the browser's tab
+   * still shows the microphone in use, and the voice surface answers for it by going still (see
+   * `micFrame()` in `static/voice-mode.js`), because a meter that moves while muted is the surface
+   * claiming it can hear you.
+   */
+  let ingest = true;
+
+  /** Silence sent once, when ingest closes, so an utterance that was already open can finish.
+   *
+   * The server's endpointer is silence-driven: `post_speech_silence_duration`
+   * (`PI_CHAT_STT_POST_SPEECH_SILENCE`, 0.6 s by default) is how much quiet it wants after speech before it
+   * calls an utterance over. Cut the frames at that moment and the sentence the person just finished saying
+   * never gets a transcript, which is the bug Ben reported first: "if im speaking and finish speaking, but
+   * mute before it gets sent to the model, the entire message goes away." So mute hands the recorder its
+   * silence and then stops. `tests/test_mute_contract.py` pins this constant against the server's knob,
+   * because if someone raises the silence window this stops working quietly.
+   */
+  const MUTE_FLUSH_MS = 900;
+  /** Same frame count as a live capture callback, so the server's chunking sees nothing unusual. */
+  const MUTE_FLUSH_PACKET = 4096;
+
   // -----------------------------------------------------------------------
   // Binary packet encoding
   // -----------------------------------------------------------------------
@@ -105,6 +134,10 @@ export function createSTTController({
       silentGain.connect(audioContext.destination);
 
       processor.onaudioprocess = (e) => {
+        // Muted: nothing leaves this thread. The check is here rather than at the graph because the graph is
+        // what keeps the device, the analyser and the model warm; tearing it down to be quiet is the thing
+        // that made unmute slow.
+        if (!ingest) return;
         const inputData = e.inputBuffer.getChannelData(0);
 
         // Convert float32 to int16 PCM
@@ -252,6 +285,10 @@ export function createSTTController({
     ws = websocket;
     enabled = true;
     wasEnabled = true;
+    // A fresh enable always ingests. The muted state belongs to a session of the voice surface, and
+    // `enter()` repaints the button as unmuted; a flag left over from the last one would leave the button
+    // lying in the other direction, which is the same bug wearing a different hat.
+    ingest = true;
     sendCommand({ type: 'stt_enable' });
     notifyStateChange();
     startMicrophone();
@@ -274,6 +311,43 @@ export function createSTTController({
       disable();
     } else {
       enable(websocket);
+    }
+  }
+
+  /**
+   * Stop or resume microphone ingest. The only thing mute does.
+   *
+   * No command is sent, nothing is torn down, and no transcript in flight is discarded: closing the gate
+   * hands the recorder its end-of-utterance silence first, so a sentence that was already said still becomes
+   * a message. Reopening is immediate, because nothing was closed.
+   *
+   * @param {boolean} on
+   */
+  function setIngest(on) {
+    const next = Boolean(on);
+    if (next === ingest) return;
+    ingest = next;
+    if (!ingest) flushSilence();
+    notifyStateChange();
+  }
+
+  /** Feed the endpointer the quiet it is waiting for. Packets are shaped exactly like live audio. */
+  function flushSilence() {
+    if (!ws || ws.readyState !== WebSocket.OPEN || !actualSampleRate) return;
+    const frames = Math.round((actualSampleRate * MUTE_FLUSH_MS) / 1000);
+    try {
+      for (let sent = 0; sent < frames; sent += MUTE_FLUSH_PACKET) {
+        const count = Math.min(MUTE_FLUSH_PACKET, frames - sent);
+        ws.send(encodePacket({
+          sampleRate: actualSampleRate,
+          channels: 1,
+          format: 'pcm_s16le',
+          frames: count,
+        }, new Int16Array(count).buffer));
+      }
+    } catch (err) {
+      // Losing the flush is losing the tail of a sentence, not the session. Say so and carry on muted.
+      console.error('STT: mute flush failed;', err);
     }
   }
 
@@ -364,6 +438,7 @@ export function createSTTController({
     handleServerMessage,
     setAgentActive,
     setCallbacks,
+    setIngest,
     getWaveformData,
     getInputLevels,
     getInputSettings,
@@ -374,5 +449,6 @@ export function createSTTController({
     get recordingState() { return recording; },
     get realtimeTextValue() { return realtimeText; },
     get agentActiveState() { return agentActive; },
+    get ingestState() { return ingest; },
   };
 }
