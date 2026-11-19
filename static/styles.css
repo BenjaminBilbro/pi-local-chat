@@ -3185,14 +3185,20 @@ body.hide-header-mascot #chat-screen .header-mascot {
   border: 1px solid var(--border);
 }
 
-.doc-tab-fresh[data-freshness="watching"],
-.doc-tab-fresh[data-freshness="fresh"] {
+.doc-tab-fresh[data-freshness="watching"] {
   background: var(--success);
   border-color: var(--success);
 }
 
-.doc-tab-fresh[data-freshness="stale"] {
-  background: var(--text-subtle);
+/* Following, and idle, because this is not the tab being polled. Hollow on purpose: the disk was not
+   consulted for this tab while you were away, and a filled dot would claim that it was. */
+.doc-tab-fresh[data-freshness="queued"] {
+  background: transparent;
+  border-color: var(--success);
+}
+
+.doc-tab-fresh[data-freshness="off"] {
+  background: transparent;
   border-color: var(--text-subtle);
 }
 

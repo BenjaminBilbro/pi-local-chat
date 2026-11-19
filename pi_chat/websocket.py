@@ -159,6 +159,9 @@ async def _load_dev_session(websocket: WebSocket, pi: PiProcess) -> None:
                 "messages": messages,
                 "sessionId": "dev",
                 "messageCount": len(messages),
+                # Same reason as the other two senders: without the secret the pane cannot say what it
+                # is showing, and this is the load path a dev reload re-attaches through.
+                "previewToken": getattr(pi.proc, "preview_token", None) if pi.proc else None,
             }
         )
         return
@@ -418,6 +421,11 @@ async def _start_session(pi: PiProcess) -> None:
         {
             "type": "session_started",
             "sessionId": pi.session_id,
+            # The pane-state secret belongs on the message every connection gets, not only on the one
+            # a session switch sends. A brand new chat never sends `session_loaded`, and neither does
+            # the DEV `?session=` load, so without this the pane had a watcher, no way to report, and
+            # `preview(action:"state")` answered blind forever (2026-11-19).
+            "previewToken": getattr(pi, "preview_token", None),
         }
     )
 

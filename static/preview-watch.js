@@ -35,9 +35,22 @@ export function backingFor(entry = {}) {
   return 'store';
 }
 
-export function watchingFor(entry, followFiles) {
-  if (typeof entry.watch === 'boolean') return entry.watch;
-  return Boolean(followFiles) && backingFor(entry) === 'path';
+/**
+ * Should the pane follow this document's bytes.
+ *
+ * `watch:false` from the model beats Follow-files, because the model may be pinning one document off
+ * on purpose, and `watch` absent means it has no opinion so Follow-files decides.
+ *
+ * A human click beats both (Ben, 2026-11-19): per document, in memory, and it survives a later
+ * `update` entry for the same doc id, which is the whole point. The assistant must not be able to
+ * re-follow a tab the human just froze. The backing test still applies, because polling bytes no
+ * server will re-serve is not a thing that can happen: "follow this" on a snapshot cannot be made true.
+ */
+export function watchingFor(entry, followFiles, human) {
+  const fileBacked = backingFor(entry) === 'path';
+  if (typeof human === 'boolean') return human && fileBacked;
+  if (typeof entry.watch === 'boolean') return entry.watch && fileBacked;
+  return Boolean(followFiles) && fileBacked;
 }
 
 export function pollInterval(failures) {
@@ -110,23 +123,26 @@ export function observeToken(state, token) {
 }
 
 /**
- * What a tab should look like while it is *not* the one being watched.
+ * What a tab's dot claims, which is its *following* state and nothing else.
  *
- * A background tab is stale by construction: nothing is polling it. Saying so is the point. The
- * pane re-reads it the moment it is selected, so "stale" is a promise about the render you are
- * looking at, not a request for you to do something.
+ * An earlier shape tried to say "fresh" by comparing the token the pane had rendered against
+ * `doc.token`: the same value, on the same object, so every hidden file-backed tab reported itself
+ * checked against the disk, green, when the honest answer was that nothing had looked at it since you
+ * left it (measured 2026-11-19).
+ *
+ *   watching  this is the tab being polled
+ *   queued    following, idle while hidden; a tab click re-reads it before you see anything
+ *   off       file-backed and deliberately not following
+ *   snapshot  these bytes are not backed by a file the pane could ever follow
+ *   gone      the file is not on disk any more
  */
-export function tabFreshness({ doc, watching, isWatching, knownToken } = {}) {
+export function tabFreshness({ doc, activeId } = {}) {
   if (!doc) return 'unknown';
   if (doc.available === false) return 'gone';
-  if (isWatching) return 'watching';
-  if (watching && backingFor(doc) === 'path') {
-    // The pane checked this file against the disk while it was showing it, and the token has not
-    // moved since. Anything else is simply "we have not looked", which is what stale means here.
-    if (knownToken && doc.token && knownToken === doc.token) return 'fresh';
-    return 'stale';
-  }
-  return 'snapshot';
+  const fileBacked = backingFor(doc) === 'path';
+  if (fileBacked && doc.watching && doc.id === activeId) return 'watching';
+  if (fileBacked && doc.watching) return 'queued';
+  return fileBacked ? 'off' : 'snapshot';
 }
 
 /**

@@ -447,15 +447,21 @@ export default function (pi: ExtensionAPI) {
         // `list` can only ever report what this process opened. Everything the user can actually see
         // (which tab is in front, whether the column is even open) lives in the browser, and the pane
         // POSTs it here. Without this action, "what do you see?" gets answered by a guess.
-        const view = await fetchPaneState();
-        if (view === null) {
+        const pane = await fetchPaneState();
+        if ("blind" in pane) {
+          const why =
+            pane.blind === "no-endpoint"
+              ? "no PI_CHAT_PORT or PI_CHAT_PREVIEW_TOKEN in this environment, which is a plain `pi -e` run rather than a pi-chat connection."
+              : pane.blind === "no-report"
+                ? "the pane has never reported to this connection's secret, so this load path did not carry one or this process predates your last reload."
+                : "the pane did not answer: the browser is closed or this connection is gone.";
           return {
             text:
               `${summary() || "No documents are open in the preview pane."}\n`
-              + "What the user can actually see is unavailable: no PI_CHAT_PORT or PI_CHAT_PREVIEW_TOKEN "
-              + "in this environment, which is a plain `pi -e` run rather than a pi-chat connection.",
+              + `What the user can actually see is unavailable: ${why}`,
           };
         }
+        const view = pane.view;
         const lines = [
           `pane: ${view.open ? "open" : "closed"}`
           + `${view.activeDocId ? `, active tab doc=${view.activeDocId}` : ", no active tab"}`
@@ -627,22 +633,31 @@ export default function (pi: ExtensionAPI) {
     return `${url.toString()}|${token}`;
   }
 
-  async function fetchPaneState(): Promise<PaneView | null> {
+  /**
+   * Why the pane cannot be asked, kept separate from the answer. Collapsing these into one null made
+   * `state` tell a pi-chat child it was "a plain `pi -e` run", when the truth was that the pane simply
+   * had never reported to this connection's secret (2026-11-19).
+   */
+  type PaneBlind = "no-endpoint" | "no-report" | "unreachable";
+
+  async function fetchPaneState(): Promise<{ view: PaneView } | { blind: PaneBlind }> {
     const endpoint = paneEndpoint();
-    if (!endpoint) return null;
+    if (!endpoint) return { blind: "no-endpoint" };
     const [url, token] = endpoint.split("|");
     try {
       const response = await fetch(url, {
         headers: { "x-preview-token": token },
         signal: AbortSignal.timeout(1500),
       });
-      if (!response.ok) return null;
+      // 404 is `No pane state recorded`: the route is alive and this secret has no report behind it.
+      if (response.status === 404) return { blind: "no-report" };
+      if (!response.ok) return { blind: "unreachable" };
       const body = await response.json();
-      return body && typeof body === "object" ? (body as PaneView) : null;
+      return body && typeof body === "object" ? { view: body as PaneView } : { blind: "unreachable" };
     } catch {
       // A pane that is not reachable is not a failure to report: `list` and `state` differ in one
       // line, and a dead browser must not fail the document work the caller came to do.
-      return null;
+      return { blind: "unreachable" };
     }
   }
 

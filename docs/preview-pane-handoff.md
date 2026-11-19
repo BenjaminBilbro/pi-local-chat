@@ -1,8 +1,8 @@
 # Preview pane hand-off
 
-**Current as of S7, 2026-11-18: the pane follows files on disk.** Read the S7 section at the foot of this
-file first; everything above it is history, still accurate except where S7 says otherwise (S6 already
-superseded the "appears and disappears" description).
+**Current as of S8, 2026-11-19: following is per document, and four shipped defects are fixed.** Read S8 at
+the foot first, then S7. Everything above them is history, still accurate except where those two say
+otherwise (S6 already superseded the "appears and disappears" description).
 
 Suite state now: **788 passed, 2 skipped** pytest. `npm test` has 25 passing and 2 failing
 (`mid-run message did not ask to queue`, `send-now did not ask to steer`): those are the known QA-03
@@ -514,3 +514,58 @@ Three new ones, and the order of two of them is load-bearing:
   unchanged. Gap 3's root behaviour is now handled by the copy fallback rather than by widening the roots;
   the roots themselves are deliberately untouched, because `PI_CHAT_PREVIEW_ROOTS` is built identically for
   both profiles and an extra root is a read granted to Roxy's profile too.
+
+## S8 (2026-11-19): four defects found by hand, and following became per document
+
+All four were found by editing a watched file from the tool and watching the pane, which is the only way
+this feature can be tested at all. Every one of them shipped past the existing guards, because a poll that
+reports a reload and a reload that renders are two different claims and nothing had been made to compare
+them. Live verification: Ben re-tested each fix in the browser on 2026-11-19.
+
+| Symptom | Cause, in one line | Fix |
+|---|---|---|
+| a live edit re-renders, then the next one does not, alternating | `loadActive(true)` cleared the cached body on a copy it put in the map, then rendered the reference it had read before that write, so `renderMarkdown` saw `raw` intact, re-painted the old text, never fetched, and the chip still said "Reloaded from disk" | build the object once: `const target = force ? { ...doc, raw: undefined } : doc`, store it, render it |
+| clicking a tab does nothing, the previous document stays on screen | `select()` never goes through `show()`, and `loadActive` painted into a view element without making it the visible one. A frame put on top by an HTML document therefore covered every markdown tab behind it | `loadActive` now calls `showView()` for the document it is rendering, honouring source mode so the body does not flash during a fetch |
+| every tab wears a green dot after one Follow click, and hidden tabs claim they were checked | `renderTabs` passed the pane default (`followFiles()`) as the per-document watching flag, and `tabFreshness` compared `doc.token` with `doc.token`, the same field on the same object | the dot is computed from the document, and there is no token argument left to compare |
+| `preview(action:"state")` is blind, then says "a plain `pi -e` run" while `PI_CHAT_CHILD=1` | `previewToken` travelled only on `session_loaded`, which a brand new chat never sends and the DEV `?session=` load omits; `fetchPaneState()` collapsed 404, 401 and no-endpoint into one null | `session_started` carries the secret too (every connection gets that message), and the tool distinguishes "no endpoint", "this secret has no report behind it" and "no answer" |
+
+### Following is per document now (Ben's call, 2026-11-19)
+
+The header button follows **the document on screen**. Precedence, in `watchingFor`: a human override, then
+the assistant's `watch` flag, then the pane default (`pi-chat-doc-follow-files`, still ON). The override is
+kept on the document object and `show()` merges `previous` under the incoming entry, so a later `update` for
+the same doc id cannot re-follow a tab the human froze, which is the point of the override existing. Memory
+only: no localStorage key per doc id, on purpose, so a reload re-derives state from the session entries.
+
+`watchingFor` applies the backing test to every branch, so no override can turn a `store` body or a `copy`
+snapshot into a polled file. The button is hidden for those anyway; the guard is the rail, not the UI.
+
+### Dot vocabulary
+
+`watching` (this tab is the one being polled, filled), `queued` (following, idle while hidden, hollow),
+`off` (file-backed and deliberately not followed), `snapshot`, `gone`, `unknown`. Hollow means the disk was
+not consulted for this tab while you were away, which is what `fresh` used to claim and never could justify:
+nothing polls a hidden tab, so no observation exists to make that claim. `fresh` and `stale` are gone from
+the code and the stylesheet.
+
+### Guards added
+
+- `tools/test_preview_watch.mjs` is 19 claims now: the override outranks the flag in both directions, an
+  override cannot make a snapshot watchable, only the polled tab says `watching`, a hidden following tab
+  says `queued`, the dot describes the document and never the pane default, and a hidden tab with a stale
+  body and a recorded token still cannot claim it checked the disk.
+- `tests/test_preview_watch.py` asserts the shape of `loadActive` from source: it must store `target` in the
+  map and render `target`, and it must call `showView`. Same idiom as the existing "the pane imports the
+  decisions" guard, because a rule duplicated between the map and the render is how both of these shipped.
+
+### Deliberately not done
+
+- Per-tab follow by clicking a hidden tab's dot. The dot lives inside the tab `<button>` and a button cannot
+  contain a button, so it needs the strip restructured to `role="tab"` with the dot as a sibling control.
+  That is the same surface T6 mobile and a11y touches, and a 10 px dot is a bad hit target regardless.
+- Per-tab scroll preservation with a "do not reload an unchanged tab" check on switch. Declined: scroll can
+  only be restored for markdown, because a sandboxed frame's `scrollTop` is unreadable and unwritable from
+  the pane, and HTML and PDF would keep re-navigating and losing their place regardless. Not worth a token
+  per render and a stat per switch to fix half the kinds.
+- Still open from S7: `--stage doc-watch`, gap 1 (`update` reachable only by a model call), gap 2 (a slash
+  command leaving no transcript line).

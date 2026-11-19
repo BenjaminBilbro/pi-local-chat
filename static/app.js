@@ -522,6 +522,9 @@ function routeServerMessage(message) {
   if (message.type === 'session_started') {
     connected = true;
     setConnectionStatus(true);
+    // The pane-state secret arrives here as well as on `session_loaded`, because a brand new chat
+    // never loads a session and a dev re-attach does not always spawn in time for that message.
+    if (message.previewToken) docPane.setPreviewToken(message.previewToken);
     // A fresh conversation does not remember the instruction that said "answer as speech".
     voiceMode?.reinject();
   } else if (message.type === 'session_loaded') {

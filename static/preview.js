@@ -44,9 +44,9 @@ const KIND_TITLES = { markdown: 'Markdown', html: 'HTML', pdf: 'PDF' };
 /* What a tab's dot means, and the only honest answer for a document that is not on screen: nothing is
  * polling it, so what is rendered is whatever was there when it last was. */
 const FRESHNESS_TITLES = {
-  watching: 'Watching this file: it re-renders when the file changes',
-  fresh: 'Checked against the file since you last looked at it',
-  stale: 'Showing the version from when you last opened this tab',
+  watching: 'Following this file: it re-renders while this tab is open',
+  queued: 'Following, idle while hidden: this tab re-reads the file the moment you open it',
+  off: 'Not following: this tab re-reads the file when you open it, and never on its own',
   snapshot: 'A snapshot: these bytes are not backed by a file the pane can follow',
   gone: 'This file is no longer on disk',
   unknown: '',
@@ -150,7 +150,11 @@ export function createDocPane({ onError } = {}) {
 
     const previous = docs.get(doc.id);
     const wasActive = activeId === doc.id;
-    docs.set(doc.id, { ...previous, ...doc });
+    // `watchOverride` is a human choice and this map is the only place it lives, so a later `update`
+    // entry for the same id must not resurrect a follow the human froze nor drop one they started.
+    // Recomputing after the merge is not optional: `normalize` ran before it and could not have seen
+    // the previous document's override.
+    docs.set(doc.id, recomputeWatching({ ...previous, ...doc }));
     if (activate || !activeId) activeId = doc.id;
     // Whatever the tool just wrote is now the truth, so the watcher starts from here. Without this
     // the pane would wait two polls and then "reload from disk" a document it was handed seconds
@@ -361,7 +365,13 @@ export function createDocPane({ onError } = {}) {
       // told nothing while a document is plainly on screen.
       reportState();
     },
+    /** The pane-wide default. Per-document following is the header button and `followActive`. */
     follow: (value) => (value === undefined ? followFiles() : setFollowFiles(value)),
+    followActive: (value) => {
+      const doc = activeDoc();
+      if (value === undefined) return doc ? Boolean(doc.watching) : null;
+      return setActiveFollow(value);
+    },
     replay,
     setWidth,
     width: () => currentWidth(),
@@ -428,9 +438,9 @@ export function createDocPane({ onError } = {}) {
     } catch {
       /* Private mode: the choice holds for this page view. */
     }
-    // Documents already open are re-evaluated: Follow-files is the default for a document the model
-    // had no opinion about, and that opinion can be formed after the document arrived.
-    for (const [id, doc] of docs) docs.set(id, { ...doc, watching: watchingFor(doc, wanted) });
+    // Documents already open are re-evaluated: this is the default for a document neither the
+    // assistant nor the human has an opinion about, and that opinion can be formed after arrival.
+    for (const [id, doc] of docs) docs.set(id, recomputeWatching(doc));
     applyFollowButton();
     resetPoll();
     renderTabs();
@@ -438,22 +448,55 @@ export function createDocPane({ onError } = {}) {
     return wanted;
   }
 
+  /**
+   * The button follows **the document on screen**, not every document in the pane (Ben, 2026-11-19).
+   * With nothing open, or a snapshot open, it describes the pane-wide default instead, so the control
+   * is never a dead button talking about a file that is not there.
+   */
   function applyFollowButton() {
     if (!followBtn) return;
-    const on = followFiles();
+    const doc = activeDoc();
+    const fileBacked = Boolean(doc) && backingFor(doc) === 'path';
+    const on = fileBacked ? doc.watching : followFiles();
     followBtn.dataset.active = on ? 'true' : 'false';
     followBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
     followBtn.setAttribute(
       'aria-label',
-      on ? 'Stop following files on disk' : 'Follow files on disk and re-render when they change',
+      fileBacked
+        ? (on ? `Stop following ${doc.title}` : `Follow ${doc.title} and re-render when it changes`)
+        : (on ? 'Stop following files on disk' : 'Follow files on disk and re-render when they change'),
     );
-    followBtn.title = on
-      ? 'Following files: a file the pane is watching re-renders when it changes'
-      : 'Not following files: nothing re-renders until you ask';
+    followBtn.title = fileBacked
+      ? (on
+        ? `Following ${doc.title}: it re-renders while this tab is open. Your click outranks the assistant's watch flag.`
+        : `Not following ${doc.title}: it re-reads when you open the tab, and never on its own.`)
+      : (on
+        ? 'Following files: a file the pane is watching re-renders when it changes'
+        : 'Not following files: nothing re-renders until you ask');
   }
 
   function activeDoc() {
     return activeId ? docs.get(activeId) || null : null;
+  }
+
+  /** Precedence lives in `preview-watch.js`: human click, then the assistant's flag, then the default. */
+  function recomputeWatching(doc) {
+    return { ...doc, watching: watchingFor(doc, followFiles(), doc.watchOverride) };
+  }
+
+  /** The header button's whole job: flip this document, leave every other tab alone. */
+  function setActiveFollow(wanted) {
+    const doc = activeDoc();
+    if (!doc || backingFor(doc) !== 'path') return null;
+    const next = Boolean(wanted);
+    docs.set(doc.id, recomputeWatching({ ...doc, watchOverride: next }));
+    applyFollowButton();
+    // A tab that started following must not inherit the previous settle history, and one that stopped
+    // must not have a reload land on it from a poll already in flight.
+    resetPoll();
+    renderTabs();
+    reportState();
+    return next;
   }
 
   function stopPollTimer() {
@@ -633,12 +676,10 @@ export function createDocPane({ onError } = {}) {
       label.className = 'doc-tab-label';
       label.textContent = doc.title;
       const dot = document.createElement('span');
-      const freshness = tabFreshness({
-        doc,
-        watching: followFiles(),
-        isWatching: doc.id === activeId && doc.watching && doc.backing === 'path',
-        knownToken: doc.token,
-      });
+      // Asked about this document, not about the pane default. The call here used to pass
+      // `followFiles()`, which is how a tab the assistant had pinned with `watch:false` still wore the
+      // watching dot, and it used to compare `doc.token` with itself to claim the tab was fresh.
+      const freshness = tabFreshness({ doc, activeId });
       dot.className = `doc-tab-fresh is-${freshness}`;
       dot.dataset.freshness = freshness;
       dot.title = FRESHNESS_TITLES[freshness] || '';
@@ -798,12 +839,30 @@ export function createDocPane({ onError } = {}) {
       renderActive();
       return;
     }
+    // A tab switch has to move which view element is on top, not only repaint inside whichever one is
+    // already up. `select()` does not go through `show()`, so without this an HTML document that put
+    // the frame on top keeps covering the markdown a tab click just painted into a hidden element, and
+    // the switch reads as "the pane ignores that tab". Measured 2026-11-19: markdown tabs looked fine
+    // purely by luck, because the markdown view was the one already visible.
+    //
+    // Source mode is honoured here rather than left to `paintMarkdown`, which restores it after its
+    // own fetch: switching to markdown first would show the body for the duration of a fetch, which is
+    // a flicker on a document being read as source.
+    const inSource = doc.kind === 'markdown' && sourceView?.dataset.showingSource === 'true';
+    showView(inSource ? 'source' : doc.kind === 'markdown' ? 'markdown' : 'frame');
     if (doc.kind !== 'markdown') {
       loadFrame(doc);
       return;
     }
-    if (force) docs.set(doc.id, { ...doc, raw: undefined });
-    renderMarkdown(doc, doc.kind === 'markdown' ? scrollTopOfActiveView() : null);
+    // `force` means "ignore whatever body you are holding". That has to clear the cache on the very
+    // object this call then renders: clearing it only in the map, and rendering the reference read
+    // before that write, leaves `raw` present on the object handed to renderMarkdown, which re-paints
+    // the bytes already on screen, skips the fetch, and lets the chip report a reload that never
+    // happened. Measured 2026-11-19: with the two lines below swapped for that shape, every other
+    // file edit landed and the rest showed a chip and no change.
+    const target = force ? { ...doc, raw: undefined } : doc;
+    if (force) docs.set(doc.id, target);
+    renderMarkdown(target, scrollTopOfActiveView());
   }
 
   function showView(kind) {
@@ -907,7 +966,10 @@ export function createDocPane({ onError } = {}) {
   if (closeBtn) closeBtn.addEventListener('click', () => setOpen(false));
   if (reloadBtn) reloadBtn.addEventListener('click', () => loadActive(true));
   if (followBtn) {
-    followBtn.addEventListener('click', () => setFollowFiles(!followFiles()));
+    followBtn.addEventListener('click', () => {
+      const doc = activeDoc();
+      setActiveFollow(!(doc && doc.watching));
+    });
     applyFollowButton();
   }
   if (chipEl) {

@@ -63,6 +63,21 @@ claim('Follow-files decides only when the model had no opinion', () => {
   assert.equal(watchingFor(PATH_DOC, false), false);
 });
 
+claim('a human click outranks the assistant flag in both directions', () => {
+  // The whole reason the override lives on the document: an `update` entry arriving later must not
+  // re-follow a tab the human froze, and their "follow this" has to survive an entry saying otherwise.
+  assert.equal(watchingFor({ ...PATH_DOC, watch: true }, true, false), false);
+  assert.equal(watchingFor({ ...PATH_DOC, watch: false }, false, true), true);
+  assert.equal(watchingFor(PATH_DOC, false, true), true);
+});
+
+claim('a human click cannot make bytes that have no file watchable', () => {
+  // The button is hidden for these, so this is the guard rail rather than a UI path: no override,
+  // however explicit, turns a stored body or a copied snapshot into a polled file.
+  assert.equal(watchingFor(STORE_DOC, true, true), false);
+  assert.equal(watchingFor(COPY_DOC, true, true), false);
+});
+
 /* ── When the timer is allowed to spend a request ─────────────── */
 
 claim('exactly one document is polled, and only while it is on screen', () => {
@@ -142,27 +157,41 @@ claim('a failed poll counts as a failure and does not touch what is on screen', 
 
 /* ── What a tab says about itself ─────────────────────────────── */
 
-claim('the watched tab says watching and a background tab says stale', () => {
-  assert.equal(tabFreshness({ doc: PATH_DOC, watching: true, isWatching: true }), 'watching');
-  // A background tab is stale by construction: exactly one document is polled, so nothing has
-  // looked at this one since it stopped being active. Saying so is the point of the dot.
-  assert.equal(tabFreshness({ doc: PATH_DOC, watching: true, isWatching: false }), 'stale');
-  assert.equal(tabFreshness({ doc: PATH_DOC, watching: false, isWatching: false }), 'snapshot');
+const WATCHING_PATH_DOC = { ...PATH_DOC, watching: true };
+const OTHER_TAB = 'f'.repeat(32);
+
+claim('only the polled tab says watching, and a following tab hidden away says queued', () => {
+  assert.equal(tabFreshness({ doc: WATCHING_PATH_DOC, activeId: WATCHING_PATH_DOC.id }), 'watching');
+  assert.equal(tabFreshness({ doc: WATCHING_PATH_DOC, activeId: OTHER_TAB }), 'queued');
+  // Off, not snapshot: the bytes are a file the pane could follow, it has simply been told not to.
+  assert.equal(tabFreshness({ doc: { ...PATH_DOC, watching: false }, activeId: PATH_DOC.id }), 'off');
 });
 
-claim('a background tab last checked against the disk reports fresh', () => {
-  assert.equal(
-    tabFreshness({ doc: { ...PATH_DOC, token: 't9' }, watching: true, isWatching: false, knownToken: 't9' }),
-    'fresh',
-  );
+claim('a dot never claims the disk was checked for a tab nobody polled', () => {
+  // What this replaces compared `doc.token` with itself, so every hidden file-backed tab reported
+  // 'fresh', green, whether or not the file had moved (2026-11-19). There is no token argument left in
+  // the signature, because the pane has no observation to report about a tab it is not polling.
+  const hidden = { ...WATCHING_PATH_DOC, token: 't9', raw: { text: 'the version you left' } };
+  assert.equal(tabFreshness({ doc: hidden, activeId: OTHER_TAB }), 'queued');
+});
+
+claim('a dot describes the document and never the pane default', () => {
+  // The old renderTabs passed `followFiles()` as the watching flag, so a tab the assistant had pinned
+  // with `watch:false` still wore the watching dot. The answer comes off the document now.
+  const pinned = { ...PATH_DOC, watch: false, watching: false };
+  assert.equal(tabFreshness({ doc: pinned, activeId: pinned.id }), 'off');
 });
 
 claim('a gone file outranks everything and a snapshot admits it is one', () => {
   assert.equal(
-    tabFreshness({ doc: { ...PATH_DOC, available: false }, watching: true, isWatching: true }),
+    tabFreshness({ doc: { ...WATCHING_PATH_DOC, available: false }, activeId: WATCHING_PATH_DOC.id }),
     'gone',
   );
-  assert.equal(tabFreshness({ doc: STORE_DOC, watching: true, isWatching: false }), 'snapshot');
+  assert.equal(
+    tabFreshness({ doc: { ...STORE_DOC, watching: true }, activeId: STORE_DOC.id }),
+    'snapshot',
+  );
+  assert.equal(tabFreshness({ doc: null, activeId: null }), 'unknown');
 });
 
 /* ── The request itself ───────────────────────────────────────── */
