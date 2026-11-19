@@ -458,13 +458,15 @@ async def _attachment_tags(account: str, message: dict) -> tuple[list[str], "str
         body = item.get("text")
         # The cap is enforced here as well as in the upload route: the browser is a client, and a
         # client that sends a body does not get to decide how much of the context window it takes.
-        inline = body if isinstance(body, str) and 0 < len(body) <= uploads.INLINE_MAX_CHARS else None
+        # What it does not get to decide either is the *sentence*: `uploads.file_tag` runs the same
+        # `inline_verdict` the route ran, so an empty extraction is reported as a missing text layer
+        # here and not as a file too large to inline. The two checks used to disagree about length 0.
         tags.append(
             uploads.file_tag(
                 name=_display_name(path),
                 path=path,
                 bytes_=path.stat().st_size,
-                text=inline,
+                text=body if isinstance(body, str) else None,
                 mime_type=str(item.get("mimeType") or ""),
             )
         )

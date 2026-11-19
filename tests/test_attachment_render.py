@@ -15,7 +15,7 @@ import pytest
 
 SCRIPT = Path(__file__).resolve().parent.parent / "tools" / "test_attachment_render.mjs"
 NODE = shutil.which("node")
-CLAIMS = 19
+CLAIMS = 20
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not on PATH")

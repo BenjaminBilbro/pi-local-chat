@@ -172,7 +172,10 @@
       </div>
     </div>
 
-    <input type="file" id="file-input" accept="image/*,.pdf,.txt">
+    <!-- Kinds the picker offers. The list the app actually enforces comes from /api/limits, because this
+         attribute is a filter on a dialog, not a gate: a drag, a paste or a stale tab gets past it, and
+         `static/chat.js` plus `/api/upload-file` are the two that decide. A test keeps this in step. -->
+    <input type="file" id="file-input" accept="image/*,.pdf,.txt,.md,.csv,.json">
   </div>
 
   <!-- Document preview pane. Owned by static/preview.js and driven by pi preview entries;

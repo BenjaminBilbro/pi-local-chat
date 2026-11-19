@@ -108,7 +108,12 @@ const uploadScope = readUploadScope();
  * incoming limit does not come back as an error, it closes the connection, and that reads as the chat
  * falling over. The default is the server's own default, so a failed fetch degrades to the old
  * behavior rather than to no guard at all. */
-const uploadLimits = { imageMaxBytes: 12 * 1024 * 1024 };
+const uploadLimits = {
+  imageMaxBytes: 12 * 1024 * 1024,
+  // Fallback only, until /api/limits answers. The server's list is the one that decides; this copy
+  // exists so the first second of a session behaves like the rest of it.
+  documentSuffixes: ['.pdf', '.txt', '.md', '.csv', '.json'],
+};
 
 async function loadUploadLimits() {
   try {
@@ -1361,16 +1366,27 @@ async function handleFileSelection(event) {
   const files = event.target.files;
   if (!files || files.length === 0) return;
 
+  /* One gate, from the server's own list, plus a refusal that says something. A picker whose `accept`
+   * attribute was bypassed (a drag, a paste, a stale tab) used to drop a .docx on the floor with no
+   * word at all, which reads as the app ignoring you rather than as the app declining you. */
+  const suffixes = Array.isArray(uploadLimits.documentSuffixes)
+    ? uploadLimits.documentSuffixes
+    : ['.pdf', '.txt'];
+  const isDocument = (file) => {
+    const name = (file.name || '').toLowerCase();
+    return suffixes.some((suffix) => name.endsWith(suffix));
+  };
+
   for (const file of files) {
     if (file.type.startsWith('image/')) {
       await addImageFile(file);
-    } else if (
-      file.type === 'application/pdf'
-      || file.type === 'text/plain'
-      || file.name.endsWith('.pdf')
-      || file.name.endsWith('.txt')
-    ) {
+    } else if (isDocument(file)) {
       await addDocumentFile(file);
+    } else {
+      const name = (file.name || 'That file').split('/').pop();
+      showChatError(
+        `${name} is not something this composer can attach. Documents go as ${suffixes.join(', ')}.`,
+      );
     }
   }
 

@@ -334,12 +334,18 @@ def create_app(
         if not filename:
             raise HTTPException(status_code=400, detail="No file provided")
 
-        # Validate file extension
+        # Validate file extension. The list lives in `uploads` because the browser's `accept`
+        # attribute, this check and the extractor have to agree, and a third place to forget is how
+        # `.md` stayed unattachable while the notes file was the likeliest thing to want attached.
         ext = Path(filename).suffix.lower()
-        if ext not in (".pdf", ".txt"):
+        allowed = uploads.accepted_document_suffixes()
+        if ext not in allowed:
             raise HTTPException(
                 status_code=400,
-                detail=f"Unsupported file type: {ext}. Only .pdf and .txt are allowed.",
+                detail=(
+                    f"Unsupported file type: {ext}. "
+                    f"Only {', '.join(allowed[:-1])} and {allowed[-1]} are allowed."
+                ),
             )
 
         # The scope is the tab's own attachment directory. It comes from the browser because no child
@@ -359,16 +365,7 @@ def create_app(
         )
 
         # Extract text based on file type
-        if ext == ".txt":
-            try:
-                text = content_bytes.decode("utf-8")
-            except UnicodeDecodeError:
-                raise HTTPException(
-                    status_code=400,
-                    detail="File is not valid UTF-8 text.",
-                )
-            mime_type = "text/plain"
-        else:  # .pdf
+        if ext == uploads.PDF_SUFFIX:
             try:
                 text = ""
                 with pdfplumber.open(io.BytesIO(content_bytes)) as pdf:
@@ -382,7 +379,16 @@ def create_app(
                     status_code=400,
                     detail="Failed to extract text from PDF.",
                 )
-            mime_type = "application/pdf"
+            mime_type = uploads.PDF_MIME
+        else:
+            try:
+                text = content_bytes.decode("utf-8")
+            except UnicodeDecodeError:
+                raise HTTPException(
+                    status_code=400,
+                    detail="File is not valid UTF-8 text.",
+                )
+            mime_type = uploads.TEXT_SUFFIX_TO_MIME[ext]
 
         # Keep the bytes. The transcription is what the model reads now; the file is what it opens
         # later, and without this line there was no file to open.
@@ -397,13 +403,23 @@ def create_app(
             raise HTTPException(status_code=400, detail="Invalid attachment scope")
 
         # Inline it only while it is small enough to be worth the context window. Above the cap the
-        # response carries no body and the path does the work: the agent reads it in chunks.
-        inlined = len(text) <= uploads.INLINE_MAX_CHARS
-        if not inlined:
+        # response carries no body and the path does the work: the agent reads it in chunks. An empty
+        # extraction is its own state, because "this PDF has no text" and "this PDF is huge" want
+        # different sentences - and `uploads.inline_verdict` is the single place that decides which.
+        verdict = uploads.inline_verdict(text)
+        inlined = verdict == "inlined"
+        if verdict == "over":
             log.info(
                 "attachment %s is %d characters, over the inline limit: the agent gets the path only",
                 stored.name,
                 len(text),
+            )
+        elif verdict == "empty":
+            log.info(
+                "attachment %s (%s) yielded no text to inline: the agent gets the path and the "
+                "no-text-layer sentence, not a size complaint",
+                stored.name,
+                mime_type,
             )
 
         return {
@@ -416,6 +432,10 @@ def create_app(
             # `path` either way, so the attachment is reachable at every size.
             "content": text if inlined else None,
             "inlined": inlined,
+            # Why it was not inlined, so a later surface can say that instead of guessing: a scan and a
+            # 2 MB log want different advice. Enforcement never reads this - the server re-decides from
+            # the bytes it has, because this value comes back from a client.
+            "inlineState": verdict,
             "inlineLimitChars": uploads.INLINE_MAX_CHARS,
         }
 
@@ -848,6 +868,10 @@ def create_app(
             "documentMaxBytes": MAX_DOCUMENT_SIZE,
             "inlineMaxChars": uploads.INLINE_MAX_CHARS,
             "retentionDays": uploads.RETENTION_DAYS,
+            # Same reason as the sizes: the composer's file gate and `/api/upload-file` have to accept
+            # the same kinds, and a list the browser copies by hand is a list that drifts. `tools` checks
+            # the markup's `accept` attribute against this.
+            "documentSuffixes": list(uploads.accepted_document_suffixes()),
         }
 
     @application.get("/api/version")

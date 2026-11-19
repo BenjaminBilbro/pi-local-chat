@@ -119,6 +119,20 @@ claim('a document left out on purpose says so instead of looking empty', () => {
   assert.equal(files[0].name, 'huge.log');
 });
 
+claim('a scan with no text layer is not treated as a document that arrived', () => {
+  /* `pi_chat/uploads.py` now writes three different refusals - over the cap, no text layer, no body sent -
+     and all three keep the `(not inlined` prefix for exactly this rule. A fourth sentence in a new shape
+     would show a file the model never received as one it read. */
+  const scan = '<attachments>look' + '\n'
+    + '<file name="licence.pdf" path="/tmp/0a-licence.pdf" bytes="900000">'
+    + '(not inlined: nothing was extracted from this file, so it has no text layer. The bytes are at '
+    + 'the path.)</file></attachments>';
+  const { files, text } = parseAttachments(scan);
+  assert.equal(files.length, 1);
+  assert.equal(files[0].inlined, false, 'a scan read as a document that made it into context');
+  assert.ok(!text.includes('no text layer'), 'and the apology does not render as message text');
+});
+
 claim('the pre-wrapper shape still yields a chip, with no path to show', () => {
   const legacy = 'Read this\n<file name="old.txt">\na body\n</file>';
   const parsed = parseAttachments(legacy);

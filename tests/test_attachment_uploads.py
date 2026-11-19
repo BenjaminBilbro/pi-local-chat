@@ -14,6 +14,7 @@ real subprocess would only show it through a model call.
 from __future__ import annotations
 
 import base64
+import pathlib
 import os
 import time
 
@@ -176,6 +177,44 @@ class TestAttachmentTags:
         # The limit it quotes is the one in force, not a literal copied into a template.
         assert "1,234 characters" in tag
 
+    def test_an_empty_extraction_blames_its_text_layer_and_never_its_size(self, monkeypatch):
+        """The bug Ben's live test found: a photo of a licence is 0 characters, and the two enforcement
+        points disagreed about whether that was in range. The route said yes (`len(text) <= cap`), the
+        prompt path said no (`0 < len(text)`), and the tag that followed read "over the limit of 200,000
+        characters" about a file with nothing in it. The advice after a size is to read the file in
+        chunks, which yields nothing from a scan either."""
+        monkeypatch.setattr(uploads, "INLINE_MAX_CHARS", 20)
+        tag = uploads.file_tag(name="licence.pdf", path="/tmp/licence.pdf", bytes_=900_000, text="")
+
+        assert "no text layer" in tag
+        assert "over the limit" not in tag
+        assert "convert the page to an image" in tag
+
+    def test_whitespace_is_no_text_layer_too(self):
+        # What pdfplumber answers for a scanned page is newlines, and a body of three of them is the
+        # same document as a body of nothing.
+        scanned_page = chr(10) * 3
+        assert uploads.inline_verdict(scanned_page) == "empty"
+        assert uploads.inline_verdict("") == "empty"
+        assert uploads.inline_verdict(None) == "missing"
+        assert uploads.inline_verdict("x") == "inlined"
+
+    def test_a_body_over_the_cap_is_blamed_on_its_size_and_quotes_the_limit_in_force(self, monkeypatch):
+        monkeypatch.setattr(uploads, "INLINE_MAX_CHARS", 1234)
+        tag = uploads.file_tag(name="big.txt", path="/tmp/big.txt", bytes_=9, text="q" * 1235)
+
+        assert "over the limit of 1,234 characters" in tag
+        assert "no text layer" not in tag
+
+    def test_every_refusal_starts_with_the_prefix_the_chip_reads(self):
+        """`static/utils.js` decides whether a file made it into context by looking for `(not inlined`.
+        A sentence that drops the prefix would make a file the model never received render as one it
+        read, which is the exact confusion this whole tag exists to prevent."""
+        source = pathlib.Path(__file__).resolve().parents[1] / "static" / "utils.js"
+        assert "(not inlined" in source.read_text(encoding="utf-8"), "the browser stopped reading the prefix"
+        for verdict in ("over", "empty", "missing"):
+            assert uploads.not_inlined_sentence(verdict).startswith("(not inlined: ")
+
     def test_the_block_wraps_so_one_rule_removes_it(self):
         block = uploads.attachment_block(['<file name="a" path="/a" bytes="1">x</file>'])
         assert block.startswith("<attachments>")
@@ -261,6 +300,30 @@ class TestPromptCarriesPaths:
         assert "y" * 5000 not in prompt
         assert "not inlined" in prompt
         assert f'path="{stored.path}"' in prompt
+
+    async def test_both_enforcement_points_tell_the_same_story_about_a_scan(self, work_tree, monkeypatch):
+        """The route and the prompt path are two checks on one document, and they used to disagree about
+        length 0. Cap it at 40 so a size complaint would be the natural thing to say, then show that the
+        tag says something true instead: this file has no text, and reading it in chunks will not help."""
+        monkeypatch.setattr(uploads, "INLINE_MAX_CHARS", 40)
+        scan = uploads.store("b", SCOPE, original_name="licence.pdf", data=b"scan", mime_type="application/pdf")
+        notes = uploads.store("b", SCOPE, original_name="notes.md", data=b"# notes")
+
+        pi = StubPi()
+        await send_prompt(pi, {
+            "message": "what does my licence say",
+            "uploadScope": SCOPE,
+            "attachments": [
+                {"ref": scan.ref, "name": "licence.pdf", "text": "", "mimeType": "application/pdf"},
+                {"ref": notes.ref, "name": "notes.md", "text": "# notes", "mimeType": "text/markdown"},
+            ],
+        })
+
+        prompt = pi.sent[0]["message"]
+        assert "no text layer" in prompt
+        assert "over the limit" not in prompt, "a 0-character body is not a file that is too large"
+        assert 'mimeType="text/markdown"' in prompt
+        assert "># notes</file>" in prompt, "and the document that did arrive is still inlined normally"
 
     async def test_a_missing_file_refuses_the_prompt_rather_than_losing_it_quietly(self, work_tree):
         pi = StubPi()

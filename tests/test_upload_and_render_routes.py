@@ -289,3 +289,132 @@ class TestDebugRenderRoute:
 
         assert response.status_code == 500
         assert "timed out" in response.json()["detail"]
+
+
+# ---------------------------------------------------------------- the kinds, and the three states
+
+
+class TestDocumentKinds:
+    """What the composer may attach, and what it is told when nothing could be read.
+
+    `.md` is the kind that was missing: an attached PDF of a licence worked and an attached notes file
+    did not, blocked by a list and an `accept` attribute that had never been revisited (Ben,
+    2026-11-19). Markdown, CSV and JSON need no parser, so the only thing between them and the model
+    was that list. Anything that needs a parser is a different change.
+    """
+
+    @pytest.mark.parametrize(
+        ("suffix", "mime"),
+        [(".txt", "text/plain"), (".md", "text/markdown"), (".csv", "text/csv"), (".json", "application/json")],
+    )
+    def test_a_plain_text_kind_arrives_whole_and_typed(self, client, suffix, mime):
+        response = client.post(
+            "/api/upload-file",
+            data={"scope": SCOPE},
+            files={"file": (f"notes{suffix}", "# Body\nthe tail".encode(), mime)},
+        )
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["mimeType"] == mime
+        assert body["inlineState"] == "inlined"
+        assert body["content"] == "# Body\nthe tail"
+        # The bytes are filed under the name the caller used, suffix and all: a `.md` that comes back
+        # as `.txt` is a file the agent then reads with the wrong assumptions.
+        assert body["filename"].endswith(suffix)
+        assert Path(body["path"]).read_text(encoding="utf-8") == "# Body\nthe tail"
+
+    def test_the_refusal_names_every_kind_that_works(self, client):
+        response = client.post(
+            "/api/upload-file", files={"file": ("doc.docx", b"PK\x03\x04", "application/octet-stream")}
+        )
+
+        assert response.status_code == 400
+        detail = response.json()["detail"]
+        assert "Unsupported file type" in detail
+        for suffix in uploads.accepted_document_suffixes():
+            assert suffix in detail, f"the message refuses {suffix}, which the route actually takes"
+
+    def test_the_limits_route_carries_the_list_the_composer_gates_on(self, client):
+        """Three places have to agree about the kinds: this route, the file gate in `static/chat.js`,
+        and the picker's `accept` attribute. The first two share one answer over HTTP; the third is a
+        filter on a dialog, and a test keeps it from quietly falling behind."""
+        body = client.get("/api/limits").json()
+
+        assert body["documentSuffixes"] == list(uploads.accepted_document_suffixes())
+
+    def test_the_picker_offers_every_kind_the_server_takes(self):
+        html = (Path(__file__).resolve().parents[1] / "static" / "index.html").read_text(encoding="utf-8")
+        line = [line for line in html.splitlines() if 'id="file-input"' in line]
+        assert len(line) == 1, "the composer's file input moved, and this check needs to follow it"
+        accept = line[0].split('accept="')[1].split('"')[0].split(",")
+
+        for suffix in uploads.accepted_document_suffixes():
+            assert suffix in accept, f"{suffix} is uploadable and the picker never offers it"
+
+
+class TestInlineStates:
+    """`inlined`, `empty` and `over` are three facts, and one of them used to be reported as another.
+
+    The route decided with `len(text) <= cap`, which a scanned PDF passes at length 0; the prompt path
+    decided with `0 < len(text) <= cap`, which it fails. The document therefore reached the model blamed
+    for a size it did not have, and the advice that follows a size is to read the file in chunks, which
+    yields nothing from a page with no text layer either. So the route names the state, and one function
+    in `pi_chat/uploads.py` decides it for both places.
+    """
+
+    def test_a_document_that_yielded_nothing_says_so_rather_than_blaming_its_size(self, client, monkeypatch):
+        # Lowering the cap makes a size complaint *plausible*, which is what makes its absence a claim.
+        monkeypatch.setattr(uploads, "INLINE_MAX_CHARS", 40)
+
+        class NoTextPage:
+            @staticmethod
+            def extract_text():
+                return None
+
+        class NoTextPdf:
+            pages = [NoTextPage(), NoTextPage()]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(app_module.pdfplumber, "open", lambda raw: NoTextPdf())
+
+        body = client.post(
+            "/api/upload-file",
+            data={"scope": SCOPE},
+            files={"file": ("licence.pdf", b"%PDF-1.7 not a real pdf", "application/pdf")},
+        ).json()
+
+        assert body["inlineState"] == "empty"
+        assert body["inlined"] is False
+        assert body["content"] is None
+        # The path is the whole point of an empty extraction: there is a file, and it is a picture.
+        assert Path(body["path"]).exists()
+
+    def test_whitespace_counts_as_no_text_layer(self, client):
+        """pdfplumber answers a scanned page with newlines. A body of three `\n` is that same document,
+        and handing it over as an inlined body tells the model the file was empty when all it proves is
+        that nothing was extracted."""
+        body = client.post(
+            "/api/upload-file", data={"scope": SCOPE}, files={"file": ("blank.txt", b"\n \n", "text/plain")}
+        ).json()
+
+        assert body["inlineState"] == "empty"
+        assert body["content"] is None
+
+    def test_a_document_over_the_cap_is_still_blamed_on_its_size(self, client, monkeypatch):
+        monkeypatch.setattr(uploads, "INLINE_MAX_CHARS", 20)
+
+        body = client.post(
+            "/api/upload-file",
+            data={"scope": SCOPE},
+            files={"file": ("long.txt", b"z" * 60, "text/plain")},
+        ).json()
+
+        assert body["inlineState"] == "over"
+        assert body["content"] is None
+        assert body["inlined"] is False

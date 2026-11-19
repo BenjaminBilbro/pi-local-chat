@@ -57,6 +57,24 @@ INLINE_MAX_CHARS = int(os.environ.get("PI_CHAT_INLINE_MAX_CHARS", "200000"))
 # often than a month in this deployment, and a scheduled task is another thing that can silently die.
 RETENTION_DAYS = int(os.environ.get("PI_CHAT_UPLOAD_RETENTION_DAYS", "30"))
 
+# Documents that need no parser: they are decoded, kept as their own bytes, and handed over as text.
+# `.md` was added on 2026-11-19 because Ben could attach a PDF of a licence but not his own notes, and
+# the only thing standing in the way was this table plus the `accept` attribute in `static/index.html`.
+# Anything that needs a parser (a .docx, a spreadsheet) is a different change and a different risk.
+TEXT_SUFFIX_TO_MIME = {
+    ".txt": "text/plain",
+    ".md": "text/markdown",
+    ".csv": "text/csv",
+    ".json": "application/json",
+}
+PDF_SUFFIX = ".pdf"
+PDF_MIME = "application/pdf"
+
+
+def accepted_document_suffixes() -> tuple[str, ...]:
+    """What `/api/upload-file` takes, in the order the error message lists it."""
+    return (PDF_SUFFIX, *TEXT_SUFFIX_TO_MIME)
+
 # Image kinds the pane and the image tools agree on. The suffix is what decides how a saved file
 # reads, so an exotic `mimeType` from the browser does not get to invent one.
 SUFFIX_BY_MIME = {
@@ -227,19 +245,72 @@ def _attr(value: object) -> str:
     )
 
 
+def inline_verdict(text: str | None) -> str:
+    """One verdict for one document: `inlined`, `empty`, `over`, or `missing`.
+
+    This function exists because two places used to decide separately and disagree. The upload route
+    tested `len(text) <= INLINE_MAX_CHARS`, which a scanned PDF passes at length 0; the prompt path
+    tested `0 < len(text) <= INLINE_MAX_CHARS`, which it fails. The document therefore arrived in the
+    model's context blamed for a size it did not have, and the advice that follows a size is to read the
+    file in chunks, which cannot work on a page with no text layer either. Ben's live test found it on
+    a photo of a licence.
+
+    Whitespace counts as empty on purpose: pdfplumber answers a scanned page with newlines, and a body
+    of three `\n` is the same document as a body of nothing.
+    """
+    if text is None:
+        return "missing"
+    if not text.strip():
+        return "empty"
+    if len(text) > INLINE_MAX_CHARS:
+        return "over"
+    return "inlined"
+
+
+def not_inlined_sentence(verdict: str) -> str:
+    """The line that replaces a body, for a document the model was not given.
+
+    Built per call rather than at import: `INLINE_MAX_CHARS` is a knob, and a sentence frozen at import
+    would quote a limit that is not in force. Every one of them begins with `(not inlined`, which is how
+    `static/utils.js` tells an apology from a document (`parseAttachments`), and the chip in the
+    transcript follows that. A new sentence here keeps the prefix or a file that was left out starts
+    rendering as one that arrived.
+    """
+    limit = f"{INLINE_MAX_CHARS:,}"
+    if verdict == "over":
+        return (
+            f"(not inlined: over the limit of {limit} characters. The file is at the path; read it from "
+            "there in chunks.)"
+        )
+    if verdict == "empty":
+        return (
+            "(not inlined: nothing was extracted from this file, so it has no text layer. The bytes are at "
+            "the path. Reading it as text will never yield anything: it is probably a scan or a photo of a "
+            "page, so convert the page to an image and read the image instead.)"
+        )
+    return (
+        f"(not inlined: this browser sent no body, and the document may be over the limit of {limit} "
+        "characters. The file is at the path; read it from there.)"
+    )
+
+
 def file_tag(*, name: str, path: Path, bytes_: int, text: str | None, mime_type: str = "") -> str:
-    """One `<file>` record: the path always, and the body only when it was small enough to inline.
+    """One `<file>` record: the path always, and the body only when `inline_verdict` allows it.
 
     The tag keeps the shape the browser already strips for display (`static/utils.js`), so an
     attachment renders as a chip and a name rather than as 30 KB of PDF transcription in a bubble.
+
+    The verdict is computed here rather than passed in because this is the only place that puts a
+    document in front of the model, and the sentence has to be the one true about the body it was given.
+    An empty body is not a small document: it is a different failure, and it needs the actionable
+    sentence, because "this file has no text layer" is the cue to rasterize the page.
     """
     mime = f' mimeType="{_attr(mime_type)}"' if mime_type else ""
     head = f'<file name="{_attr(name)}" path="{_attr(path)}" bytes="{bytes_}"{mime}'
-    if text is None:
-        # No body, and a line saying so: silence here reads as an empty document, and an assistant
-        # that believes the file is empty does not go and read it.
-        return head + f">(not inlined: over the limit of {INLINE_MAX_CHARS:,} characters)</file>"
-    return f"{head}>{text}</file>"
+    verdict = inline_verdict(text)
+    if verdict == "inlined":
+        return f"{head}>{text}</file>"
+    return f"{head}>{not_inlined_sentence(verdict)}</file>"
 
 
 def image_tag(*, name: str, path: Path, bytes_: int, mime_type: str) -> str:

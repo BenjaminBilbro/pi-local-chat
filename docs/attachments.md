@@ -57,8 +57,44 @@ The images themselves still travel in pi's `images` array. The `<image>` tag is 
 substitute - the assistant gets to see the picture *and* open it.
 
 A document's text is inlined up to `PI_CHAT_INLINE_MAX_CHARS` (default 200,000 characters, about 50k
-tokens). Above that the tag has no body and says so, and the agent reads the file in chunks. Before the
-cap existed, a 5 MB text file went into the context whole, at roughly 1.2 million tokens.
+tokens). Before the cap existed, a 5 MB text file went into the context whole, at roughly 1.2 million
+tokens.
+
+### Three states, one decision
+
+Not every document that could be inlined should be, and "it could not" means two different things. One
+function answers for both enforcement points - the upload route and the prompt path - because they used
+to answer separately and disagreed:
+
+| `uploads.inline_verdict()` | What the tag says | What the agent does next |
+|---|---|---|
+| `inlined` | the body | reads it |
+| `empty` | *nothing was extracted, no text layer, convert the page to an image* | rasterizes the page |
+| `over` | *over the limit of N characters, read it from the path in chunks* | reads it in chunks |
+| `missing` | *this browser sent no body, the document may be over the limit* | reads it from the path |
+
+The route returns the verdict as `inlineState`, and `uploads.file_tag()` re-derives it from the body it
+is actually about to emit, so the sentence cannot be wrong about the document beside it. A client's
+`inlineState` is never read for enforcement - the server re-decides from the bytes it holds.
+
+The bug this table exists for (Ben, 2026-11-19): the route tested `len(text) <= cap`, which a camera
+photo of a licence passes at 0 characters, and the prompt path tested `0 < len(text)`, which it fails.
+The file reached the model blamed for a size it did not have, and the advice after a size is to read the
+file in chunks - which yields nothing from a page with no text layer either. Whitespace counts as empty:
+what a PDF extractor answers for a scan is newlines, and a body of three `\n` is the same document as a
+body of nothing.
+
+### What can be attached
+
+`.pdf`, plus the kinds that need no parser: `.txt`, `.md`, `.csv`, `.json`. `.md` was the missing one -
+an attached PDF of a licence worked while an attached notes file did not, blocked by a list and an
+`accept` attribute that had never been revisited.
+
+Three places have to agree, so they are not allowed to hold the list: the route (`uploads.accepted_document_suffixes()`),
+the file gate in `chat.js`, which reads it from `/api/limits` like the size ceilings, and the picker's
+`accept` attribute, which is a filter on a dialog rather than a gate and is checked against the server's
+list by a test. A file the gate refuses now says which kinds work; before this it vanished, which reads
+as the app ignoring you rather than declining you.
 
 `uploads.resolve_ref()` is the only way a reference becomes a path, and it refuses anything that does
 not resolve inside this account's upload root. The browser never sends a path; it sends a `ref` this
