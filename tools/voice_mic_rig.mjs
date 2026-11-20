@@ -71,6 +71,9 @@ const SELF_HOSTED = has('serve');
 /** How long each phase runs. The quiet window has to outlast the interrupt hold and cooldown comfortably. */
 const SPEAK_MS = Number(flag('speak-ms', '5000'));
 const MUTE_MS = Number(flag('mute-ms', '3000'));
+/* What the rig says during the mode handshake. Any sentence would do; this one is what Ben said on 2026-11-19
+ * when the session swallowed it. */
+const STARTUP_SENTENCE = 'what day is it';
 /* One capture callback is 4096 samples, so at 16 kHz the microphone leaves the page about 3.9 times a second.
  * Thresholds are stated in that unit; the first version of this file guessed twenty packets in 2.6 seconds and
  * failed a run that was working perfectly. */
@@ -228,6 +231,12 @@ async function startChrome(wav) {
     '--no-first-run',
     '--no-default-browser-check',
     '--use-fake-ui-for-media-stream',
+    /* Both flags or neither. `--use-file-for-fake-audio-capture` is only consulted for a *fake* device, so on
+     * its own Chrome hands the page the real microphone and the WAV is never read - which is how an earlier
+     * run of this file appeared to measure a scripted microphone while it was actually metering the room, and
+     * why that run died with `NotFoundError: Requested device not found` the next time the USB mic was not the
+     * default. With the fake device the capture is the WAV, on any machine, and the claim means what it says. */
+    '--use-fake-device-for-media-stream',
     `--use-file-for-fake-audio-capture=${wav}`,
     '--autoplay-policy=no-user-gesture-required',
     `--remote-debugging-port=${CDP_PORT}`,
@@ -289,7 +298,17 @@ const WIRE_HOOK = `(function () {
   var Real = window.WebSocket;
   function kindOf(payload) {
     if (typeof payload === 'string') {
-      try { return JSON.parse(payload).type || 'json'; } catch (e) { return 'string'; }
+      try {
+        var parsed = JSON.parse(payload);
+        /* pi's events arrive wrapped in a pi_event envelope, and the lifecycle of a run lives inside it. A
+         * bare "pi_event" says nothing about whether the handshake turn has settled, and that boundary is what
+         * the startup claims are measured against. (No backticks anywhere in here: this whole function is
+         * shipped to the page inside a template literal, and one closes it - twice now.) */
+        if (parsed && parsed.event && parsed.event.type) {
+          return parsed.type + ':' + parsed.event.type;
+        }
+        return parsed.type || 'json';
+      } catch (e) { return 'string'; }
     }
     if (payload instanceof ArrayBuffer) return payload.byteLength;
     if (ArrayBuffer.isView(payload)) return payload.byteLength;
@@ -342,10 +361,18 @@ async function login(cdp) {
 
 /** The scripted timeline. Returns the marks that the assertions measure against. */
 async function drive(cdp, progress = () => {}) {
-  const marks = {};
-  progress('entering voice mode');
+  const marks = { startupSentence: STARTUP_SENTENCE };
+  /* Enter and speak in one page task. That is the whole trick to aiming at the handshake: nothing can settle
+   * between two statements in the same task, so the sentence lands inside the startup window on any machine,
+   * fast provider or slow, without the rig having to win a race against a round trip. */
+  progress('entering voice mode, then speaking during the mode handshake');
   await waitFor(cdp, `window.__wire && window.__piChatVoiceMode`, 10000);
-  await evaluate(cdp, `window.__piChatVoiceMode.enter()`);
+  marks.startupAfter = await evaluate(cdp, `(function(){
+    window.__piChatVoiceMode.enter();
+    window.__piChatVoiceMode.onTranscript(${JSON.stringify(STARTUP_SENTENCE)});
+    return JSON.stringify(window.__piChatVoiceMode.probe());
+  })()`).then(JSON.parse);
+  marks.startupAt = Date.now();
   await waitFor(cdp, `window.__piChatVoiceMode.probe().active === true`);
 
   /* Readiness, and it has to be waited for *after* entering, because entering is what sends `stt_enable` and
@@ -398,6 +425,11 @@ async function drive(cdp, progress = () => {}) {
   return marks;
 }
 
+/** The controller's own view of itself, for the claims that are about what the surface believed. */
+async function probe(cdp) {
+  return evaluate(cdp, `JSON.stringify(window.__piChatVoiceMode.probe())`).then(JSON.parse);
+}
+
 /**
  * Both directions of audio, growing in the same short window.
  *
@@ -423,22 +455,45 @@ async function bothStreamsStreaming(cdp, timeoutMs) {
 
 /* ── the audit log, which is the server's copy of the same events ──────── */
 
-function readAudit(account) {
+function readAudit(account, sinceMs = 0) {
   const dir = path.join(ROOT, 'logs');
   if (!existsSync(dir)) return null;
-  const files = readdirSync(dir)
+  /* Which file is this run's? Neither mtime nor size answers that honestly: a page can leave a second,
+   * short-lived connection behind (mtime picks it, and a file with no commands in it makes "no teardown reached
+   * the server" trivially true), and the previous run's file is bigger and may still be warm (size picks that,
+   * and the mute window is then measured against a session where nothing was muted). The file name carries the
+   * connection's start to the second, and the rig knows when it started, so that is the filter. A name that
+   * does not parse falls back to mtime rather than dropping the server's half of the report. */
+  const startedFrom = (file) => {
+    const m = path.basename(file).match(/-(\d{8})-(\d{6})-[0-9a-f]{4,}(-part\d+)?\.jsonl$/);
+    if (!m) return statSync(file).mtimeMs;
+    const [, day, clock] = m;
+    return Date.parse(`${day.slice(0, 4)}-${day.slice(4, 6)}-${day.slice(6, 8)}T${clock.slice(0, 2)}:`
+      + `${clock.slice(2, 4)}:${clock.slice(4, 6)}`);
+  };
+  const candidates = readdirSync(dir)
     .filter((name) => name.endsWith('.jsonl'))
     .map((name) => path.join(dir, name))
-    .filter((file) => statSync(file).mtimeMs > Date.now() - 120000)
-    .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
-  if (!files.length) return null;
+    .filter((file) => (sinceMs ? startedFrom(file) >= sinceMs - 5000 : statSync(file).mtimeMs > Date.now() - 120000))
+    .sort((a, b) => startedFrom(b) - startedFrom(a) || statSync(b).size - statSync(a).size);
+  if (!candidates.length) return null;
 
-  const lines = readFileSync(files[0], 'utf8').split('\n').filter(Boolean);
-  const entries = [];
-  for (const line of lines) {
-    try { entries.push(JSON.parse(line)); } catch { /* a partial final line */ }
-  }
-  return { file: files[0], entries, account };
+  /* One connection rolls into `...-part2.jsonl` past the size cap, and the lines a run cares about most - the
+   * mode marker, the first settle, the mute boundary - are the earliest ones, so every part of the same `conn`
+   * is read rather than the newest part alone. */
+  const parse = (file) => readFileSync(file, 'utf8').split('\n').filter(Boolean)
+    .map((line) => { try { return JSON.parse(line); } catch { return null; /* a partial final line */ } })
+    .filter(Boolean);
+  const newest = parse(candidates[0]);
+  const wanted = newest.length ? newest[0].conn : null;
+  const entries = wanted === null
+    ? newest
+    : newest.concat(...candidates.slice(1).filter((file) => {
+        const lines = parse(file);
+        return lines.length && lines[0].conn === wanted;
+      }).map(parse));
+  entries.sort((a, b) => (Number(a.ts || 0) - Number(b.ts || 0)) || (Number(a.seq || 0) - Number(b.seq || 0)));
+  return { file: candidates[0], entries, account };
 }
 
 /**
@@ -464,11 +519,18 @@ function sumBetween(series, field, from, to) {
   return series.filter((row) => row.t >= from && row.t <= to).reduce((total, row) => total + row[field], 0);
 }
 
-/** Commands the server was told, by name. A teardown here is the bug, whatever the client claims. */
+/** Commands the server was told, by name and with the shaped text where there was any. A teardown here is the
+ *  bug, whatever the client claims, and the shape is what tells a queued sentence apart from a marker: the log
+ *  is debug output that may be shared, so `pi_chat/audit.py` reduces text to `str(len digest)` and a claim
+ *  compares lengths rather than reading anybody's words back. */
 function inboundTypes(entries) {
   return entries
     .filter((entry) => entry.src === 'server' && entry.dir === 'in')
-    .map((entry) => ({ type: String(entry.type || ''), t: Math.round(entry.ts * 1000) }));
+    .map((entry) => ({
+      type: String(entry.type || ''),
+      t: Math.round(entry.ts * 1000),
+      text: typeof entry.data?.message === 'string' ? entry.data.message : '',
+    }));
 }
 
 /* ── assertions ────────────────────────────────────────────────────────── */
@@ -492,6 +554,9 @@ function check(results, name, condition, detail) {
 async function main() {
   const results = [];
   const consoleLines = [];
+  /* Which audit file is this run's. Captured before anything starts, because the connection is created by the
+   * login that follows and `readAudit` needs a floor to filter on. */
+  const startedAt = Date.now();
   if (!existsSync(CHROME)) {
     throw new Error(`no Chrome at ${CHROME}. Set CHROME_PATH. This rig needs a real browser: jsdom has no microphone.`);
   }
@@ -518,6 +583,14 @@ async function main() {
           .join(' ');
         consoleLines.push(`${message.params.type}: ${text}`.slice(0, 300));
       }
+      /* An uncaught error in a WebSocket handler never reaches `console`, and it is the one failure mode that
+       * looks exactly like a hung engine: the socket stays open, the pings keep answering, and nothing the
+       * page was supposed to do with the message happens. */
+      if (message.method === 'Runtime.exceptionThrown') {
+        const detail = message.params.exceptionDetails || {};
+        const text = detail.exception?.description || detail.text || 'unknown';
+        consoleLines.push(`uncaught: ${String(text).split('\n')[0]}`.slice(0, 300));
+      }
     });
     await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: WIRE_HOOK });
 
@@ -540,11 +613,87 @@ async function main() {
       capture.ok,
       capture.ok ? `${capture.label} (echoCancellation=${capture.echoCancellation})` : `${capture.name}: ${capture.message}`);
 
-    const marks = await drive(cdp, (line) => console.log(`phase: ${line}`));
+    let marks;
+    try {
+      marks = await drive(cdp, (line) => console.log(`phase: ${line}`));
+    } catch (error) {
+      /* A run that never reached the mute is not a mute failure, and a bare timeout is how the first version
+       * of this file lost time to a permission dialog. Say what the page said and what the controller thought
+       * before rethrowing: at that moment the page is still open and the answer is still on it. */
+      const last = await evaluate(cdp, `JSON.stringify(window.__piChatVoiceMode?.probe() || null)`)
+        .catch(() => 'unreadable');
+      console.error(`voice-mic-rig: ${error.message}`);
+      console.error(`voice-mic-rig: probe at failure: ${String(last).slice(0, 600)}`);
+      for (const line of consoleLines.slice(-12)) console.error(`voice-mic-rig: page: ${line}`);
+      throw error;
+    }
     const wire = marks.wire;
+    /* Read once, and up here: the startup claims want the server's copy of the prompts, and the mute claims
+     * want its byte totals. `readAudit` returns null when nothing was written, and both halves say so rather
+     * than failing the button for a server that was not started with PI_CHAT_AUDIT=1. */
+    const audit = readAudit(ACCOUNT, startedAt);
 
     const muteMark = marks.mutedAt;
     const unmuteMark = marks.unmutedAt;
+
+    /* 1a. The startup case: a sentence said while the mode marker is still being answered. It is kept, it
+     *     reaches the server, and the handshake that was running when it was said stays silent. This is the
+     *     exact shape of the session Ben brought me on 2026-11-19: his words were endpointed, judged, and
+     *     thrown away, and the session file never contained them. */
+    const queuedOnServer = audit ? inboundTypes(audit.entries)
+      .filter((entry) => entry.type === 'prompt'
+        // Shaped text is `str(<chars> <digest>)`, so the needle is the length and the space that follows it.
+        && entry.text.startsWith(`str(${marks.startupSentence.length} `)) : [];
+    check(results, 'a sentence said during the handshake reaches the server',
+      queuedOnServer.length > 0,
+      audit
+        ? (queuedOnServer.length
+          ? `${queuedOnServer.length} prompt carried ${marks.startupSentence.length} characters into pi, ` 
+          + `from ${path.basename(audit.file)}`
+          : 'nothing of that length arrived: it was swallowed on the page, before the wire (read '
+          + path.basename(audit.file) + ` looking for "str(${marks.startupSentence.length} ", prompts seen: `
+          + inboundTypes(audit.entries).filter((e) => e.type === 'prompt').map((e) => e.text).join(', ') + ')')
+        : 'unmeasured: no audit log to read the server\'s copy of the prompt from');
+
+    check(results, 'and the surface called it queued rather than ignored',
+      marks.startupAfter.lastRejected === null && marks.startupAfter.phase === 'thinking',
+      `phase=${marks.startupAfter.phase} rejected=${JSON.stringify(marks.startupAfter.lastRejected)} ` 
+      + `starting=${marks.startupAfter.starting}`);
+
+    /* The handshake turn, delimited by the two frames that define it: the marker the page sent and the settle
+     * pi announced. Nothing synthesized inside that window is the claim, and on the fake provider the marker
+     * turn streams 9000 characters, so a leak would not be subtle. */
+    const markerSent = wire.sent.find((item) => !item.binary && item.type === 'prompt');
+    const markerAt = markerSent ? wire.epoch + markerSent.t : 0;
+    const settled = wire.received
+      .filter((item) => item.type === 'pi_event:agent_settled' && wire.epoch + item.t >= markerAt)
+      .map((item) => wire.epoch + item.t)[0] || 0;
+    if (!markerSent || !settled) {
+      results.push({
+        name: 'the mode handshake is answered with no audio at all',
+        ok: false,
+        detail: `unmeasured: could not bound the handshake (marker prompt ${markerAt ? 'seen' : 'missing'}, ` 
+          + 'first agent_settled ' + (settled ? 'seen' : 'never arrived') + ')',
+      });
+    } else {
+      const during = receivedBetween(wire, markerAt, settled, isAudio);
+      check(results, 'the mode handshake is answered with no audio at all',
+        during.length === 0,
+        during.length
+          ? `${during.length} audio frames (${during.reduce((n, f) => n + f.bytes, 0)} bytes) were synthesized ` 
+          + 'for a message the person never asked about'
+          : `silent across the ${Math.round(settled - markerAt)} ms the handshake took, while the fake provider ` 
+          + 'streamed it a 9000 character reply');
+
+      /* And the sentence that waited for it does get heard: the first audio of the session belongs to the
+       * answer to what was said, not to the marker. */
+      const firstAudio = wire.received.filter(isAudio).map((item) => wire.epoch + item.t)[0] || 0;
+      check(results, 'the sentence that waited is the first thing spoken',
+        firstAudio > settled,
+        firstAudio
+          ? `first audio ${Math.round(firstAudio - settled)} ms after the handshake settled`
+          : 'unmeasured: nothing was ever synthesized in this run');
+    }
 
     /* 1. The microphone was actually feeding the model before mute. Without this every claim below is a
      *    statement about a run where nothing was happening. */
@@ -629,8 +778,7 @@ async function main() {
       marks.afterUnmuteProbe.muted === false && marks.afterUnmuteProbe.echoCancelled !== null,
       `muted=${marks.afterUnmuteProbe.muted} echoCancelled=${marks.afterUnmuteProbe.echoCancelled}`);
 
-    /* 7. The server's own copy, if its audit log is readable from here. */
-    const audit = readAudit(ACCOUNT);
+    /* 7. The server's own copy, if its audit log is readable from here (loaded above, with the startup). */
     if (!audit) {
       results.push({
         name: 'server-side audit corroboration',

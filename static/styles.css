@@ -4241,6 +4241,56 @@ body:has(#chat-screen[data-doc-open="true"]) .buddy-stage {
   pointer-events: none;
 }
 
+/* Startup: one animation, and it occupies the orb's cell so revealing the orb cannot move anything. Same grid
+ * cell as `.voice-phase`, and that is deliberate - the orb's box is still there underneath, which is the only
+ * reason the reveal cannot resize the surface. */
+.voice-loading {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  color: var(--text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+
+.voice-loading-ring {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--accent) 20%, transparent);
+  border-top-color: var(--accent);
+  animation: voice-loading-spin 900ms linear infinite;
+}
+
+@keyframes voice-loading-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Stopped rather than slowed: the ring is a status, and a status that pulses at someone is the thing this
+   * whole block of rules exists to avoid. A static ring with a Lit accent edge still reads as waiting. */
+  .voice-loading-ring {
+    animation: none;
+    border-color: color-mix(in srgb, var(--accent) 34%, transparent);
+    border-top-color: var(--accent);
+  }
+}
+
+/* While that is up, the orb, its phase word and the microphone strip are all claims about a conversation that
+ * does not exist yet. `visibility`, never `display`: the canvas takes its size from its box, and an orb hidden
+ * with `display:none` comes back 0 px wide on the frame it is revealed - the bug that put a screenshot stage up
+ * with 303 animation frames and nothing painted. */
+.voice-screen[data-startup="on"] .voice-orb,
+.voice-screen[data-startup="on"] .voice-phase,
+.voice-screen[data-startup="on"] .voice-wave-wrap {
+  visibility: hidden;
+}
+
 .voice-caption {
   min-height: 1.5em;
   max-width: min(560px, 90vw);

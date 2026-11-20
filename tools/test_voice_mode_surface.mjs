@@ -249,6 +249,9 @@ await check('a fresh session re-announces the mode, and an inactive mode says no
   const h = harness();
   h.mode.enter();
   h.commands.length = 0;
+  // The person asked for a new conversation (`app.js` notes it from the command it sends). Voice mode was never
+  // announced *there*, whatever is still pending in the one we are leaving.
+  h.mode.noteSessionChangeRequested();
   h.mode.reinject();
   assert.equal(prompts(h.commands).length, 1, 'a new context needs the instruction again');
   h.mode.exit();
@@ -711,6 +714,11 @@ function speakLoudly(h) {
   h.stt.state.levels = { rms: 0.2, freq: new Uint8Array(256).fill(200), sampleRate: 16000 };
 }
 
+/* app.js calls this when pi settles a run, and in jsdom nothing else will: a claim that wants to be talking over
+ * a real answer has to say the handshake finished, exactly as it does in the browser. Leaving it un-settled
+ * leaves the surface in startup, where the interrupt gate is deliberately closed. */
+const finishHandshake = (h) => h.mode.onAgentSettled();
+
 await check('mute closes the microphone gate and sends nothing at all', async () => {
   const h = harness({ sttEnabled: true, voiceEnabled: true });
   h.mode.enter();
@@ -765,6 +773,8 @@ await check('a muted microphone cannot interrupt, and unmuting hands that abilit
    * the only difference between firing and not firing is the button. */
   const h = harness({ sttEnabled: true, voiceEnabled: true });
   h.mode.enter();
+  // Past the handshake: this claim is about an assistant that is actually talking, and the marker turn is not.
+  finishHandshake(h);
   await speakInto(h);
 
   muteButton().click();
@@ -805,6 +815,178 @@ await check('a muted surface goes still instead of metering a microphone it is n
   // The level is damped, so it settles to still over a few frames rather than snapping: the claim is that it
   // arrives, which is also the only version that would catch a producer left wired to the analyser.
   await until('the orb to settle to still', () => h.mode.probe().orb.level <= 0.05, 4000);
+  h.mode.exit();
+});
+
+/* ── 9. the handshake: the first seconds of a voice session ───────────────────────────────
+ *
+ * Entering voice mode costs the model a turn, because the mode has to be announced as a user message and pi
+ * has no system-prompt lever. Ben found that by using it on 2026-11-19: he entered, waited for both engines,
+ * said "what day is it", and the session file never contained it. The marker's reply had put the surface in
+ * `speaking`, and a sentence heard while the assistant is speaking is not an interruption, so it was thrown
+ * away. Startup is now its own case: the words are kept, the handshake is not interruptible, and the gate
+ * comes back the moment the handshake is over. Whether that turn is *synthesized* at all is the server's
+ * claim, in `tests/test_mode_marker_turn.py`. */
+
+const hintLine = () => document.getElementById('voice-hint')?.textContent || '';
+
+await check('entering voice mode announces the mode and reports that it is starting', async () => {
+  const h = harness({ sttEnabled: true, voiceEnabled: true });
+  h.mode.enter();
+
+  const marker = prompts(h.commands).at(-1);
+  assert.ok(marker, 'entering sent no prompt at all');
+  assert.ok(
+    marker.message.includes('<PI-CHAT-SYSTEM-MESSAGE>') && marker.message.includes('Voice mode is now ON'),
+    `the first prompt of a voice session was not the mode marker: ${String(marker.message).slice(0, 60)}`,
+  );
+  assert.equal(h.mode.probe().starting, true, 'the surface did not report a startup in progress');
+  h.mode.exit();
+});
+
+await check('a sentence said during the handshake is kept and queued, not ignored', async () => {
+  const h = harness({ sttEnabled: true, voiceEnabled: true });
+  h.mode.enter();
+  await wait(60);
+  h.commands.length = 0;
+
+  h.mode.onTranscript('what day is it');
+
+  const probe = h.mode.probe();
+  assert.equal(probe.lastRejected, null, `the sentence was rejected: ${JSON.stringify(probe.lastRejected)}`);
+  const sent = prompts(h.commands);
+  assert.equal(sent.length, 1, 'the sentence never reached pi, which is the defect this claim is named for');
+  assert.equal(sent[0].message, 'what day is it');
+  assert.equal(sent[0].delivery, 'queue', 'it has to wait for the handshake turn rather than collide with it');
+  assert.equal(
+    h.commands.filter((c) => c.type === 'abort').length, 0,
+    'a startup sentence is not an interruption; it must not cancel the turn that is establishing the mode',
+  );
+  h.mode.exit();
+});
+
+await check('and the surface says it is queued instead of promising an answer', async () => {
+  const h = harness({ sttEnabled: true, voiceEnabled: true });
+  h.mode.enter();
+  await wait(60);
+
+  h.mode.onTranscript('what day is it');
+
+  assert.match(hintLine(), /queued/i, `the hint read: "${hintLine()}"`);
+  assert.doesNotMatch(hintLine(), /thinking/i, '"thinking" answers a question that has not been asked yet');
+  h.mode.exit();
+});
+
+await check('a silent handshake has nothing to interrupt, and a loud microphone does not abort it', async () => {
+  /* The marker turn synthesizes no audio, and `speaking` is a fact about the playback graph
+   * (`static/voice.js`), so there is nothing for the gate to arm against. What the microphone does during
+   * startup is queue, which is the claim before this one. Aborting here would cancel the turn that is
+   * establishing the mode, which is how you end up with a voice session that was never told it is one. */
+  const h = harness({ sttEnabled: true, voiceEnabled: true });
+  h.mode.enter();
+  speakLoudly(h);
+  h.mode.onTranscript('what day is it');
+  await wait(BARGE_OBSERVATION_MS);
+
+  assert.equal(
+    h.commands.filter((c) => c.type === 'abort').length, 0,
+    'a loud microphone during the handshake cancelled the turn that announces the mode',
+  );
+  assert.equal(h.mode.probe().phase, 'thinking', `the surface left the queued state: ${h.mode.probe().phase}`);
+  assert.equal(h.mode.probe().starting, true, 'startup ended with no settle, no audio, and no watchdog run');
+  h.mode.exit();
+});
+
+await check('after the handshake a sentence over an answer is the normal interruption case again', async () => {
+  /* The startup carve-out is exactly one turn wide. Talking over a real answer keeps the behaviour Ben
+   * verified by hand: it is not swallowed, and it is not sent as a message either, because the gate is the
+   * thing that acts on it. */
+  const h = harness({ sttEnabled: true, voiceEnabled: true });
+  h.mode.enter();
+  h.mode.onAgentSettled();
+  await wait(60);
+  h.voice.state.speaking = true;
+
+  h.mode.onTranscript('what day is it');
+
+  const rejected = h.mode.probe().lastRejected;
+  assert.ok(rejected, 'a sentence over a live answer was sent as a new turn instead of interrupting');
+  assert.equal(rejected.reason, 'assistant-speaking');
+  h.mode.exit();
+});
+
+await check('hearing the assistant ends startup even if no settle event ever arrives', async () => {
+  /* The belt to `onAgentSettled`'s braces. The marker turn synthesizes nothing, so audible speech can only be
+   * an answer to something, and a surface that is audible cannot still be starting up. Without this, a settle
+   * event lost to a rejected prompt or a child that died mid-turn would leave the interrupt gate closed for
+   * the rest of the session, which is a worse bug than the one startup exists to fix. */
+  const h = harness({ sttEnabled: true, voiceEnabled: true });
+  h.mode.enter();
+  assert.equal(h.mode.probe().starting, true, 'control broken: no startup to end');
+
+  h.voice.state.speaking = true;
+  await until('the surface to reach speaking', () => h.mode.probe().phase === 'speaking');
+  speakLoudly(h);
+  await until('the gate to be back', () => h.commands.some((c) => c.type === 'abort'));
+  assert.equal(h.mode.probe().starting, false, 'the handshake still owned the session while the assistant talked');
+  h.mode.exit();
+});
+
+await check('nothing but the loading animation until the engines and the handshake have answered', async () => {
+  const h = harness({ sttEnabled: true, voiceEnabled: true, sttBackend: 'loading', voiceBackend: 'loading' });
+  h.mode.enter();
+  await wait(60);
+
+  assert.equal(h.mode.probe().startup, true, 'the controller did not report a startup in progress');
+  assert.equal(document.getElementById('voice-screen').dataset.startup, 'on', 'the surface did not mark itself');
+  const loading = document.getElementById('voice-loading');
+  assert.equal(loading.hidden, false, 'no Loading animation while two models load and a turn runs');
+  assert.match(loading.textContent, /loading/i, `it read: "${loading.textContent}"`);
+  h.mode.exit();
+});
+
+await check('and the orb comes back only when all three have answered', async () => {
+  /* The three land independently, so the claim is that each one is required: the handshake settling is not
+   * enough while a model is still loading, and one engine ready is not enough either. jsdom applies no
+   * stylesheets, so what is asserted here is the state the stylesheet reads (`data-startup`) and the element's
+   * own `hidden`; that the orb is actually invisible, still centred, and still owning its box is the browser
+   * stage's job: `--stage voice-mode --voice-state loading`. */
+  const h = harness({ sttEnabled: true, voiceEnabled: true, sttBackend: 'loading', voiceBackend: 'loading' });
+  h.mode.enter();
+  await wait(60);
+  const loading = () => document.getElementById('voice-loading');
+
+  h.mode.onAgentSettled();
+  assert.equal(loading().hidden, false, 'the orb came back with both models still loading');
+
+  h.stt.state.backend = 'ready';
+  await wait(90);
+  assert.equal(loading().hidden, false, 'one engine was enough to start visualizing');
+
+  h.voice.state.backend = 'ready';
+  await until('the loading surface to make way for the orb', () => loading().hidden === true);
+  assert.equal(h.mode.probe().startup, false, 'the controller still believed it was starting up');
+  assert.equal(document.getElementById('voice-screen').dataset.startup, 'off');
+  h.mode.exit();
+});
+
+await check('a session that starts after entering does not announce the mode twice', async () => {
+  /* A brand new voice session starts the pi child with its very first prompt, so `session_started` lands right
+   * after entering and used to reinject the marker a second time: two marker turns, two replies, one entry.
+   * The rig's audit log is what caught it - three prompts and four for a session with one question in it. */
+  const h = harness({ sttEnabled: true, voiceEnabled: true });
+  h.mode.enter();
+  h.commands.length = 0;
+
+  h.mode.reinject();
+  assert.equal(prompts(h.commands).length, 0, 'the mode was announced twice for one entry');
+
+  // It still does its actual job once the context really is new: after the handshake, a new session has to be
+  // told the mode again or the model goes back to markdown bullet lists mid-call.
+  h.mode.onAgentSettled();
+  h.commands.length = 0;
+  h.mode.reinject();
+  assert.equal(prompts(h.commands).length, 1, 'a fresh context was left without the instruction');
   h.mode.exit();
 });
 

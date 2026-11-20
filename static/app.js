@@ -41,7 +41,16 @@ let voiceMode;
 let connected = false;
 let authenticatedAccount = null;
 let isAgentRunning = false;
-const sendCommand = (message) => socket?.send(message) ?? false;
+const sendCommand = (message) => {
+  const sent = socket?.send(message) ?? false;
+  /* Two different things reach the voice surface as `session_started`: a conversation this tab asked for, and
+   * the one the mode announcement itself started. They need opposite answers - re-issue "answer as speech", or
+   * do not send it a second time - and this is the only place that knows which it was. */
+  if (sent && message && (message.type === 'new_session' || message.type === 'load_session')) {
+    voiceMode?.noteSessionChangeRequested();
+  }
+  return sent;
+};
 
 // Voice barge-in state: a final transcript that arrived while the agent was
 // running. The prompt is submitted only after the abort settles (we wait for
@@ -591,6 +600,9 @@ function routeServerMessage(message) {
     } else if (message.event.type === 'agent_settled') {
       isAgentRunning = false;
       stt?.setAgentActive(false);
+      // The voice surface has to know the handshake turn is over: until this point a sentence was startup and
+      // got queued, and from here talking over an answer is an interruption again (static/voice-mode.js).
+      voiceMode?.onAgentSettled();
       // What was just spoken, on the orb's own transcript, so a spoken exchange can be read afterwards.
       voiceMode?.noteAssistantTurn(getLastAssistantText());
       // Abort from a voice barge-in has settled — submit the spoken prompt.

@@ -52,6 +52,62 @@ context does not remember the previous one.
 The tag travels in the text rather than as a field on the command because pi is what echoes it, and pi knows
 nothing about our fields.
 
+## Starting up
+
+Entering voice mode costs the model a turn, and that turn is where Ben's first session of 2026-11-19 lost its
+first sentence: he entered, waited for both readiness chips, said "what day is it", and the session file never
+contained it. The marker's reply had put the surface in `speaking`, and a sentence heard while the assistant is
+speaking is not an interruption, so it was rejected and logged as `ignored`. Two facts follow from that, and
+they are the contract for the first seconds of every voice session:
+
+1. **The handshake turn is answered and never spoken.** `_on_agent_start` opens no stream when the run answers
+   a marker, so no Phonon pass, no AEC window, and no `voice_stream_start`. The last of those matters most:
+   `handleVoiceStreamStart` sets the browser's `speaking` before a single sample arrives, so an empty stream is
+   a surface pretending to talk, which is the thing that ate the sentence.
+2. **A sentence heard during the handshake is kept.** `transcriptDecision` takes a `starting` flag and returns
+   `startup-queue` ahead of the `assistant-speaking` rejection: the words go to pi's own queue
+   (`delivery: 'queue'`, the same queue a mid-run message uses), so pi answers them the moment the handshake
+   settles. They are not an interruption, and nothing is aborted on the way.
+
+Who decides each half, and when: pi's `agent_start` carries no text, so the browser's prompt command arms the
+server (`_handle_prompt` calling `arm_mode_marker_turn`), and the delivered message is the authority
+(`_on_message_start` reading `pi_chat/mode_marker.py`). Submission alone is not trusted, because an OFF marker
+queued behind a live answer is delivered *while that answer streams its text*: taking the flag from the
+delivery is what keeps a marker from silencing an answer somebody is already hearing, which is the same defect
+wearing a different hat. `tests/test_mode_marker_turn.py` holds both directions, and one of them found the
+ordering bug while being written: `agent_start` arrives *before* the message a run is answering, so a fresh
+turn must not inherit the previous turn's marker flag or the person's own question comes back mute.
+
+Startup ends three ways, and it has to end: the run settling (`onAgentSettled`, which is what `agent_settled`
+calls), the assistant being heard (`onSpeechStart`, since the handshake has no audio, so anything audible is an
+answer to something), or `MARKER_SETTLE_MS` running out. The third is not paranoia: startup gates what a
+sentence counts as, so a settle event lost to a rejected prompt or a child that died mid-turn would otherwise
+leave the session deaf to interruptions for its whole life. What startup does *not* touch is the interrupt gate
+itself: that gate needs audio to arm against, and the handshake has none. Ben's barge-in behaves exactly as he
+verified it, and `tests/test_voice_mode_surface.py` pins that the startup carve-out is one turn wide.
+
+The honest limit: the queue can only hold speech the model was able to transcribe. Before the speech model
+reports ready there is nothing to hand frames to, so the readiness chips are still the only promise about the
+first two seconds, and a sentence shouted at a cold engine is still gone.
+
+### What the surface shows while all that is happening
+
+Nothing but a `Loading...` animation (Ben, 2026-11-19). Three things have to land before a visualizer would mean
+anything - the listening model, the speaking model, and the answer to the mode announcement - and they land in
+parallel, so the surface waits for all three instead of guessing from one. Until then the orb, its phase word and
+the microphone strip are hidden, because an orb pulsing on levels from a microphone the server has not loaded, or
+a "listening" that has no mouth behind it, are both decorations; the chips stay under the animation because they
+name which of the three is the reason.
+
+One implementation note that has already bitten here once: the orb is hidden with `visibility`, never `display`.
+The canvas takes its size from its box, so an orb hidden with `display:none` comes back 0 px wide on the frame it
+is revealed and the animation keeps drawing into nothing - the failure recorded in the pinned-state comment in
+`static/voice-mode.js`. `--stage voice-mode --voice-state loading` asserts both halves in a real browser: the ring
+animates and the orb is neither visible nor clickable, **and** the hidden orb still measures its full box, which
+is the difference between a reveal and a relayout. `pin 54` in `tools/test_voice_mode_surface.mjs` covers the state
+machine in jsdom, including that each of the three is required: the handshake settling is not enough with a cold
+model, and one ready engine is not enough either.
+
 ## Not having a conversation with itself
 
 This is the bug voice mode ships with if nobody thinks about it. The assistant speaks, the microphone is open
@@ -161,12 +217,14 @@ top of a turn that carries on.
 
 ## Checks
 
-    node tools/test_voice_mode_surface.mjs          # 45 claims, jsdom, real index.html, fake stt/voice
+    node tools/test_voice_mode_surface.mjs          # 51 claims, jsdom, real index.html, fake stt/voice
     node tools/voice_mic_rig.mjs --serve            # mute over a real WebSocket, a WAV as the microphone
     node tools/barge_in_echo.mjs --seconds 8        # both directions of echo cancellation, measured
     node tools/barge_in_echo.mjs --ec on --expect silent
     node tools/screenshot_ui.mjs --stage voice-mode --voice-state barge --viewport 390x844 \
          --url http://127.0.0.1:PORT --password ... # real browser: coverage, geometry, that it animates
+    node tools/screenshot_ui.mjs --stage voice-mode --voice-state loading ... \
+         # the startup surface: ring animating, orb hidden but still owning its box
 
 The jsdom claims see the controller's calls. The microphone rig sees the wire, which is where mute was wrong
 twice: `--serve` starts its own loopback server with the audit log on, Chrome's
@@ -257,8 +315,11 @@ question overlay sits at `z-index: 320` so the form this surface used to cover i
 
 ## States, and what can be pinned
 
-`idle`, `listening`, `thinking`, `speaking`, `barge`. `--voice-state preparing` is not a sixth pin: it is the
-real path photographed while the engines load, since a pinned state has no engines to wait for. A pinned state is a photograph rather than a
+`idle`, `listening`, `thinking`, `speaking`, `barge`, and `loading`. `--voice-state preparing` is not a seventh
+pin: it is the real path photographed while the engines load, since a pinned state has no engines to wait for.
+`loading` is the exception that proves the rule: it is a *drawing*, not a wait, so it can be pinned (the phase
+stays `idle` and the Loading surface is what the state means, which is why `--stage voice-mode --voice-state
+loading` asserts the surface rather than the orb). A pinned state is a photograph rather than a
 conversation, for screenshots and for reviewing a state on demand:
 
     window.__piChatVoiceMode.enter({ demo: 'barge' })     // or #voice-screen[data-demo] before entering
@@ -267,7 +328,8 @@ conversation, for screenshots and for reviewing a state on demand:
 It synthesizes the levels and leaves the routing, the damping and the drawing real. It sends no mode marker,
 opens no microphone and speaks nothing. `probe()` reports the phase, frames drawn, whether the draw loop threw,
 `echoCancelled`, what each engine reported (`ready.mic`, `ready.voice`), and the last refused transcript with its reason, which is the difference between debugging a
-voice bug and guessing at one: everything it reports is audio and almost none of it is on screen.
+voice bug and guessing at one: everything it reports is audio and almost none of it is on screen. It also
+reports `startup`, whether the Loading surface is the thing the person is looking at.
 
 ## When the room wins, and what would fix it
 

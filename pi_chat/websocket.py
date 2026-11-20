@@ -14,6 +14,7 @@ from .config import DEV_MODE
 from . import audit as audit_log
 from . import ui_relay
 from . import uploads
+from .mode_marker import is_mode_marker_text
 from .process import PiProcess, parse_queue_snapshot
 from .preview import describe_preview_entries
 from .sessions import (
@@ -208,7 +209,7 @@ async def _dispatch_command(
     # which kills the pi subprocess). Report and keep serving the client.
     try:
         if command_type == "prompt":
-            await _handle_prompt(pi, message, account)
+            await _handle_prompt(pi, message, account, voice=voice)
         elif command_type == "steer_now":
             await _handle_queue_action(pi, message, action="steer")
         elif command_type == "retract_queued":
@@ -330,7 +331,7 @@ async def _handle_voice_prepare(pi: PiProcess, voice, settings: dict) -> None:
         )
 
 
-async def _handle_prompt(pi: PiProcess, message: dict, account: str) -> None:
+async def _handle_prompt(pi: PiProcess, message: dict, account: str, voice=None) -> None:
     if not pi.proc:
         await _start_session(pi)
 
@@ -343,6 +344,14 @@ async def _handle_prompt(pi: PiProcess, message: dict, account: str) -> None:
     if delivery not in _DELIVERY_BEHAVIOURS:
         await _send_error(pi, f"Unknown delivery mode: {delivery!r}")
         return
+
+    # A voice-mode marker is answered and never spoken, and `agent_start` carries no text, so this is the one
+    # moment anyone knows the coming run is a handshake. Telling the voice session here is what keeps its
+    # stream closed, which in turn keeps the browser out of `speaking` - and a surface that looks like it is
+    # talking is what used to make the first sentence of a voice session get thrown away as an interruption
+    # attempt. Only a hint: the delivered message is the authority (`voice_session._on_message_start`).
+    if voice is not None and is_mode_marker_text(text):
+        voice.arm_mode_marker_turn()
 
     payload = {
         "type": "prompt",

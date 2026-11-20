@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from pi_chat import config
 from pi_chat import phonon_voices
 from pi_chat.audio_utils import resample_pcm_bytes
+from pi_chat.mode_marker import is_mode_marker_message
 from pi_chat.tts_chunking import StreamingSpeechChunker
 from pi_chat.tts_service import TTSService, VoiceHandle, VoiceSettings
 
@@ -238,6 +239,14 @@ class VoiceSession:
         # Run state
         self.active_run: bool = False
         self.suppress_current_run: bool = False
+        # A voice-mode marker turn is answered, but never spoken. Two flags, because the two facts arrive at
+        # different moments: `_marker_armed` is set when the browser *submits* a marker (it is the only party
+        # that knows, and `agent_start` carries no text, so without the hint the stream would already be open
+        # and the browser would believe the assistant is talking); `_marker_turn` is the delivered truth, taken
+        # from the user message as pi delivers it, and it is what decides an assistant message. See
+        # `pi_chat/mode_marker.py`.
+        self._marker_armed: bool = False
+        self._marker_turn: bool = False
 
         # Chunker. `VOICE-07`: the hold timer used to read `TTS_MAX_HOLD_MS` while the chunker kept its own
         # 450 ms default, so the knob only worked upward - set it to 200 and nothing changed, because the
@@ -517,6 +526,8 @@ class VoiceSession:
 
         if event_type == "agent_start":
             await self._on_agent_start()
+        elif event_type == "message_start":
+            await self._on_message_start(event)
         elif event_type == "message_update":
             await self._on_message_update(event)
         elif event_type == "agent_settled":
@@ -590,6 +601,43 @@ class VoiceSession:
         """Invalidate the current activation so pending prep is ignored."""
         self._activation_id += 1
 
+    def arm_mode_marker_turn(self) -> None:
+        """The next run to start is an answer to a mode marker, so it gets no audio.
+
+        Arming is a hint, not an authority: pi's `agent_start` event carries no text, so this is the only way
+        to know a turn is a handshake *before* opening its stream. The delivered message
+        (`_on_message_start`) is what is believed once it arrives, which is why a marker queued behind a
+        running answer cannot silence that answer.
+        """
+        self._marker_armed = True
+        logger.debug("Voice: mode marker armed for the next run (nothing will be synthesized)")
+
+    async def _on_message_start(self, event: dict) -> None:
+        """Track which message the assistant is about to answer.
+
+        pi replays each prompt as a `message_start` with role `user` at the moment it delivers it, including
+        one it pulls out of its queue mid-run, then announces the reply as another `message_start` with role
+        `assistant`. Delivering, not submitting, is the distinction that matters here: an OFF marker queued
+        behind a live answer is delivered while that answer is still streaming its text, and silencing *it*
+        would be the exact opposite of the point. So a user delivery only records what comes next, and only an
+        assistant delivery decides whether this text is spoken.
+        """
+        message = event.get("message")
+        if not isinstance(message, dict):
+            return
+        role = message.get("role")
+        if role == "user":
+            self._marker_turn = is_mode_marker_message(message)
+            if self._marker_turn and self.active_run and self._sequence == 0:
+                # Safety net for an order this file does not otherwise see: a marker whose stream was opened
+                # before anyone knew. Nothing has been synthesized on it yet (`_sequence == 0`), so closing it
+                # now costs nothing, and an empty stream is not a sentence the browser should sit and wait for.
+                # Once any audio has gone out the answer is being heard, and it is left alone.
+                self.suppress_current_run = True
+            return
+        if role == "assistant":
+            self.suppress_current_run = self._marker_turn
+
     async def _on_agent_start(self) -> None:
         """Handle agent_start: start a new voice stream if enabled and ready."""
         logger.debug("Voice: [DEBUG] _on_agent_start() ready=%s, has_handle=%s", self.ready, self.voice_handle is not None)
@@ -598,12 +646,24 @@ class VoiceSession:
             logger.debug("Voice: [DEBUG] _on_agent_start() cancelling old active_run")
             await self._stop_current_internal(reason="superseded")
 
+        # Only the submit-time hint can suppress a run that has not delivered its prompt yet, because this
+        # event arrives *before* the message the run is answering: inheriting `_marker_turn` here would make
+        # the person's own question a silent turn, since the flag still describes the handshake. Recomputed for
+        # every run, and before the readiness return below, so a flag can never outlive the run it was set for.
+        self.suppress_current_run = self._marker_armed
+        self._marker_armed = False
+        if self.suppress_current_run:
+            # No stream at all, not a stream with nothing in it: `voice_stream_start` alone sets the browser's
+            # `speaking`, and a surface claiming to talk with nothing to hear is what used to make it throw
+            # away the first thing the person said (`static/voice.js`, `handleVoiceStreamStart`).
+            logger.debug("Voice: [DEBUG] _on_agent_start() mode marker turn - no stream opened")
+            return
+
         if not self.ready or not self.voice_handle:
             logger.debug("Voice: [DEBUG] _on_agent_start() returning early - not ready or no handle")
             return
 
         self.active_run = True
-        self.suppress_current_run = False
         self._stream_id += 1
         self._sequence = 0
         self.chunker.reset()

@@ -25,7 +25,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "tools" / "test_voice_mode_surface.mjs"
-CLAIMS = 45  # 40 through S9, +5 on 2026-11-19 for the mute contract Ben asked for.
+CLAIMS = 54  # 40 through S9, +5 mute contract, +9 on 2026-11-19 for the startup handshake and Loading.
 
 NODE = shutil.which("node")
 

@@ -118,7 +118,7 @@ const STAGE = flag('stage', 'login');            // login | chat | voice | previ
 const THEME = flag('theme', 'light');            // light | dark
 const MASCOT = flag('mascot', 'pie');            // pie | pi
 const VIEWPORT = flag('viewport', '1440x900');   // WxH
-const VOICE_STATE = flag('voice-state', 'speaking');  // idle | listening | thinking | speaking | barge
+const VOICE_STATE = flag('voice-state', 'speaking');  // idle | listening | thinking | speaking | barge | preparing | loading
 const OUT = flag('out', 'pi-chat.png');
 const PASSWORD = flag('password', 'test-only');
 const PROMPT = flag('prompt', 'smoke test prompt');
@@ -624,7 +624,7 @@ async function runSession(chromeChild) {
       // `?drive=simulated`; this app has no URL of its own to put a parameter on, so the state is pinned on the
       // element the controller reads when it starts. That also means no microphone prompt in a headless
       // browser and no turn spent on a model that has nothing to do with a picture.
-      const states = ['idle', 'listening', 'thinking', 'speaking', 'barge', 'preparing'];
+      const states = ['idle', 'listening', 'thinking', 'speaking', 'barge', 'preparing', 'loading'];
       if (!states.includes(VOICE_STATE)) {
         throw new Error(`--voice-state takes ${states.join('|')}, got ${VOICE_STATE}`);
       }
@@ -632,6 +632,10 @@ async function runSession(chromeChild) {
        * one state runs the real path and photographs the wait, which is the state a person actually sees on a
        * cold server and the one that used to have no indication at all. */
       const preparing = VOICE_STATE === 'preparing';
+      /* Startup is pinnable, unlike `preparing`: what it has to prove is what the surface draws while the
+       * engines and the handshake are still in flight, and that drawing must be photographable on a warm
+       * server as well as a cold one. */
+      const loadingState = VOICE_STATE === 'loading';
       await waitFor(cdp, "Boolean(document.getElementById('voice-mode-btn'))", 10000);
       if (!preparing) {
         await evaluate(cdp, `document.getElementById('voice-screen').dataset.demo = ${JSON.stringify(VOICE_STATE)}; true`);;
@@ -745,7 +749,9 @@ async function runSession(chromeChild) {
         if (cover.probe.demo !== null) {
           throw new Error(`the preparing state is supposed to be the real thing, but the demo pin is on`);
         }
-      } else if (cover.phase !== VOICE_STATE) {
+      } else if (cover.phase !== (loadingState ? 'idle' : VOICE_STATE)) {
+        /* `loading` pins the phase to `idle` on purpose: the orb is still painted underneath, and "loading" is
+         * not a state the canvas knows how to draw. The claims below are what pin the loading surface. */
         throw new Error(`the orb is showing "${cover.phase}", not the pinned "${VOICE_STATE}"`);
       }
       if (!cover.probe) throw new Error('window.__piChatVoiceMode is missing; is the server serving the new static/?');
@@ -775,165 +781,223 @@ async function runSession(chromeChild) {
       // Captured here rather than at the end of main: the real leg below exits voice mode, and the picture
       // anyone opens should be the orb, not the chat that comes back after it.
       await capture(cdp, OUT, false);
-
-      /* Previews in voice mode. pi can hand the person a document in the middle of a spoken exchange, and
-       * "here it is" from a screen with nothing on it is the whole feature missing, so the pane comes above the
-       * surface and the orb moves into the space that is left. Phone: the sheet keeps its full screen. */
-      await evaluate(cdp, `(() => {
-        const pane = window.__piChatDocPane;
-        if (!pane) return false;
-        const body = ['# In voice mode', '', 'The orb keeps talking while this is open.', '',
-          '- a document can arrive mid-sentence', '- typing is not how you reply here'].join('\\n');
-        pane.show({ docId: 'stage-voice', kind: 'markdown', revision: 1, title: 'In voice mode',
-          text: body, note: 'written by the stage' }, { activate: true });
-        return true;
-      })()`);
-      await sleep(700);
-      const withPane = JSON.parse(await evaluate(
-        cdp,
-        `(() => {
-          const pane = document.getElementById('doc-pane');
+      /* The startup state, measured rather than described. Two of these claims exist because of a bug this
+       * repository has already had: hiding a canvas is only safe while it keeps its box, and one hidden with
+       * `display:none` comes back 0 px wide on the frame it is revealed - which is how a screenshot stage once
+       * reported 303 animation frames of nothing. So the invisible orb has to still own its geometry. */
+      if (loadingState) {
+        const shown = JSON.parse(await evaluate(cdp, `(() => {
+          const loading = document.getElementById('voice-loading');
           const orb = document.getElementById('voice-orb');
-          const actions = document.querySelector('.voice-actions');
-          const pr = pane.getBoundingClientRect();
+          const strip = document.querySelector('.voice-wave-wrap');
+          const lr = loading.getBoundingClientRect();
           const or = orb.getBoundingClientRect();
-          const ar = actions.getBoundingClientRect();
-          const who = (x, y) => {
-            const top = document.elementFromPoint(x, y);
-            if (!top) return 'nothing';
-            if (top.closest('#doc-pane')) return 'pane';
-            if (top.closest('#voice-screen')) return 'voice';
-            return top.id || top.className || top.tagName;
-          };
+          const centre = document.elementFromPoint(
+            Math.round(or.left + or.width / 2), Math.round(or.top + or.height / 2));
           return JSON.stringify({
-            open: document.getElementById('chat-screen').dataset.docOpen,
-            pane: { left: Math.round(pr.left), width: Math.round(pr.width) },
-            orbRight: Math.round(or.right),
-            actionsRight: Math.round(ar.right),
-            paneCentre: who(Math.round(pr.left + pr.width / 2), Math.round(window.innerHeight / 2)),
-            orbPoint: who(Math.round(or.left + or.width / 2), Math.round(or.top + or.height / 2)),
-            viewW: window.innerWidth,
-            room: getComputedStyle(document.body).getPropertyValue('--voice-doc-room').trim(),
+            hidden: loading.hidden,
+            text: loading.textContent.trim(),
+            box: Math.round(lr.width) + 'x' + Math.round(lr.height),
+            spin: getComputedStyle(loading.querySelector('.voice-loading-ring')).animationName,
+            orbVisibility: getComputedStyle(orb).visibility,
+            stripVisibility: getComputedStyle(strip).visibility,
+            orbBox: Math.round(or.width),
+            topAtOrbCentre: centre ? (centre.id || centre.className || centre.tagName) : 'nothing',
+            startup: window.__piChatVoiceMode ? window.__piChatVoiceMode.probe().startup : null,
+            screenAttr: document.getElementById('voice-screen').dataset.startup,
           });
-        })()`,
-      ));
-      await capture(cdp, OUT.replace(/\.png$/, '-preview.png'), false);
-      if (withPane.open !== 'true') {
-        throw new Error(`a preview opened while voice mode was on and the pane says "${withPane.open}"`
-          + '; the surface is hiding it again');
-      }
-      if (withPane.paneCentre !== 'pane') {
-        throw new Error(`the middle of the preview answers to "${withPane.paneCentre}", not the pane:`
-          + ` the orb surface is still on top (${JSON.stringify(withPane)})`);
-      }
-      if (withPane.viewW > 700) {
-        if (withPane.orbPoint !== 'voice') {
-          throw new Error(`the orb answers to "${withPane.orbPoint}" with a preview open; it is behind the pane`);
+        })()`));
+        if (shown.hidden || !/loading/i.test(shown.text)) {
+          throw new Error(`the loading state is hidden=${shown.hidden} with text "${shown.text}"`);
         }
-        if (withPane.orbRight > withPane.pane.left + 2 || withPane.actionsRight > withPane.pane.left + 2) {
-          throw new Error(`the orb or its buttons sit under the preview: orb right ${withPane.orbRight}, `
-            + `buttons ${withPane.actionsRight}, pane starts ${withPane.pane.left} (${JSON.stringify(withPane)})`);
+        if (shown.box === '0x0' || shown.box.endsWith('x0')) {
+          throw new Error(`the loading animation has no box (${shown.box}): a wait nobody can see`);
         }
-        if (withPane.room === '' || withPane.room === '0px') {
-          throw new Error(`--voice-doc-room is "${withPane.room}" with a ${withPane.pane.width} px pane open; `
-            + 'the voice column will not move aside');
+        if (shown.spin === 'none') {
+          throw new Error('the loading ring does not animate; a static circle is not a spinner');
         }
-      } else {
-        // On a phone the document takes the whole sheet, which is the shape that was chosen: there is no room
-        // for an orb and a document side by side at 390 px. So the orb is meant to be covered here, and what
-        // matters is that closing the sheet hands the voice surface back, which the check below proves.
-        if (withPane.orbPoint !== 'pane') {
-          throw new Error(`a phone preview should cover the orb, and the orb answered to "${withPane.orbPoint}"`);
+        if (shown.orbVisibility !== 'hidden' || shown.stripVisibility !== 'hidden') {
+          throw new Error(`startup left the conversation on screen: orb=${shown.orbVisibility} `
+            + `strip=${shown.stripVisibility}`);
         }
-        if (withPane.pane.width < withPane.viewW - 1) {
-          throw new Error(`a phone preview should cover the sheet over the orb and got ${withPane.pane.width} px `
-            + `of ${withPane.viewW}`);
+        if (shown.orbBox < 200) {
+          throw new Error(`the hidden orb lost its box (${shown.orbBox} px); revealing it would relayout `
+            + 'the surface, which is the bug `visibility` exists to avoid');
         }
-      }
-      await evaluate(cdp, "window.__piChatDocPane.closeAll(); true");
-      await sleep(400);
-      const closedPane = await evaluate(
-        cdp,
-        `(() => {
-          const orb = document.getElementById('voice-orb').getBoundingClientRect();
-          const top = document.elementFromPoint(Math.round(orb.left + orb.width / 2), Math.round(orb.top + orb.height / 2));
-          return JSON.stringify({
-            who: top && top.closest('#voice-screen') ? 'voice' : (top ? (top.id || top.className) : 'nothing'),
-            room: getComputedStyle(document.body).getPropertyValue('--voice-doc-room').trim(),
-          });
-        })()`,
-      );
-      const closed = JSON.parse(closedPane);
-      if (closed.who !== 'voice' || closed.room !== '0px') {
-        throw new Error(`closing the preview left the surface shifted: ${closedPane}`);
+        if (String(shown.topAtOrbCentre).includes('voice-orb')) {
+          throw new Error('the orb is invisible and still answers to clicks at its own centre');
+        }
+        if (shown.startup !== true || shown.screenAttr !== 'on') {
+          throw new Error(`the controller does not believe it is starting up: probe=${shown.startup} `
+            + `dataset.startup=${shown.screenAttr}`);
+        }
+        console.log(`voice-mode loading: "${shown.text}" in ${shown.box}, orb hidden but ${shown.orbBox} px `
+          + `wide, top element at its centre is ${shown.topAtOrbCentre}`);
       }
 
-      /* The real leg only makes sense after a photograph leg: it exits the surface, clears the pin and clicks
-       * back in. `preparing` IS the real leg, and it must still be on screen when the capture runs at the end
-       * of main, so this whole block is the pinned states' business. */
-      if (!preparing) {
-      await evaluate(cdp, "window.__piChatVoiceMode.exit('stage'); true");
-      await evaluate(cdp, "document.getElementById('voice-screen').dataset.demo = ''; true");
-      await sleep(200);
-      const before = JSON.parse(await evaluate(
-        cdp,
-        `JSON.stringify({
-          landing: document.querySelector('.input-area').classList.contains('landing-mode'),
-          avatar: Boolean(document.getElementById('landing-page')),
-        })`,
-      ));
-      if (!before.landing) {
-        throw new Error('the landing screen is already gone before the real leg ran, so this leg proves nothing');
-      }
+      /* Everything below needs a conversation: the preview pane opens in a spoken exchange, and the second leg
+       * runs a real turn. Loading is deliberately a state with no conversation yet, so it asserts the surface
+       * above and stops here. */
+      if (!loadingState) {
+        /* Previews in voice mode. pi can hand the person a document in the middle of a spoken exchange, and
+         * "here it is" from a screen with nothing on it is the whole feature missing, so the pane comes above the
+         * surface and the orb moves into the space that is left. Phone: the sheet keeps its full screen. */
+        await evaluate(cdp, `(() => {
+          const pane = window.__piChatDocPane;
+          if (!pane) return false;
+          const body = ['# In voice mode', '', 'The orb keeps talking while this is open.', '',
+            '- a document can arrive mid-sentence', '- typing is not how you reply here'].join('\\n');
+          pane.show({ docId: 'stage-voice', kind: 'markdown', revision: 1, title: 'In voice mode',
+            text: body, note: 'written by the stage' }, { activate: true });
+          return true;
+        })()`);
+        await sleep(700);
+        const withPane = JSON.parse(await evaluate(
+          cdp,
+          `(() => {
+            const pane = document.getElementById('doc-pane');
+            const orb = document.getElementById('voice-orb');
+            const actions = document.querySelector('.voice-actions');
+            const pr = pane.getBoundingClientRect();
+            const or = orb.getBoundingClientRect();
+            const ar = actions.getBoundingClientRect();
+            const who = (x, y) => {
+              const top = document.elementFromPoint(x, y);
+              if (!top) return 'nothing';
+              if (top.closest('#doc-pane')) return 'pane';
+              if (top.closest('#voice-screen')) return 'voice';
+              return top.id || top.className || top.tagName;
+            };
+            return JSON.stringify({
+              open: document.getElementById('chat-screen').dataset.docOpen,
+              pane: { left: Math.round(pr.left), width: Math.round(pr.width) },
+              orbRight: Math.round(or.right),
+              actionsRight: Math.round(ar.right),
+              paneCentre: who(Math.round(pr.left + pr.width / 2), Math.round(window.innerHeight / 2)),
+              orbPoint: who(Math.round(or.left + or.width / 2), Math.round(or.top + or.height / 2)),
+              viewW: window.innerWidth,
+              room: getComputedStyle(document.body).getPropertyValue('--voice-doc-room').trim(),
+            });
+          })()`,
+        ));
+        await capture(cdp, OUT.replace(/\.png$/, '-preview.png'), false);
+        if (withPane.open !== 'true') {
+          throw new Error(`a preview opened while voice mode was on and the pane says "${withPane.open}"`
+            + '; the surface is hiding it again');
+        }
+        if (withPane.paneCentre !== 'pane') {
+          throw new Error(`the middle of the preview answers to "${withPane.paneCentre}", not the pane:`
+            + ` the orb surface is still on top (${JSON.stringify(withPane)})`);
+        }
+        if (withPane.viewW > 700) {
+          if (withPane.orbPoint !== 'voice') {
+            throw new Error(`the orb answers to "${withPane.orbPoint}" with a preview open; it is behind the pane`);
+          }
+          if (withPane.orbRight > withPane.pane.left + 2 || withPane.actionsRight > withPane.pane.left + 2) {
+            throw new Error(`the orb or its buttons sit under the preview: orb right ${withPane.orbRight}, `
+              + `buttons ${withPane.actionsRight}, pane starts ${withPane.pane.left} (${JSON.stringify(withPane)})`);
+          }
+          if (withPane.room === '' || withPane.room === '0px') {
+            throw new Error(`--voice-doc-room is "${withPane.room}" with a ${withPane.pane.width} px pane open; `
+              + 'the voice column will not move aside');
+          }
+        } else {
+          // On a phone the document takes the whole sheet, which is the shape that was chosen: there is no room
+          // for an orb and a document side by side at 390 px. So the orb is meant to be covered here, and what
+          // matters is that closing the sheet hands the voice surface back, which the check below proves.
+          if (withPane.orbPoint !== 'pane') {
+            throw new Error(`a phone preview should cover the orb, and the orb answered to "${withPane.orbPoint}"`);
+          }
+          if (withPane.pane.width < withPane.viewW - 1) {
+            throw new Error(`a phone preview should cover the sheet over the orb and got ${withPane.pane.width} px `
+              + `of ${withPane.viewW}`);
+          }
+        }
+        await evaluate(cdp, "window.__piChatDocPane.closeAll(); true");
+        await sleep(400);
+        const closedPane = await evaluate(
+          cdp,
+          `(() => {
+            const orb = document.getElementById('voice-orb').getBoundingClientRect();
+            const top = document.elementFromPoint(Math.round(orb.left + orb.width / 2), Math.round(orb.top + orb.height / 2));
+            return JSON.stringify({
+              who: top && top.closest('#voice-screen') ? 'voice' : (top ? (top.id || top.className) : 'nothing'),
+              room: getComputedStyle(document.body).getPropertyValue('--voice-doc-room').trim(),
+            });
+          })()`,
+        );
+        const closed = JSON.parse(closedPane);
+        if (closed.who !== 'voice' || closed.room !== '0px') {
+          throw new Error(`closing the preview left the surface shifted: ${closedPane}`);
+        }
 
-      let stuck = null;
-      await evaluate(cdp, "document.getElementById('voice-mode-btn').click(); true");
-      try {
-        await waitFor(cdp, "!document.querySelector('.input-area').classList.contains('landing-mode')", 25000);
-      } catch (error) {
-        stuck = await evaluate(
+        /* The real leg only makes sense after a photograph leg: it exits the surface, clears the pin and clicks
+         * back in. `preparing` IS the real leg, and it must still be on screen when the capture runs at the end
+         * of main, so this whole block is the pinned states' business. */
+        if (!preparing) {
+        await evaluate(cdp, "window.__piChatVoiceMode.exit('stage'); true");
+        await evaluate(cdp, "document.getElementById('voice-screen').dataset.demo = ''; true");
+        await sleep(200);
+        const before = JSON.parse(await evaluate(
           cdp,
           `JSON.stringify({
-            probe: window.__piChatVoiceMode ? window.__piChatVoiceMode.probe() : null,
-            caption: document.getElementById('voice-caption')?.textContent,
-            socketOpen: Boolean(window.__piSocket && window.__piSocket.readyState === 1),
-          })`,
-        );
-      }
-      if (stuck) {
-        throw new Error(`the landing screen survived a real voice-mode turn: ${stuck}`);
-      }
-
-      await evaluate(cdp, "window.__piChatVoiceMode.exit('stage'); true");
-      await sleep(400);
-      const after = JSON.parse(await evaluate(
-        cdp,
-        `(() => {
-          const area = document.querySelector('.input-area');
-          return JSON.stringify({
-            landing: area.classList.contains('landing-mode'),
+            landing: document.querySelector('.input-area').classList.contains('landing-mode'),
             avatar: Boolean(document.getElementById('landing-page')),
-            composerVisible: getComputedStyle(area).display !== 'none',
-            screenHidden: document.getElementById('voice-screen').hidden,
-            bubbles: document.querySelectorAll('#chat-screen .message, #chat-screen .assistant-block').length,
-            markerLeaks: [...document.querySelectorAll('#chat-screen .message')]
-              .filter((n) => n.textContent.includes('PI-CHAT-SYSTEM-MESSAGE')).length,
-          });
-        })()`,
-      ));
-      if (after.landing || after.avatar) {
-        throw new Error(`voice mode started a session and the landing screen is still up: ${JSON.stringify(after)}`);
-      }
-      if (!after.composerVisible || !after.screenHidden) {
-        throw new Error(`leaving voice mode did not hand the screen back: ${JSON.stringify(after)}`);
-      }
-      if (after.bubbles === 0) {
-        throw new Error('the conversation is empty after a real voice-mode turn; the turn never reached the page');
-      }
-      if (after.markerLeaks > 0) {
-        throw new Error(`${after.markerLeaks} mode marker(s) rendered as a message after a real turn`);
-      }
-      console.log(`voice-mode real leg: landing cleared by the marker turn, ${after.bubbles} bubbles, no marker leak`);
+          })`,
+        ));
+        if (!before.landing) {
+          throw new Error('the landing screen is already gone before the real leg ran, so this leg proves nothing');
+        }
+
+        let stuck = null;
+        await evaluate(cdp, "document.getElementById('voice-mode-btn').click(); true");
+        try {
+          await waitFor(cdp, "!document.querySelector('.input-area').classList.contains('landing-mode')", 25000);
+        } catch (error) {
+          stuck = await evaluate(
+            cdp,
+            `JSON.stringify({
+              probe: window.__piChatVoiceMode ? window.__piChatVoiceMode.probe() : null,
+              caption: document.getElementById('voice-caption')?.textContent,
+              socketOpen: Boolean(window.__piSocket && window.__piSocket.readyState === 1),
+            })`,
+          );
+        }
+        if (stuck) {
+          throw new Error(`the landing screen survived a real voice-mode turn: ${stuck}`);
+        }
+
+        await evaluate(cdp, "window.__piChatVoiceMode.exit('stage'); true");
+        await sleep(400);
+        const after = JSON.parse(await evaluate(
+          cdp,
+          `(() => {
+            const area = document.querySelector('.input-area');
+            return JSON.stringify({
+              landing: area.classList.contains('landing-mode'),
+              avatar: Boolean(document.getElementById('landing-page')),
+              composerVisible: getComputedStyle(area).display !== 'none',
+              screenHidden: document.getElementById('voice-screen').hidden,
+              bubbles: document.querySelectorAll('#chat-screen .message, #chat-screen .assistant-block').length,
+              markerLeaks: [...document.querySelectorAll('#chat-screen .message')]
+                .filter((n) => n.textContent.includes('PI-CHAT-SYSTEM-MESSAGE')).length,
+            });
+          })()`,
+        ));
+        if (after.landing || after.avatar) {
+          throw new Error(`voice mode started a session and the landing screen is still up: ${JSON.stringify(after)}`);
+        }
+        if (!after.composerVisible || !after.screenHidden) {
+          throw new Error(`leaving voice mode did not hand the screen back: ${JSON.stringify(after)}`);
+        }
+        if (after.bubbles === 0) {
+          throw new Error('the conversation is empty after a real voice-mode turn; the turn never reached the page');
+        }
+        if (after.markerLeaks > 0) {
+          throw new Error(`${after.markerLeaks} mode marker(s) rendered as a message after a real turn`);
+        }
+        console.log(`voice-mode real leg: landing cleared by the marker turn, ${after.bubbles} bubbles, no marker leak`);
+        }
       }
     }
 

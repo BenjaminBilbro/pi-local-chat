@@ -42,6 +42,11 @@ const BARGE_MS = 140;
 
 /* After an interrupt, do not let the same breath re-trigger it. */
 const BARGE_COOLDOWN_MS = 900;
+/* How long the mode handshake is allowed to own the session. It gates the interrupt gate, so a `agent_settled`
+ * that never arrives would leave a person unable to interrupt anything; 30 s is comfortably past the 6-7 s a
+ * cold first turn measured on Ben's box (2026-11-19: 20,180 prompt tokens, 6.7 s) and short enough that the
+ * failure is over before anyone has given up on the session. */
+const MARKER_SETTLE_MS = 30000;
 
 /**
  * The interrupt decision, as a pure function of what was measured.
@@ -128,13 +133,19 @@ export function isEchoOfAssistant(transcript, recentSpeech) {
  *
  * @returns {{accept: boolean, reason: string}}
  */
-export function transcriptDecision({ text, speaking, interrupted, recentSpeech, previous, now }) {
+export function transcriptDecision({ text, speaking, interrupted, recentSpeech, previous, now, starting }) {
   const trimmed = String(text || '').trim();
   if (!trimmed) return { accept: false, reason: 'empty' };
   if (previous && previous.text === trimmed && now - previous.at < DUPLICATE_WINDOW_MS) {
     return { accept: false, reason: 'duplicate' };
   }
   if (isEchoOfAssistant(trimmed, recentSpeech)) return { accept: false, reason: 'echo' };
+  /* The startup case, and it is a case rather than an exception to the one below it. The mode marker costs the
+     model a turn, and until that turn settles the surface is not listening to an answer, it is waiting for the
+     session to exist. So the words are kept and go first when the handshake is done: they are not an
+     interruption, and dropping them is how "what day is it" vanished into a session that never saw it
+     (Ben, 2026-11-19; docs/voice-mode.md "Starting up"). */
+  if (starting) return { accept: true, reason: 'startup-queue' };
   if (speaking && !interrupted) return { accept: false, reason: 'assistant-speaking' };
   return { accept: true, reason: 'ok' };
 }
@@ -152,8 +163,8 @@ Until you are told voice mode is OFF, answer as speech:
 - Before and after a tool or a long task runs, drop one short spoken line now and then so the pause has a reason.
 - Conversation comes first: ask one short question instead of writing a wall of text when something is
   ambiguous, and prefer the useful answer to the complete one.
-- This message is a mode marker, not something the person typed. Reply with one short spoken sentence that
-  you are listening, then wait.`;
+- This message is a mode marker, not something the person typed. Answer with one short sentence that you are
+  listening; it is a handshake, and it is not spoken aloud to them.`;
 
 const VOICE_OFF = `Voice mode is now OFF. Speech synthesis is stopped and will not run again until voice mode is
 turned on, so return to normal written answers: markdown, lists, tables, code blocks and links are all
@@ -183,6 +194,7 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
   const log = document.getElementById('voice-log');
   const resumeButton = document.getElementById('voice-audio-resume');
   const muteButton = document.getElementById('voice-mute');
+  const loading = document.getElementById('voice-loading');
 
   let active = false;
   let raf = 0;
@@ -207,6 +219,22 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
    *  back through the microphone. */
   let recentSpoken = '';
   let lastAccepted = null;
+  /** True from the moment the ON marker is sent until the run it starts settles, the assistant is heard, or
+   *  the watchdog runs out. It decides one thing: whether a sentence heard now is startup speech to be kept or
+   *  a live turn to be interrupted. It deliberately does not touch the interrupt gate, because the gate needs
+   *  audio to arm at all and the marker turn has none - if something is audible, it is not the handshake.
+   *  `docs/voice-mode.md`, "Starting up". */
+  let markerPending = false;
+  /** Whether anything was said during that handshake, which is the only reason the surface has something to
+   *  say for itself once it ends. */
+  let startupQueued = false;
+  /** Set when *this tab* asked for a different conversation (`app.js`, from the command it sent). It is what
+   *  tells a session the mode announcement started from a session the person switched to. */
+  let sessionChangeRequested = false;
+  /** The watchdog behind that: if no run ever settles, startup cannot be allowed to own the session. */
+  let markerWatchdog = 0;
+  /** What the startup overlay is showing, so a per-frame repaint costs one comparison. */
+  let startupPainted = null;
   let lastRejected = null;
   // Which side failed, and in its own words. A microphone that refused and a microphone that is still
   // loading look identical from here unless somebody writes the difference down.
@@ -230,7 +258,7 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
    escape hatch is an attribute on the element rather than a URL parameter, and the harness has no URL of its
    own to add one to. Levels are synthesized here so a state can be photographed at all on a box where the
    assistant is silent and nobody is speaking. */
-  const DEMO_STATES = ['idle', 'listening', 'thinking', 'speaking', 'barge'];
+  const DEMO_STATES = ['idle', 'listening', 'thinking', 'speaking', 'barge', 'loading'];
   let demo = null;
 
   /** A spectrum that moves: a comb of formants sliding over time, scaled to `level`. Real speech and a
@@ -365,6 +393,34 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
     return controller.backendStateValue === 'ready' ? 'ready' : 'pending';
   }
 
+  /** Both speech models answered. Parallel to the handshake, and equally out of the surface's control. */
+  function enginesReady() {
+    return sideState('mic') === 'ready' && sideState('voice') === 'ready';
+  }
+
+  /**
+   * Whether the surface still owes the person an animation instead of a conversation.
+   *
+   * Three things have to land before a visualizer means anything, and they happen in parallel: the listening
+   * model, the speaking model, and the answer to the mode announcement. Until then an orb pulsing on microphone
+   * levels and a strip metering a microphone the server has not loaded are both decorations, and one of them is
+   * a promise about a mouth that is not installed yet. A pinned demo state is exempt, because the loading state
+   * is asked for by name (`--voice-state loading`) and a pinned state has no engines at all.
+   */
+  function startupShown() {
+    if (demo) return demo === 'loading';
+    return markerPending || !enginesReady();
+  }
+
+  function paintStartup() {
+    const starting = startupShown();
+    if (starting === startupPainted) return starting;
+    startupPainted = starting;
+    if (screen) screen.dataset.startup = starting ? 'on' : 'off';
+    if (loading) loading.hidden = !starting;
+    return starting;
+  }
+
   /** Paints the two dots, and says in one line which engine is still the reason you cannot talk yet. */
   function renderReady() {
     const mic = sideState('mic');
@@ -377,6 +433,7 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
       if (chips.mic) chips.mic.textContent = mic === 'failed' ? 'microphone failed' : 'microphone';
       if (chips.voice) chips.voice.textContent = vox === 'failed' ? 'voice failed' : 'voice';
       if (readyRow) readyRow.hidden = mic === 'ready' && vox === 'ready';
+      paintStartup();
     }
     if (mic === 'pending') return 'microphone';
     if (vox === 'pending') return 'voice';
@@ -544,6 +601,16 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
   }
 
   function onSpeechStart() {
+    // Hearing the assistant at all means the handshake is behind us. This is not a redundancy: the mode marker
+    // synthesizes no audio (`pi_chat/voice_session.py`), so speech can only be an answer to something, and a
+    // surface that is audible is not still starting up. It matters because `markerPending` gates the interrupt
+    // gate, and an `agent_settled` that never arrives - a rejected prompt, a child that died mid-turn - must
+    // not leave the person permanently unable to interrupt.
+    if (markerPending) {
+      markerPending = false;
+      clearMarkerWatchdog();
+      paintStartup();
+    }
     orb.endWait();
     setPhase('speaking', {
       hint: 'Tap the orb or press space to interrupt',
@@ -574,6 +641,7 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
   function onTranscript(text) {
     if (!active || !text) return;
     const now = performance.now();
+    const starting = markerPending;
     const decision = transcriptDecision({
       text,
       speaking: Boolean(voice && voice.speakingState) || phase === 'speaking' || phase === 'barge',
@@ -581,6 +649,7 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
       recentSpeech: recentSpoken,
       previous: lastAccepted,
       now,
+      starting,
     });
     if (!decision.accept) {
       lastRejected = { text: text.trim(), reason: decision.reason, at: now };
@@ -594,6 +663,18 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
     lastPartial = '';
     interruptPending = false;
     orb.beginWait(THINK_MS);
+    if (decision.reason === 'startup-queue') {
+      // Said while the handshake turn is still running. It goes to pi's queue, which is the same queue a
+      // mid-run message uses, so pi answers it the moment the marker turn settles; the wording here says so,
+      // because "Thinking" would promise an answer to a question that has not been asked yet.
+      startupQueued = true;
+      setPhase('thinking', {
+        hint: 'Queued, it goes first when voice mode finishes starting',
+        say: 'queued while voice mode started up',
+      });
+      sendCommand({ type: 'prompt', message: text, delivery: 'queue' });
+      return;
+    }
     setPhase('thinking', {
       hint: startedFresh ? 'Thinking, the first reply of a new session takes longer' : 'Thinking',
       say: '',
@@ -656,6 +737,9 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
     // A session never opens muted. The button carries the state, so painting it is the whole reset.
     muted = false;
     paintMuted();
+    markerPending = false;
+    startupQueued = false;
+    sessionChangeRequested = false;
     lastReadyKey = '';
     startedFresh = document.querySelectorAll('#chat-screen .message, #chat-screen .assistant-block').length === 0;
     if (readyRow) readyRow.hidden = Boolean(demo);
@@ -679,8 +763,10 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
         thinking: 'Thinking',
         speaking: 'Tap the orb or press space to interrupt',
         barge: 'Go ahead',
+        loading: 'Loading the speech models',
       };
-      setPhase(demo, { hint: DEMO_HINTS[demo] });
+      setPhase(demo === 'loading' ? 'idle' : demo, { hint: DEMO_HINTS[demo] });
+      paintStartup();
       if (demo === 'thinking') orb.beginWait(THINK_MS);
       // Prime the trace. A screenshot of a strip that started empty 200 ms ago is a flat line, and a flat
       // line reads as "the visualizer is broken" to anyone who has not just watched it start.
@@ -703,6 +789,11 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
     if (weEnabledStt && stt) stt.enable(getSocket());
 
     sendCommand({ type: 'prompt', message: systemEnvelope(VOICE_ON), delivery: 'queue' });
+    // Everything said between here and the settle of that run is startup, not interruption.
+    markerPending = true;
+    startupQueued = false;
+    armMarkerWatchdog();
+    paintStartup();
     setPhase('idle', { hint: 'Say something', say: 'voice mode on' });
     last = performance.now();
     raf = requestAnimationFrame(tick);
@@ -723,6 +814,9 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
     window.removeEventListener('resize', onResize);
 
     if (!wasDemo) {
+      markerPending = false;
+      clearMarkerWatchdog();
+      paintStartup();
       sendCommand({ type: 'voice_stop' });
       sendCommand({ type: 'prompt', message: systemEnvelope(VOICE_OFF), delivery: 'queue' });
       if (weEnabledStt && stt) stt.disable();
@@ -738,6 +832,27 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
     document.getElementById('user-input')?.focus();
   }
 
+  /**
+   * pi finished a run. The first one after entering is the answer to the mode marker, and the only thing that
+   * information changes is what the next sentence counts as: until here, a sentence was startup and got
+   * queued; from here it is a normal turn, and talking over an answer is an interruption again.
+   *
+   * The handshake's own words are deliberately not treated as anything. They are not spoken (the server
+   * synthesizes no audio for a marker turn, `pi_chat/voice_session.py`) and they are not a reply to the
+   * person, so nothing is done with them beyond the log line `noteAssistantTurn` already drew.
+   */
+  function onAgentSettled() {
+    if (!markerPending) return;
+    markerPending = false;
+    clearMarkerWatchdog();
+    paintStartup();
+    if (!active || !startupQueued) return;
+    // The sentence is already pi's to deliver; this only says what is happening now that the handshake is
+    // over, and hands the interrupt gate back.
+    startupQueued = false;
+    setPhase('thinking', { hint: 'Answering what you said first', say: '' });
+  }
+
   function toggle() { active ? exit() : enter(); }
 
   /**
@@ -747,9 +862,25 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
    * speech until told otherwise" lived in the one that just ended, so without this the model goes back to
    * markdown bullet lists mid-call with nothing on screen to explain why.
    */
+  function noteSessionChangeRequested() {
+    sessionChangeRequested = true;
+  }
+
   function reinject() {
     if (!active || demo) return;
+    // Already announced and not yet answered: a brand new voice session starts the pi child with its first
+    // prompt, so `session_started` arrives right after entering and used to announce the mode a second time -
+    // two marker turns, two replies, and the rig's audit log caught it (`prompt x4` for one enter and one
+    // exit). A session this tab asked for is different: that context really has never heard the instruction,
+    // however recently the previous one did, so `sessionChangeRequested` outranks the pending marker.
+    if (markerPending && !sessionChangeRequested) return;
+    sessionChangeRequested = false;
     sendCommand({ type: 'prompt', message: systemEnvelope(VOICE_ON), delivery: 'queue' });
+    // Same rule as entering: the new context has to be told the mode before an answer means anything, and a
+    // sentence said during that turn is queued rather than counted as an interruption.
+    markerPending = true;
+    armMarkerWatchdog();
+    paintStartup();
   }
 
   /** What the assistant just said, so the spoken exchange is readable afterwards and so its own voice can be
@@ -761,6 +892,25 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
   }
 
   /** The button is the only place the muted state lives, so it is painted from one place. */
+  function clearMarkerWatchdog() {
+    if (!markerWatchdog) return;
+    clearTimeout(markerWatchdog);
+    markerWatchdog = 0;
+  }
+
+  /** The watchdog behind `markerPending`: startup ends when the run settles, when the assistant is heard, or
+   *  here, whichever comes first. Two of the three are events; this one is the case where they are not. */
+  function armMarkerWatchdog() {
+    clearMarkerWatchdog();
+    markerWatchdog = setTimeout(() => {
+      markerWatchdog = 0;
+      if (!markerPending) return;
+      markerPending = false;
+      paintStartup();
+      logLine('ignored', 'no answer came to the mode marker, so voice mode is listening normally now');
+    }, MARKER_SETTLE_MS);
+  }
+
   function paintMuted() {
     if (!muteButton) return;
     muteButton.dataset.muted = muted ? 'true' : 'false';
@@ -873,7 +1023,12 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
       phase,
       recording,
       muted,
+      // Whether the Loading surface is what the person is looking at.
+      startup: startupShown(),
       interruptPending,
+      // Whether the handshake turn is still running, which is what decides if a sentence is startup or an
+      // interruption. Named `starting` to match `transcriptDecision`'s argument.
+      starting: markerPending,
       demo,
       loopError,
       recentSpeechChars: recentSpoken.length,
@@ -896,9 +1051,11 @@ export function createVoiceModeController({ sendCommand, getSocket, stt, voice, 
     onTranscript,
     onPartial,
     onRecordingChange,
+    onAgentSettled,
     noteAssistantTurn,
     noteFailure,
     reinject,
+    noteSessionChangeRequested,
     probe,
     get active() { return active; },
     get phase() { return phase; },

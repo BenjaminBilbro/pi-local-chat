@@ -596,6 +596,14 @@
   <div class="voice-stage">
     <canvas id="voice-orb" class="voice-orb" aria-hidden="true"></canvas>
     <p class="voice-phase" id="voice-phase" aria-hidden="true">idle</p>
+    <!-- Until the speech model loads, the listening model loads, and the mode announcement gets its answer,
+         there is no conversation to visualize. This is the only thing on screen while those three happen in
+         parallel (Ben, 2026-11-19), because a microphone meter that meters a microphone the server has not
+         loaded is a decoration. The chips underneath still name which of the three is the reason. -->
+    <div class="voice-loading" id="voice-loading" role="status" aria-live="polite" hidden>
+      <span class="voice-loading-ring" aria-hidden="true"></span>
+      <span class="voice-loading-text">Loading...</span>
+    </div>
   </div>
   <p class="voice-caption" id="voice-caption" role="status" aria-live="polite"></p>
   <div class="voice-wave-wrap">
